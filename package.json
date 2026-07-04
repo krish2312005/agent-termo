@@ -1,0 +1,80 @@
+{
+  "name": "agent-termo",
+  "version": "1.0.0",
+  "description": "Terminal-based AI coding agent that replicates Claude Code experience",
+  "type": "module",
+  "main": "dist/main.js",
+  "bin": {
+    "agent-termo": "./dist/cli.js"
+  },
+  "scripts": {
+    "dev": "tsx watch src/cli.ts",
+    "build": "tsx scripts/build.mjs",
+    "build:tsc": "tsc",
+    "build:esbuild": "node scripts/build.mjs",
+    "build:pkg": "pkg --targets node20-win-x64,node20-macos-x64,node20-linux-x64 --output dist/",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "lint": "eslint src --ext .ts",
+    "lint:fix": "eslint src --ext .ts --fix",
+    "cli": "tsx src/cli.ts"
+  },
+  "keywords": [
+    "cli",
+    "terminal",
+    "ai",
+    "agent",
+    "coding",
+    "llm",
+    "nvidia",
+    "nim"
+  ],
+  "author": "Developer",
+  "license": "MIT",
+  "preferGlobal": true,
+  "dependencies": {
+    "blessed": "^0.1.10",
+    "chalk": "^5.3.0",
+    "commander": "^12.1.0",
+    "fs-extra": "^11.2.0",
+    "marked": "^12.0.0",
+    "openai": "^4.50.0",
+    "simple-git": "^3.24.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/glob": "^8.1.0",
+    "@types/node": "^20.12.0",
+    "@vitest/coverage-v8": "^1.5.0",
+    "esbuild": "^0.21.0",
+    "eslint": "^9.4.0",
+    "pkg": "^5.8.1",
+    "tsx": "^4.10.0",
+    "typescript": "^5.4.0",
+    "typescript-eslint": "^8.0.0",
+    "vitest": "^1.5.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "files": [
+    "dist",
+    "src",
+    ".claude"
+  ],
+  "pkg": {
+    "targets": [
+      "node20-win-x64",
+      "node20-macos-x64",
+      "node20-linux-x64"
+    ],
+    "assets": [
+      ".claude/agents/**/*",
+      ".claude/commands/**/*",
+      ".claude/skills/**/*"
+    ],
+    "outputPath": "dist"
+  }
+}
