@@ -1,4 +1,50 @@
 // =============================================================================
+// Agent Loader + System Prompt Builder
+// =============================================================================
+
+import { readdirSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import type { Agent } from '../types/index.js';
+
+function parseAgentMeta(content: string): { description: string; tools: string[] } {
+  const descMatch = content.match(/^description:\s*(.+)$/m);
+  const toolsMatch = content.match(/^tools:\s*\[(.+)\]/m);
+  const toolsStr = toolsMatch?.[1] ?? '';
+  const tools = toolsStr
+    ? toolsStr.split(',').map((t) => t.trim().replace(/^["']|["']$/g, ''))
+    : ['file:read', 'file:write', 'file:edit', 'file:glob', 'grep', 'bash:execute', 'git:status', 'git:commit', 'git:push', 'git:log'];
+  return { description: descMatch?.[1]?.trim() ?? '', tools };
+}
+
+export function loadAgentPrompt(agentName: string, agentDir: string): string | null {
+  const candidate = resolve(agentDir, 'agents', agentName + '.md');
+  try {
+    const content = readFileSync(candidate, 'utf-8');
+    const withoutFrontmatter = content.replace(/^---[\s\S]+?---\n/, '');
+    return withoutFrontmatter.trim();
+  } catch {
+    return null;
+  }
+}
+
+export function loadAllAgents(agentDir: string): Agent[] {
+  const agentsDir = resolve(agentDir, 'agents');
+  try {
+    const files = readdirSync(agentsDir).filter((f) => f.endsWith('.md'));
+    const agents: Agent[] = files.map((file) => {
+      const agentId = file.replace(/\.md$/, '');
+      const content = readFileSync(resolve(agentsDir, file), 'utf-8');
+      const meta = parseAgentMeta(content);
+      const withoutFrontmatter = content.replace(/^---[\s\S]+?---\n/, '').trim();
+      return { name: agentId, description: meta.description, systemPrompt: withoutFrontmatter, tools: meta.tools };
+    });
+    return agents.sort((a, b) => a.name.localeCompare(b.name));
+  } catch {
+    return [];
+  }
+}
+
+// =============================================================================
 // Agent System Prompt Builder
 // =============================================================================
 
