@@ -263,45 +263,59 @@ export function createInput(): {
         };
 
         // Simple text suggestions: show matching commands as plain text below the input line
-        let suggestionLines: number = 0;
+        
+let suggestionLines = 0;
 
-        function showSuggestions(items: Array<{ cmd: string; description: string }>): void {
-          clearSuggestions(false);
-          suggestionLines = items.length;
-          for (const item of items) {
-            process.stdout.write("  " + c.cyan(item.cmd) + " " + c.dim(item.description) + "\n");
-          }
-          // Move cursor back UP to the input line
-          process.stdout.write("\x1b[" + items.length + "A");
-          // Redraw input
-          process.stdout.write("\x1b[2K\r" + inputPrompt + state.line);
-        }
+// Cursor-anchor: save/restore DECSC/DECRC cursor so showSuggestions and
+// clearSuggestions always return to the exact same row, eliminating the
+// drift bug where backspace-clearing a '/' and retyping '/' draws on
+// the wrong line.
+function saveCursorAnchor(): void {
+  process.stdout.write('[s');
+}
+function restoreToAnchor(): void {
+  process.stdout.write('[u');
+}
 
-        function clearSuggestions(redraw = true): void {
-          if (suggestionLines === 0) return;
-          // Move cursor DOWN to where the suggestions are
-          process.stdout.write("\x1b[" + suggestionLines + "B");
-          // Clear each suggestion line
-          for (let i = 0; i < suggestionLines; i++) {
-            process.stdout.write("\x1b[2K");
-            if (i < suggestionLines - 1) process.stdout.write("\n");
-          }
-          // Move cursor BACK UP to input line
-          process.stdout.write("\x1b[" + suggestionLines + "A");
-          suggestionLines = 0;
-          if (redraw) {
-            process.stdout.write("\x1b[2K\r" + inputPrompt + state.line);
-          }
-        }
+function showSuggestions(items: Array<{ cmd: string; description: string }>): void {
+  restoreToAnchor();
+  clearSuggestions(false);
+  suggestionLines = items.length;
+  for (const item of items) {
+    process.stdout.write(' ' + c.cyan(item.cmd) + ' ' + c.dim(item.description) + '
+');
+  }
+  process.stdout.write('[' + items.length + 'A');
+  process.stdout.write('[2K' + inputPrompt + state.line);
+  saveCursorAnchor();
+}
 
-        function updateSuggestions(): void {
-          const cmds = filterCommands(state.line);
-          if (cmds.length > 0 && state.line.startsWith("/")) {
-            showSuggestions(cmds);
-          } else if (suggestionLines > 0) {
-            clearSuggestions(true);
-          }
-        }
+function clearSuggestions(redraw = true): void {
+  if (suggestionLines === 0) return;
+  restoreToAnchor();
+  process.stdout.write('[' + suggestionLines + 'B');
+  for (let i = 0; i < suggestionLines; i++) {
+    process.stdout.write('[2K');
+    if (i < suggestionLines - 1) process.stdout.write('
+');
+  }
+  process.stdout.write('[' + suggestionLines + 'A');
+  suggestionLines = 0;
+  if (redraw) {
+    process.stdout.write('[2K' + inputPrompt + state.line);
+    saveCursorAnchor();
+  }
+}
+
+function updateSuggestions(): void {
+  const cmds = filterCommands(state.line);
+  if (cmds.length > 0 && state.line.startsWith('/')) {
+    showSuggestions(cmds);
+  } else if (suggestionLines > 0) {
+    clearSuggestions(true);
+  }
+}
+
 
         // Draw the input prompt
         process.stdout.write(inputPrompt);
