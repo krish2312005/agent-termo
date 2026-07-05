@@ -1,6 +1,6 @@
-// ==============================================================================
-// Main REPL Loop
-// ==============================================================================
+// =============================================================================
+// Agent-Termo — Main REPL entry point
+// =============================================================================
 
 import { NimClient } from './llm/client.js';
 import { TOOL_DEFINITIONS } from './llm/tools.js';
@@ -10,32 +10,32 @@ import { loadAllAgents } from './agents/index.js';
 import { buildSystemPrompt } from './agents/index.js';
 import { resolveProjectRoot } from './utils/config.js';
 import {
-printWelcome,
-printUserMessage,
-printAssistantMessage,
-printToolCall,
-printToolResult,
-printError,
-printSuccess,
-printInfo,
-printHelp,
-printAgentsList,
-printMemoryFile,
-printTimelineFile,
-startSpinner,
-stopSpinner,
-clearScreen,
-createInput,
-moveToFreshLine,
+  printWelcome,
+  printUserMessage,
+  printAssistantMessage,
+  printToolCall,
+  printToolResult,
+  printError,
+  printSuccess,
+  printInfo,
+  printHelp,
+  printAgentsList,
+  printMemoryFile,
+  printTimelineFile,
+  startSpinner,
+  stopSpinner,
+  clearScreen,
+  createInput,
+  moveToFreshLine,
 } from './ui/index.js';
 import type { ConversationMessage, ToolCall } from './types/index.js';
 
 const TOOL_KEYWORDS = [
-'build', 'create', 'write', 'edit', 'modify', 'file', 'code', 'function', 'class',
-'component', 'debug', 'fix', 'git', 'commit', 'push', 'install', 'npm', 'run',
-'bash', 'shell', 'command', 'read', 'grep', 'check', 'show', 'implement',
-'configure', 'setup', 'src', 'package', 'app', 'project', 'api', 'deploy',
-'test', 'compile', 'typescript', 'javascript', 'python', 'node', 'add', 'delete',
+  'build', 'create', 'write', 'edit', 'modify', 'file', 'code', 'function', 'class',
+  'component', 'debug', 'fix', 'git', 'commit', 'push', 'install', 'npm', 'run',
+  'bash', 'shell', 'command', 'read', 'grep', 'check', 'show', 'implement',
+  'configure', 'setup', 'src', 'package', 'app', 'project', 'api', 'deploy',
+  'test', 'compile', 'typescript', 'javascript', 'python', 'node', 'add', 'delete',
 ];
 
 function mightNeedTools(message: string): boolean {
@@ -82,7 +82,11 @@ export async function runRepl(projectRoot?: string): Promise<void> {
   const cleanup = () => {
     input.close();
     process.stdout.write('\n');
-    console.log('Session complete. ' + Math.round((Date.now() - session.startedAt.getTime()) / 60000) + ' minutes.');
+    console.log(
+      'Session complete. ' +
+      Math.round((Date.now() - session.startedAt.getTime()) / 60000) +
+      ' minutes.',
+    );
     process.exit(0);
   };
   process.on('SIGINT', cleanup);
@@ -96,11 +100,10 @@ export async function runRepl(projectRoot?: string): Promise<void> {
         break;
       }
 
-      // ---- Slash commands (handled locally, no LLM) ----
+      // ---- Slash commands ----
       if (userInput.startsWith('/')) {
         const cmd = userInput.toLowerCase().trim();
 
-        // Exact command matches
         if (cmd === '/help' || cmd === '/') {
           printHelp();
           continue mainLoop;
@@ -138,7 +141,6 @@ export async function runRepl(projectRoot?: string): Promise<void> {
           break;
         }
 
-        // Unrecognized command starting with / — show help (Claude Code behavior)
         console.log('');
         printHelp();
         console.log('Unknown command: ' + cmd);
@@ -155,17 +157,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
       conversation.push(userMsg);
       printUserMessage(userMsg);
 
-      // ── CURSOR FIX ────────────────────────────────────────────────────────────
-      // printUserMessage output (and any prior LLM streaming output) can leave the
-      // terminal cursor on a wrapped continuation row rather than the row
-      // immediately after the message block.  Without this call the very next
-      // \r or \r\n in the spinner (or the next input prompt) targets the
-      // continuation line, causing the user's next input to be written on the
-      // same screen line as the last bit of the AI response.
-      // moveToFreshLine() sends \r + \x1b[0E which always forces the cursor to
-      // the start of a genuinely fresh display row, restoring clean separation
-      // between turns.
-      // ────────────────────────────────────────────────────────────────────────
+      // Ensure cursor is on a fresh line before starting LLM interaction.
       moveToFreshLine();
 
       const useTools = mightNeedTools(userInput);
@@ -173,6 +165,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 
       let fullText = '';
       let toolCalls: ToolCall[] = [];
+      let streamingDeliveredToTerminal = false;
 
       if (useTools) {
         startSpinner('Working...');
@@ -191,17 +184,23 @@ export async function runRepl(projectRoot?: string): Promise<void> {
         }
       } else {
         startSpinner('Thinking...');
-        let streamingWorked = false;
         try {
           const gen = nimClient.streamComplete(conversation, undefined, (text: string) => {
             process.stdout.write(text);
-            streamingWorked = true;
+            streamingDeliveredToTerminal = true;
           });
+          let receivedContent = false;
           for await (const result of gen) {
             fullText = result.content;
+            receivedContent = true;
           }
-          process.stdout.write('\n');
-          stopSpinner(streamingWorked ? true : undefined);
+          if (receivedContent) {
+            process.stdout.write('\n');
+            stopSpinner(true);
+          } else {
+            process.stdout.write('\n');
+            stopSpinner(undefined);
+          }
         } catch {
           process.stdout.write('\n');
           stopSpinner(false);
@@ -244,14 +243,16 @@ export async function runRepl(projectRoot?: string): Promise<void> {
           content: (result.success ? 'Result: ' : 'Error: ') + (result.success ? result.output : result.error),
           timestamp: new Date(),
         });
-        const toolStatus3 = result.success
+        const toolStatus = result.success
           ? 'OK'
           : ('ERR: ' + (result.error ? result.error.slice(0, 80) : 'unknown error'));
-        logToTimeline(projectRoot, 'Tool: ' + tc.name + ' -- ' + toolStatus3);
-        logAgentTermoTimeline('Tool: ' + tc.name + ' -- ' + toolStatus3);
+        logToTimeline(projectRoot, 'Tool: ' + tc.name + ' -- ' + toolStatus);
+        logAgentTermoTimeline('Tool: ' + tc.name + ' -- ' + toolStatus);
       }
 
-      if (toolCalls.length === 0 && cleanText && cleanText !== 'null') {
+      // Only print formatted assistant message if streaming did NOT already
+      // deliver the content to the terminal.
+      if (toolCalls.length === 0 && cleanText && cleanText !== 'null' && !streamingDeliveredToTerminal) {
         printAssistantMessage(cleanText);
       }
 
