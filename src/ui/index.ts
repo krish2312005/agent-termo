@@ -1,5 +1,5 @@
 // =============================================================================
-// Terminal UI — chalk-based, with slash-command autocomplete
+// Terminal UI — chalk-based, clean CLI styling
 // =============================================================================
 
 import Chalk from 'chalk';
@@ -9,24 +9,53 @@ import type { ConversationMessage } from '../types/index.js';
 const c: typeof Chalk = Chalk as unknown as typeof Chalk;
 
 // =============================================================================
-// WELCOME BANNER
+// WELCOME BANNER — commands shown inline, no dropdown
 // =============================================================================
 
 export function printWelcome(projectRoot: string): void {
-const BAR = '===================================================';
 console.log('');
-console.log(c.magenta.bold(BAR));
-console.log(c.magenta.bold(' AGENT-TERMO'));
-console.log(c.magenta.bold(BAR));
+console.log(c.magenta.bold('  AGENT-TERMO'));
+console.log(c.dim('  AI-Powered Terminal Coding Agent'));
 console.log('');
-console.log(c.dim(' AI-Powered Terminal Coding Agent'));
-console.log(c.dim(' Model: ') + c.cyan.bold('Nvidia NIM (OpenAI-compatible)'));
-console.log(c.dim(' Project: ') + c.white(projectRoot));
+console.log(c.dim('  Model: ') + c.cyan.bold('Nvidia NIM (OpenAI-compatible)'));
+console.log(c.dim('  Project: ') + c.white(projectRoot));
 console.log('');
-console.log(c.dim(' Commands: /help /clear /memory /timeline /model /agents'));
-console.log(c.dim(' /history /exit /quit'));
+console.log(c.dim('  Commands:'));
+console.log(
+  '    ' +
+  c.cyan('/help') +
+  c.dim(' — show all commands') +
+  '\n' +
+  '    ' +
+  c.cyan('/clear') +
+  c.dim(' — clear conversation & screen') +
+  '\n' +
+  '    ' +
+  c.cyan('/memory') +
+  c.dim(' — view Agent-Termo memory') +
+  '\n' +
+  '    ' +
+  c.cyan('/timeline') +
+  c.dim(' — view recent activity') +
+  '\n' +
+  '    ' +
+  c.cyan('/model') +
+  c.dim(' — show current AI model') +
+  '\n' +
+  '    ' +
+  c.cyan('/agents') +
+  c.dim(' — list all agents') +
+  '\n' +
+  '    ' +
+  c.cyan('/history') +
+  c.dim(' — show message count') +
+  '\n' +
+  '    ' +
+  c.cyan('/exit') +
+  c.dim(' — quit'),
+);
 console.log('');
-console.log(c.dim('-'.repeat(80)));
+console.log(c.dim('  ────────────────────────────────────────────────────────────────'));
 console.log('');
 }
 
@@ -37,14 +66,14 @@ console.log('');
 export function printUserMessage(msg: ConversationMessage): void {
 const time = new Date(msg.timestamp).toLocaleTimeString('en-US', { hour12: false });
 console.log('\n' + c.green('[' + time + '] You'));
-console.log(c.dim('-'.repeat(80)));
+console.log(c.dim('─'.repeat(80)));
 console.log(c.green(msg.content) + '\n');
 }
 
 export function printAssistantMessage(content: string): void {
 const time = new Date().toLocaleTimeString('en-US', { hour12: false });
 console.log('\n' + c.magenta('[' + time + '] Agent-Termo'));
-console.log(c.dim('-'.repeat(80)));
+console.log(c.dim('─'.repeat(80)));
 console.log(c.magenta(content) + '\n');
 }
 
@@ -117,9 +146,9 @@ return;
 process.stdout.write('\n');
 clearCurrentLine();
 process.stdout.write(c.bold('=== AGENT-TERMO MEMORY ===') + '\n');
-process.stdout.write(c.dim('-'.repeat(80)) + '\n');
+process.stdout.write(c.dim('─'.repeat(80)) + '\n');
 process.stdout.write(mem + '\n');
-process.stdout.write(c.dim('-'.repeat(80)) + '\n\n');
+process.stdout.write(c.dim('─'.repeat(80)) + '\n\n');
 }
 
 export async function printTimelineFile(): Promise<void> {
@@ -137,9 +166,9 @@ const recent = lines.slice(-recentCount).join('\n');
 process.stdout.write('\n');
 clearCurrentLine();
 process.stdout.write(c.bold('=== AGENT-TERMO TIMELINE (recent entries) ===') + '\n');
-process.stdout.write(c.dim('-'.repeat(80)) + '\n');
+process.stdout.write(c.dim('─'.repeat(80)) + '\n');
 process.stdout.write(recent + '\n');
-process.stdout.write(c.dim('-'.repeat(80)) + '\n');
+process.stdout.write(c.dim('─'.repeat(80)) + '\n');
 if (totalLines > recentCount) {
 process.stdout.write(c.dim('... (' + (totalLines - recentCount) + ' earlier entries hidden)') + '\n');
 }
@@ -152,79 +181,46 @@ process.stdout.write('\n');
 
 export function printHelp(): void {
 process.stdout.write('\n' + c.bold('Agent-Termo ') + c.dim('— available commands') + '\n');
-process.stdout.write(c.dim('-'.repeat(80)) + '\n');
-const rows: Array<[string, string, string]> = [
-['/help', '', 'Show this help message and all commands'],
-['/clear', '/cls', 'Clear the conversation history and screen'],
-['/memory', '', 'View Agent-Termo memory (~/.agent-termo/memory.md)'],
-['/timeline', '/tl', 'View recent activity (~/.agent-termo/timeline.md)'],
-['/model', '', 'Show current AI model'],
-['/agents', '', 'List all available agents'],
-['/history', '/hist', 'Show conversation message count'],
-['/exit', '/quit', 'Exit Agent-Termo'],
-];
-for (const [cmd, alias, desc] of rows) {
-const aliases = alias ? c.dim(' /' + alias) : '';
-process.stdout.write(' ' + c.cyan(cmd + aliases).padEnd(14) + ' ' + c.dim(desc) + '\n');
-}
-process.stdout.write(c.dim('-'.repeat(80)) + '\n\n');
+process.stdout.write(c.dim('─'.repeat(80)) + '\n');
+console.log('  ' + c.cyan('/help')   + c.dim('    show all commands'));
+console.log('  ' + c.cyan('/clear')  + c.dim('    clear conversation & screen'));
+console.log('  ' + c.cyan('/memory')  + c.dim('    view Agent-Termo memory'));
+console.log('  ' + c.cyan('/timeline')+ c.dim('   view recent activity'));
+console.log('  ' + c.cyan('/model')   + c.dim('    show current AI model'));
+console.log('  ' + c.cyan('/agents')  + c.dim('    list all agents'));
+console.log('  ' + c.cyan('/history') + c.dim('   show message count'));
+console.log('  ' + c.cyan('/exit')    + c.dim('    quit'));
+console.log('');
 }
 
 export function printAgentsList(agents: Array<{ name: string; description: string }>): void {
 process.stdout.write('\n' + c.bold('Available Agents:') + '\n');
-process.stdout.write(c.dim('-'.repeat(80)) + '\n');
+process.stdout.write(c.dim('─'.repeat(80)) + '\n');
 for (const a of agents) {
-const short = a.description.length > 50 ? a.description.slice(0, 50) + '...' : a.description;
-process.stdout.write(' ' + c.cyan(a.name.padEnd(28)) + ' ' + c.dim(short) + '\n');
+const short = a.description.length > 40 ? a.description.slice(0, 40) + '...' : a.description;
+process.stdout.write('  ' + c.cyan(a.name.padEnd(28)) + ' ' + c.dim(short) + '\n');
 }
-process.stdout.write(c.dim('-'.repeat(80)) + '\n\n');
+process.stdout.write(c.dim('─'.repeat(80)) + '\n\n');
 }
 
 // =============================================================================
-// SLASH-COMMAND AUTOCOMPLETE DATA
+// INPUT STATE + REPL LOOP
 // =============================================================================
-
-const SLASH_COMMANDS: Array<{ cmd: string; aliases: string[]; description: string }> = [
-{ cmd: '/help', aliases: [], description: 'Show this help message and all commands' },
-{ cmd: '/clear', aliases: ['cls'], description: 'Clear the conversation history and screen' },
-{ cmd: '/memory', aliases: [], description: 'View Agent-Termo memory' },
-{ cmd: '/timeline',aliases: ['tl'], description: 'View recent activity' },
-{ cmd: '/model', aliases: [], description: 'Show current AI model' },
-{ cmd: '/agents', aliases: [], description: 'List all available agents' },
-{ cmd: '/history', aliases: ['hist'], description: 'Show conversation message count' },
-{ cmd: '/exit', aliases: ['quit'], description: 'Exit Agent-Termo' },
-];
-
-function filterCommands(
-query: string,
-): Array<{ cmd: string; description: string; isExact: boolean }> {
-if (!query.startsWith('/')) return [];
-const lower = query.toLowerCase();
-return SLASH_COMMANDS
-.filter(({ cmd, aliases }) => {
-if (cmd === lower) return true;
-if (lower.startsWith(cmd + '/')) return false;
-if (cmd.startsWith(lower)) return true;
-return aliases.some((a) => lower.startsWith('/' + a));
-})
-.map(({ cmd, description }) => ({ cmd, description, isExact: lower === cmd }));
-}
 
 class InputState {
 line = '';
 cursor = 0;
 histIdx = -1;
-suggestVisible = false;
-ddSelected = 0;
 history: string[] = [];
 constructor() { this.history = []; }
 }
 
 // =============================================================================
-// Simple text-based command suggestions
-// No dropdown, no cursor tricks — just clean text lines
-// Using DECSC (\x1b[s) / DECRC (\x1b[u) save/restore pair instead of
-// CUU arithmetic (\x1b[NA) which drifts when ANSI color codes are present.
+// Cursor-anchor helpers
+// After multi-line command output the terminal cursor can be on any row.
+// saveCursorPosition() writes \x1b[s to stamp the prompt row;
+// restoreCursorPosition() writes \x1b[u before every redraw so \r
+// always targets the correct line.
 // =============================================================================
 
 export function createInput(): {
@@ -234,11 +230,6 @@ showPrompt: () => void;
 } {
 let closeFn: (() => void) | null = null;
 let boundOnData: ((key: string) => void) | null = null;
-
-// Cursor-anchor state: after multi-line command output the terminal cursor
-// can be on any row. saveCursorPosition() writes \x1b[s to stamp the prompt
-// row; restoreCursorPosition() writes \x1b[u before every redraw so \r
-// always targets the correct line.
 let cursorAnchorValid = false;
 
 function saveCursorPosition(): void {
@@ -280,53 +271,7 @@ boundOnData = null;
 cursorAnchorValid = false;
 };
 
-// Simple text suggestions: show matching commands as plain text below the input line
-let suggestionLines: number = 0;
-
-function showSuggestions(items: Array<{ cmd: string; description: string }>): void {
-clearSuggestions(false);
-suggestionLines = items.length;
-// Save cursor at prompt position before writing suggestion lines (DECSC)
-process.stdout.write("\x1b[s");
-for (const item of items) {
-process.stdout.write(" " + c.cyan(item.cmd) + " " + c.dim(item.description) + "\n");
-}
-// Restore cursor to the prompt row (immune to ANSI-width drift)
-process.stdout.write("\x1b[u");
-// Redraw input
-process.stdout.write("\x1b[2K\r" + inputPrompt + state.line);
-}
-
-function clearSuggestions(redraw = true): void {
-if (suggestionLines === 0) return;
-// Save anchor at current (prompt) position before stepping down
-process.stdout.write("\x1b[s");
-// Move cursor DOWN to where the suggestions are
-process.stdout.write("\x1b[" + suggestionLines + "B");
-// Clear each suggestion line
-for (let i = 0; i < suggestionLines; i++) {
-process.stdout.write("\x1b[2K");
-if (i < suggestionLines - 1) process.stdout.write("\n");
-}
-// Restore cursor back to the prompt position (immune to ANSI-width drift)
-process.stdout.write("\x1b[u");
-suggestionLines = 0;
-if (redraw) {
-process.stdout.write("\x1b[2K\r" + inputPrompt + state.line);
-}
-}
-
-function updateSuggestions(): void {
-const cmds = filterCommands(state.line);
-if (cmds.length > 0 && state.line.startsWith("/")) {
-showSuggestions(cmds);
-} else if (suggestionLines > 0) {
-clearSuggestions(true);
-}
-}
-
-// Ensure a fresh line before the first prompt write, then save cursor anchor
-// at that prompt row so subsequent redraws always target the correct line.
+// Ensure a fresh line, then save cursor anchor at the prompt row
 process.stdout.write("\n");
 process.stdout.write(inputPrompt);
 saveCursorPosition();
@@ -347,16 +292,8 @@ process.exit(0);
 return;
 }
 
-if (keyName === "escape") {
-if (suggestionLines > 0) {
-clearSuggestions(true);
-}
-return;
-}
-
 if (keyName === "return" || keyName === "enter") {
 finalize(state.line);
-clearSuggestions(false);
 restoreCursorPosition();
 process.stdout.write("\r" + inputPrompt + state.line + "\n");
 resolve(state.line);
@@ -364,11 +301,9 @@ cursorAnchorValid = false;
 return;
 }
 
-// History (only when no suggestions showing)
-if (suggestionLines === 0) {
 if (keyName === "up") {
-if (state.history.length > 0) {
-state.histIdx = Math.min(state.histIdx + 1, state.history.length - 1);
+if (state.history.length > 0 && state.histIdx < state.history.length - 1) {
+state.histIdx++;
 state.line = state.history[state.histIdx] ?? "";
 state.cursor = state.line.length;
 restoreCursorPosition();
@@ -376,6 +311,7 @@ process.stdout.write("\x1b[2K\r" + inputPrompt + state.line);
 }
 return;
 }
+
 if (keyName === "down") {
 if (state.histIdx > 0) {
 state.histIdx--;
@@ -389,7 +325,6 @@ restoreCursorPosition();
 process.stdout.write("\x1b[2K\r" + inputPrompt + state.line);
 return;
 }
-}
 
 if (keyName === "backspace") {
 if (state.cursor > 0) {
@@ -397,7 +332,6 @@ state.line = state.line.slice(0, state.cursor - 1) + state.line.slice(state.curs
 state.cursor = Math.max(0, state.cursor - 1);
 restoreCursorPosition();
 process.stdout.write("\x1b[2K\r" + inputPrompt + state.line);
-updateSuggestions();
 }
 return;
 }
@@ -425,7 +359,6 @@ state.line = state.line.slice(0, state.cursor) + key + state.line.slice(state.cu
 state.cursor++;
 restoreCursorPosition();
 process.stdout.write("\x1b[2K\r" + inputPrompt + state.line);
-updateSuggestions();
 }
 }
 
@@ -437,7 +370,9 @@ close(): void {
 if (closeFn) closeFn();
 },
 showPrompt(): void {
+process.stdout.write("\n");
 process.stdout.write(c.magenta("> "));
+saveCursorPosition();
 },
 };
 }
