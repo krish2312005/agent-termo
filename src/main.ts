@@ -4,264 +4,367 @@
 
 import { NimClient } from './llm/client.js';
 import { TOOL_DEFINITIONS } from './llm/tools.js';
-import { executeTool } from './tools/index.js';
+import { executeTool, applyFileChange } from './tools/index.js';
 import { loadMemory, logToTimeline, logAgentTermoTimeline } from './memory/index.js';
 import { loadAllAgents } from './agents/index.js';
 import { buildSystemPrompt } from './agents/index.js';
 import { resolveProjectRoot } from './utils/config.js';
 import {
-  printWelcome,
-  printUserMessage,
-  printAssistantMessage,
-  printToolCall,
-  printToolResult,
-  printError,
-  printSuccess,
-  printInfo,
-  printHelp,
-  printAgentsList,
-  printMemoryFile,
-  printTimelineFile,
-  startSpinner,
-  stopSpinner,
-  clearScreen,
-  createInput,
-  moveToFreshLine,
+	printWelcome,
+	printUserMessage,
+	printAssistantMessage,
+	printToolCall,
+	printToolResult,
+	printError,
+	printSuccess,
+	printInfo,
+	printHelp,
+	printAgentsList,
+	printMemoryFile,
+	printTimelineFile,
+	startSpinner,
+	stopSpinner,
+	clearScreen,
+	createInput,
+	moveToFreshLine,
+	promptAcceptReject,
 } from './ui/index.js';
-import type { ConversationMessage, ToolCall } from './types/index.js';
+import type { ConversationMessage, ToolCall, ProposedFileChange } from './types/index.js';
 
 const TOOL_KEYWORDS = [
-  'build', 'create', 'write', 'edit', 'modify', 'file', 'code', 'function', 'class',
-  'component', 'debug', 'fix', 'git', 'commit', 'push', 'install', 'npm', 'run',
-  'bash', 'shell', 'command', 'read', 'grep', 'check', 'show', 'implement',
-  'configure', 'setup', 'src', 'package', 'app', 'project', 'api', 'deploy',
-  'test', 'compile', 'typescript', 'javascript', 'python', 'node', 'add', 'delete',
+	'build', 'create', 'write', 'edit', 'modify', 'file', 'code', 'function', 'class',
+	'component', 'debug', 'fix', 'git', 'commit', 'push', 'install', 'npm', 'run',
+	'bash', 'shell', 'command', 'read', 'grep', 'check', 'show', 'implement',
+	'configure', 'setup', 'src', 'package', 'app', 'project', 'api', 'deploy',
+	'test', 'compile', 'typescript', 'javascript', 'python', 'node', 'add', 'delete',
 ];
 
 function mightNeedTools(message: string): boolean {
-  const lower = message.toLowerCase();
-  return TOOL_KEYWORDS.some((w) => lower.includes(w));
+	const lower = message.toLowerCase();
+	return TOOL_KEYWORDS.some((w) => lower.includes(w));
 }
 
 function dedup(arr: ToolCall[]): ToolCall[] {
-  const seen = new Set<string>();
-  return arr.filter((tc) => {
-    if (seen.has(tc.id)) return false;
-    seen.add(tc.id);
-    return true;
-  });
+	const seen = new Set<string>();
+	return arr.filter((tc) => {
+		if (seen.has(tc.id)) return false;
+		seen.add(tc.id);
+		return true;
+	});
+}
+
+function extractProposedChange(toolName: string, resultOutput: string): ProposedFileChange | undefined {
+	const isFileTool = toolName === 'file:write' || toolName === 'file:edit';
+	if (!isFileTool) return undefined;
+	try {
+		const parsed = JSON.parse(resultOutput);
+		if (parsed?.needsApproval && parsed?.proposedChange) {
+			return parsed.proposedChange as ProposedFileChange;
+		}
+	} catch {
+		// Not JSON — tool returned a simple string
+	}
+	return undefined;
+}
+
+interface InputController {
+	close(): void;
+	showPrompt(): void;
+}
+
+/**
+ * Open a VS Code diff window for the proposed change.
+ * Writes original + proposed content to temp files and launches `code --diff`.
+ */
+async function openVsCodeDiff(change: ProposedFileChange): Promise<void> {
+	try {
+		const { exec } = await import('node:child_process');
+		const { promisify } = await import('node:util');
+		const { mkdtemp, writeFile } = await import('node:fs/promises');
+		const { basename } = await import('node:path');
+		const { tmpdir } = await import('node:os');
+
+		const execAsync = promisify(exec);
+
+		const originalPath = change.path;
+		const tmpDir = await mkdtemp(tmpdir() + '/agent-termo-diff-');
+		const tmpFile = tmpDir + '/' + basename(originalPath);
+
+		await writeFile(tmpFile, change.proposedContent, 'utf-8');
+
+		// Write original content to a temp file for diff display
+		if (!change.isNewFile && change.originalContent.length > 0) {
+			const originalTmp = tmpDir + '/original-' + basename(originalPath);
+			await writeFile(originalTmp, change.originalContent, 'utf-8');
+			execAsync(`code --diff "${originalTmp}" "${tmpFile}" --wait`).catch(() => {
+				// VS Code not available or user closed — continue silently
+			});
+		} else {
+			// New file: no original to diff against
+			execAsync(`code "${tmpFile}" --wait`).catch(() => {
+				// Silently fall back
+			});
+		}
+	} catch {
+		// Silently fall back to terminal diff view
+	}
+}
+
+async function executeToolWithReview(
+	toolName: string,
+	args: Record<string, unknown>,
+	projectRoot: string,
+	input: InputController,
+): Promise<{ toolResult: { success: boolean; output?: string; error?: string }; change?: ProposedFileChange; applied: boolean }> {
+	console.log('');
+	printToolCall(toolName, args);
+	startSpinner('Running ' + toolName);
+	const toolResult = await executeTool(toolName, args, projectRoot);
+	stopSpinner(toolResult.success);
+
+	const proposedChange = extractProposedChange(toolName, toolResult.output ?? '');
+
+	if (proposedChange) {
+		// Pause REPL input to prevent stale listeners from interfering with promptAcceptReject
+		input.close();
+
+		// Show terminal diff viewer
+		printToolResult(toolName, { success: toolResult.success, output: toolResult.output, error: toolResult.error }, { needsApproval: true, proposedChange });
+
+		// Also open VS Code diff window (non-blocking, fire-and-forget)
+		openVsCodeDiff(proposedChange);
+
+		const decision = await promptAcceptReject('Accept this change?');
+
+		// Restore input for next REPL iteration
+		input.showPrompt();
+
+		if (decision === 'accept') {
+			startSpinner('Writing to disk');
+			const applyResult = await applyFileChange(proposedChange, projectRoot);
+			stopSpinner(applyResult.success);
+			if (applyResult.success) {
+				printSuccess(applyResult.output ?? 'Change applied');
+				return { toolResult: applyResult, change: proposedChange, applied: true };
+			} else {
+				printError(applyResult.error ?? 'Failed to apply change');
+				return { toolResult: applyResult, change: proposedChange, applied: false };
+			}
+		} else {
+			printInfo('Change rejected — file was not modified');
+			return { toolResult, change: proposedChange, applied: false };
+		}
+	}
+
+	printToolResult(toolName, toolResult);
+	return { toolResult, applied: false };
 }
 
 export async function runRepl(projectRoot?: string): Promise<void> {
-  projectRoot = resolveProjectRoot(projectRoot);
+	projectRoot = resolveProjectRoot(projectRoot);
 
-  const memory = await loadMemory(projectRoot);
-  const nimClient = new NimClient(projectRoot);
-  const systemPrompt = buildSystemPrompt(memory, '', projectRoot);
+	const memory = await loadMemory(projectRoot);
+	const nimClient = new NimClient(projectRoot);
+	const systemPrompt = buildSystemPrompt(memory, '', projectRoot);
 
-  const session = { id: crypto.randomUUID(), projectRoot, startedAt: new Date() };
+	const session = { id: crypto.randomUUID(), projectRoot, startedAt: new Date() };
 
-  const conversation: ConversationMessage[] = [
-    {
-      id: crypto.randomUUID(),
-      role: 'system',
-      content: systemPrompt,
-      timestamp: new Date(),
-    },
-  ];
+	const conversation: ConversationMessage[] = [
+		{
+			id: crypto.randomUUID(),
+			role: 'system',
+			content: systemPrompt,
+			timestamp: new Date(),
+		},
+	];
 
-  printWelcome(projectRoot);
-  console.log('Model: ' + nimClient.getModel());
-  logAgentTermoTimeline('Agent-Termo session started. Model: ' + nimClient.getModel());
-  logToTimeline(projectRoot, 'Agent-Termo session started. Model: ' + nimClient.getModel());
-  logAgentTermoTimeline('Commands: /help /clear /memory /timeline /model /agents /history');
-  logToTimeline(projectRoot, 'Commands: /help /clear /memory /timeline /model /agents /history');
+	printWelcome(projectRoot);
+	console.log('Model: ' + nimClient.getModel());
+	logAgentTermoTimeline('Agent-Termo session started. Model: ' + nimClient.getModel());
+	logToTimeline(projectRoot, 'Agent-Termo session started. Model: ' + nimClient.getModel());
+	logAgentTermoTimeline('Commands: /help /clear /memory /timeline /model /agents /history');
+	logToTimeline(projectRoot, 'Commands: /help /clear /memory /timeline /model /agents /history');
 
-  const input = createInput();
+	const input = createInput();
 
-  const cleanup = () => {
-    input.close();
-    process.stdout.write('\n');
-    console.log(
-      'Session complete. ' +
-      Math.round((Date.now() - session.startedAt.getTime()) / 60000) +
-      ' minutes.',
-    );
-    process.exit(0);
-  };
-  process.on('SIGINT', cleanup);
+	const cleanup = () => {
+		input.close();
+		process.stdout.write('\n');
+		console.log(
+			'Session complete. ' +
+			Math.round((Date.now() - session.startedAt.getTime()) / 60000) +
+			' minutes.',
+		);
+		process.exit(0);
+	};
+	process.on('SIGINT', cleanup);
 
-  mainLoop: while (true) {
-    try {
-      const userInput = await input.question('');
-      if (!userInput) continue;
-      if (userInput === 'exit' || userInput === 'quit') {
-        cleanup();
-        break;
-      }
+	mainLoop: while (true) {
+		try {
+			const userInput = await input.question('');
+			if (!userInput) continue;
+			if (userInput === 'exit' || userInput === 'quit') {
+				cleanup();
+				break;
+			}
 
-      // ---- Slash commands ----
-      if (userInput.startsWith('/')) {
-        const cmd = userInput.toLowerCase().trim();
+			if (userInput.startsWith('/')) {
+				const cmd = userInput.toLowerCase().trim();
 
-        if (cmd === '/help' || cmd === '/') {
-          printHelp();
-          continue mainLoop;
-        }
-        if (cmd === '/clear' || cmd === '/cls') {
-          conversation.length = 1;
-          clearScreen();
-          printWelcome(projectRoot);
-          printSuccess('Conversation cleared.');
-          continue mainLoop;
-        }
-        if (cmd === '/memory') {
-          await printMemoryFile();
-          continue mainLoop;
-        }
-        if (cmd === '/timeline' || cmd === '/tl') {
-          await printTimelineFile();
-          continue mainLoop;
-        }
-        if (cmd === '/model') {
-          printInfo('Current model: ' + nimClient.getModel());
-          continue mainLoop;
-        }
-        if (cmd === '/agents') {
-          const agents = loadAllAgents(process.env.AGENT_TERMO_DIR || '.claude');
-          printAgentsList(agents);
-          continue mainLoop;
-        }
-        if (cmd === '/history' || cmd === '/hist') {
-          printInfo('Conversation (excluding system): ' + (conversation.length - 1) + ' messages');
-          continue mainLoop;
-        }
-        if (cmd === '/exit' || cmd === '/quit') {
-          cleanup();
-          break;
-        }
+				if (cmd === '/help' || cmd === '/') {
+					printHelp();
+					continue mainLoop;
+				}
+				if (cmd === '/clear' || cmd === '/cls') {
+					conversation.length = 1;
+					clearScreen();
+					printWelcome(projectRoot);
+					printSuccess('Conversation cleared.');
+					continue mainLoop;
+				}
+				if (cmd === '/memory') {
+					await printMemoryFile();
+					continue mainLoop;
+				}
+				if (cmd === '/timeline' || cmd === '/tl') {
+					await printTimelineFile();
+					continue mainLoop;
+				}
+				if (cmd === '/model') {
+					printInfo('Current model: ' + nimClient.getModel());
+					continue mainLoop;
+				}
+				if (cmd === '/agents') {
+					const agents = loadAllAgents(process.env.AGENT_TERMO_DIR || '.claude');
+					printAgentsList(agents);
+					continue mainLoop;
+				}
+				if (cmd === '/history' || cmd === '/hist') {
+					printInfo('Conversation (excluding system): ' + (conversation.length - 1) + ' messages');
+					continue mainLoop;
+				}
+				if (cmd === '/exit' || cmd === '/quit') {
+					cleanup();
+					break;
+				}
 
-        console.log('');
-        printHelp();
-        console.log('Unknown command: ' + cmd);
-        console.log('Type /help for available commands.\n');
-        continue mainLoop;
-      }
+				console.log('');
+				printHelp();
+				console.log('Unknown command: ' + cmd);
+				console.log('Type /help for available commands.\n');
+				continue mainLoop;
+			}
 
-      const userMsg: ConversationMessage = {
-        id: crypto.randomUUID(),
-        role: 'user',
-        content: userInput,
-        timestamp: new Date(),
-      };
-      conversation.push(userMsg);
-      printUserMessage(userMsg);
+			const userMsg: ConversationMessage = {
+				id: crypto.randomUUID(),
+				role: 'user',
+				content: userInput,
+				timestamp: new Date(),
+			};
+			conversation.push(userMsg);
+			printUserMessage(userMsg);
 
-      // Ensure cursor is on a fresh line before starting LLM interaction.
-      moveToFreshLine();
+			moveToFreshLine();
 
-      const useTools = mightNeedTools(userInput);
-      const tools = useTools ? nimClient.buildToolDefs(TOOL_DEFINITIONS) : undefined;
+			const useTools = mightNeedTools(userInput);
+			const tools = useTools ? nimClient.buildToolDefs(TOOL_DEFINITIONS) : undefined;
 
-      let fullText = '';
-      let toolCalls: ToolCall[] = [];
-      let streamingDeliveredToTerminal = false;
+			let fullText = '';
+			let toolCalls: ToolCall[] = [];
+			let streamingDeliveredToTerminal = false;
 
-      if (useTools) {
-        startSpinner('Working...');
-        try {
-          const result = await nimClient.complete(conversation, tools);
-          fullText = result.content;
-          toolCalls = dedup(result.toolCalls);
-          process.stdout.write('\n');
-          stopSpinner(true);
-        } catch (err) {
-          process.stdout.write('\n');
-          stopSpinner(false);
-          printError('LLM error: ' + (err instanceof Error ? err.message : String(err)));
-          conversation.pop();
-          continue mainLoop;
-        }
-      } else {
-        startSpinner('Thinking...');
-        try {
-          const gen = nimClient.streamComplete(conversation, undefined, (text: string) => {
-            process.stdout.write(text);
-            streamingDeliveredToTerminal = true;
-          });
-          let receivedContent = false;
-          for await (const result of gen) {
-            fullText = result.content;
-            receivedContent = true;
-          }
-          if (receivedContent) {
-            process.stdout.write('\n');
-            stopSpinner(true);
-          } else {
-            process.stdout.write('\n');
-            stopSpinner(undefined);
-          }
-        } catch {
-          process.stdout.write('\n');
-          stopSpinner(false);
-          startSpinner('Retrying...');
-          try {
-            const result = await nimClient.complete(conversation, undefined);
-            process.stdout.write('\n');
-            stopSpinner(true);
-            fullText = result.content || fullText;
-          } catch (err2) {
-            process.stdout.write('\n');
-            stopSpinner(false);
-            printError('LLM error: ' + (err2 instanceof Error ? err2.message : String(err2)));
-            conversation.pop();
-            continue mainLoop;
-          }
-        }
-      }
+			if (useTools) {
+				startSpinner('Working...');
+				try {
+					const result = await nimClient.complete(conversation, tools);
+					fullText = result.content;
+					toolCalls = dedup(result.toolCalls);
+					process.stdout.write('\n');
+					stopSpinner(true);
+				} catch (err) {
+					process.stdout.write('\n');
+					stopSpinner(false);
+					printError('LLM error: ' + (err instanceof Error ? err.message : String(err)));
+					conversation.pop();
+					continue mainLoop;
+				}
+			} else {
+				startSpinner('Thinking...');
+				try {
+					const gen = nimClient.streamComplete(conversation, undefined, (text: string) => {
+						process.stdout.write(text);
+						streamingDeliveredToTerminal = true;
+					});
+					let receivedContent = false;
+					for await (const result of gen) {
+						fullText = result.content;
+						receivedContent = true;
+					}
+					if (receivedContent) {
+						process.stdout.write('\n');
+						stopSpinner(true);
+					} else {
+						process.stdout.write('\n');
+						stopSpinner(undefined);
+					}
+				} catch {
+					process.stdout.write('\n');
+					stopSpinner(false);
+					startSpinner('Retrying...');
+					try {
+						const result = await nimClient.complete(conversation, undefined);
+						process.stdout.write('\n');
+						stopSpinner(true);
+						fullText = result.content || fullText;
+					} catch (err2) {
+						process.stdout.write('\n');
+						stopSpinner(false);
+						printError('LLM error: ' + (err2 instanceof Error ? err2.message : String(err2)));
+						conversation.pop();
+						continue mainLoop;
+					}
+				}
+			}
 
-      const cleanText = (fullText ?? '').trim().replace(/^null$/, '').trim();
-      if (cleanText) {
-        conversation.push({
-          id: crypto.randomUUID(),
-          role: 'assistant',
-          content: cleanText,
-          timestamp: new Date(),
-        });
-      }
+			const cleanText = (fullText ?? '').trim().replace(/^null$/, '').trim();
+			if (cleanText) {
+				conversation.push({
+					id: crypto.randomUUID(),
+					role: 'assistant',
+					content: cleanText,
+					timestamp: new Date(),
+				});
+			}
 
-      toolCalls = dedup(toolCalls);
-      for (const tc of toolCalls) {
-        printToolCall(tc.name, tc.arguments);
-        startSpinner('Running ' + tc.name);
-        const result = await executeTool(tc.name, tc.arguments, projectRoot as string);
-        stopSpinner(result.success);
-        printToolResult(tc.name, result);
-        conversation.push({
-          id: crypto.randomUUID(),
-          role: 'tool',
-          content: (result.success ? 'Result: ' : 'Error: ') + (result.success ? result.output : result.error),
-          timestamp: new Date(),
-        });
-        const toolStatus = result.success
-          ? 'OK'
-          : ('ERR: ' + (result.error ? result.error.slice(0, 80) : 'unknown error'));
-        logToTimeline(projectRoot, 'Tool: ' + tc.name + ' -- ' + toolStatus);
-        logAgentTermoTimeline('Tool: ' + tc.name + ' -- ' + toolStatus);
-      }
+			toolCalls = dedup(toolCalls);
+			for (const tc of toolCalls) {
+				const execution = await executeToolWithReview(tc.name, tc.arguments, projectRoot as string, input);
 
-      // Only print formatted assistant message if streaming did NOT already
-      // deliver the content to the terminal.
-      if (toolCalls.length === 0 && cleanText && cleanText !== 'null' && !streamingDeliveredToTerminal) {
-        printAssistantMessage(cleanText);
-      }
+				const toolResult = execution.toolResult;
+				const statusText = toolResult.success ? 'OK' : ('ERR: ' + (toolResult.error ? toolResult.error.slice(0, 80) : 'unknown error'));
+				const changeNote = execution.change ? (execution.applied ? ' (applied)' : ' (rejected)') : '';
 
-      if (conversation.length > 42) {
-        conversation.splice(1, conversation.length - 42);
-      }
-    } catch (err) {
-      stopSpinner(false);
-      printError('Session error: ' + (err instanceof Error ? err.message : String(err)));
-    }
-  }
+				conversation.push({
+					id: crypto.randomUUID(),
+					role: 'tool',
+					content: (toolResult.success ? 'Result: ' : 'Error: ') + (toolResult.success ? (toolResult.output ?? '') : toolResult.error) + changeNote,
+					timestamp: new Date(),
+				});
+
+				logToTimeline(projectRoot, 'Tool: ' + tc.name + ' -- ' + statusText + changeNote);
+				logAgentTermoTimeline('Tool: ' + tc.name + ' -- ' + statusText + changeNote);
+			}
+
+			if (toolCalls.length === 0 && cleanText && cleanText !== 'null' && !streamingDeliveredToTerminal) {
+				printAssistantMessage(cleanText);
+			}
+
+			if (conversation.length > 42) {
+				conversation.splice(1, conversation.length - 42);
+			}
+		} catch (err) {
+			stopSpinner(false);
+			printError('Session error: ' + (err instanceof Error ? err.message : String(err)));
+		}
+	}
 }
