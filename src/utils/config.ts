@@ -44,6 +44,14 @@ loadEnvFile(resolve('.env')); // also try cwd
 
 export { PROJECT_ROOT };
 
+export function getAgentTermoDir(): string {
+  const envDir = process.env.AGENT_TERMO_DIR;
+  if (envDir) {
+    return resolve(process.env.HOME || process.env.USERPROFILE || '.', envDir);
+  }
+  return resolve(process.env.HOME || process.env.USERPROFILE || '.', '.agent-termo');
+}
+
 export function getConfig(projectRoot: string): AppConfig {
   loadEnvFile(resolve(projectRoot, '.env'));
 
