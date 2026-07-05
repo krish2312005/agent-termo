@@ -14,48 +14,48 @@ const c: typeof Chalk = Chalk as unknown as typeof Chalk;
 
 export function printWelcome(projectRoot: string): void {
 console.log('');
-console.log(c.magenta.bold('  AGENT-TERMO'));
-console.log(c.dim('  AI-Powered Terminal Coding Agent'));
+console.log(c.magenta.bold(' AGENT-TERMO'));
+console.log(c.dim(' AI-Powered Terminal Coding Agent'));
 console.log('');
-console.log(c.dim('  Model: ') + c.cyan.bold('Nvidia NIM (OpenAI-compatible)'));
-console.log(c.dim('  Project: ') + c.white(projectRoot));
+console.log(c.dim(' Model: ') + c.cyan.bold('Nvidia NIM (OpenAI-compatible)'));
+console.log(c.dim(' Project: ') + c.white(projectRoot));
 console.log('');
-console.log(c.dim('  Commands:'));
+console.log(c.dim(' Commands:'));
 console.log(
-  '    ' +
-  c.cyan('/help') +
-  c.dim(' — show all commands') +
-  '\n' +
-  '    ' +
-  c.cyan('/clear') +
-  c.dim(' — clear conversation & screen') +
-  '\n' +
-  '    ' +
-  c.cyan('/memory') +
-  c.dim(' — view Agent-Termo memory') +
-  '\n' +
-  '    ' +
-  c.cyan('/timeline') +
-  c.dim(' — view recent activity') +
-  '\n' +
-  '    ' +
-  c.cyan('/model') +
-  c.dim(' — show current AI model') +
-  '\n' +
-  '    ' +
-  c.cyan('/agents') +
-  c.dim(' — list all agents') +
-  '\n' +
-  '    ' +
-  c.cyan('/history') +
-  c.dim(' — show message count') +
-  '\n' +
-  '    ' +
-  c.cyan('/exit') +
-  c.dim(' — quit'),
+' ' +
+c.cyan('/help') +
+c.dim(' — show all commands') +
+'\n' +
+' ' +
+c.cyan('/clear') +
+c.dim(' — clear conversation & screen') +
+'\n' +
+' ' +
+c.cyan('/memory') +
+c.dim(' — view Agent-Termo memory') +
+'\n' +
+' ' +
+c.cyan('/timeline') +
+c.dim(' — view recent activity') +
+'\n' +
+' ' +
+c.cyan('/model') +
+c.dim(' — show current AI model') +
+'\n' +
+' ' +
+c.cyan('/agents') +
+c.dim(' — list all agents') +
+'\n' +
+' ' +
+c.cyan('/history') +
+c.dim(' — show message count') +
+'\n' +
+' ' +
+c.cyan('/exit') +
+c.dim(' — quit'),
 );
 console.log('');
-console.log(c.dim('  ────────────────────────────────────────────────────────────────'));
+console.log(c.dim(' ────────────────────────────────────────────────────────────────'));
 console.log('');
 }
 
@@ -182,14 +182,14 @@ process.stdout.write('\n');
 export function printHelp(): void {
 process.stdout.write('\n' + c.bold('Agent-Termo ') + c.dim('— available commands') + '\n');
 process.stdout.write(c.dim('─'.repeat(80)) + '\n');
-console.log('  ' + c.cyan('/help')   + c.dim('    show all commands'));
-console.log('  ' + c.cyan('/clear')  + c.dim('    clear conversation & screen'));
-console.log('  ' + c.cyan('/memory')  + c.dim('    view Agent-Termo memory'));
-console.log('  ' + c.cyan('/timeline')+ c.dim('   view recent activity'));
-console.log('  ' + c.cyan('/model')   + c.dim('    show current AI model'));
-console.log('  ' + c.cyan('/agents')  + c.dim('    list all agents'));
-console.log('  ' + c.cyan('/history') + c.dim('   show message count'));
-console.log('  ' + c.cyan('/exit')    + c.dim('    quit'));
+console.log(' ' + c.cyan('/help') + c.dim(' show all commands'));
+console.log(' ' + c.cyan('/clear') + c.dim(' clear conversation & screen'));
+console.log(' ' + c.cyan('/memory') + c.dim(' view Agent-Termo memory'));
+console.log(' ' + c.cyan('/timeline')+ c.dim(' view recent activity'));
+console.log(' ' + c.cyan('/model') + c.dim(' show current AI model'));
+console.log(' ' + c.cyan('/agents') + c.dim(' list all agents'));
+console.log(' ' + c.cyan('/history') + c.dim(' show message count'));
+console.log(' ' + c.cyan('/exit') + c.dim(' quit'));
 console.log('');
 }
 
@@ -198,7 +198,7 @@ process.stdout.write('\n' + c.bold('Available Agents:') + '\n');
 process.stdout.write(c.dim('─'.repeat(80)) + '\n');
 for (const a of agents) {
 const short = a.description.length > 40 ? a.description.slice(0, 40) + '...' : a.description;
-process.stdout.write('  ' + c.cyan(a.name.padEnd(28)) + ' ' + c.dim(short) + '\n');
+process.stdout.write(' ' + c.cyan(a.name.padEnd(28)) + ' ' + c.dim(short) + '\n');
 }
 process.stdout.write(c.dim('─'.repeat(80)) + '\n\n');
 }
@@ -271,8 +271,8 @@ boundOnData = null;
 cursorAnchorValid = false;
 };
 
-// Ensure a fresh line, then save cursor anchor at the prompt row
-process.stdout.write("\n");
+// Ensure a fresh line with CRLF (universal), then save cursor anchor at the prompt row
+process.stdout.write("\r\n");
 process.stdout.write(inputPrompt);
 saveCursorPosition();
 process.stdout.write("\x1b[?25h");
@@ -344,6 +344,7 @@ process.stdout.write("\r" + inputPrompt + state.line);
 }
 return;
 }
+
 if (keyName === "right") {
 if (state.cursor < state.line.length) {
 state.cursor++;
@@ -370,7 +371,7 @@ close(): void {
 if (closeFn) closeFn();
 },
 showPrompt(): void {
-process.stdout.write("\n");
+process.stdout.write("\r\n");
 process.stdout.write(c.magenta("> "));
 saveCursorPosition();
 },
