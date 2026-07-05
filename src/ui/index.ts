@@ -223,6 +223,8 @@ constructor() { this.history = []; }
 // =============================================================================
 // Simple text-based command suggestions
 // No dropdown, no cursor tricks — just clean text lines
+// Using DECSC (\x1b[s) / DECRC (\x1b[u) save/restore pair instead of
+// CUU arithmetic (\x1b[NA) which drifts when ANSI color codes are present.
 // =============================================================================
 
 export function createInput(): {
@@ -233,11 +235,10 @@ showPrompt: () => void;
 let closeFn: (() => void) | null = null;
 let boundOnData: ((key: string) => void) | null = null;
 
-// --- Cursor-anchor state (visible to all three object methods) ---
-// After any multi-line command output the terminal cursor may be deep in
-// previous text.  saveCursorPosition writes \x1b[s to stamp the prompt row;
-// restoreCursorPosition writes \x1b[u before every redraw so \r always
-// targets the correct line.
+// Cursor-anchor state: after multi-line command output the terminal cursor
+// can be on any row. saveCursorPosition() writes \x1b[s to stamp the prompt
+// row; restoreCursorPosition() writes \x1b[u before every redraw so \r
+// always targets the correct line.
 let cursorAnchorValid = false;
 
 function saveCursorPosition(): void {
@@ -248,7 +249,6 @@ cursorAnchorValid = true;
 function restoreCursorPosition(): void {
 if (cursorAnchorValid) process.stdout.write("\x1b[u");
 }
-// --- end cursor-anchor helpers ---
 
 return {
 async question(_prompt: string): Promise<string> {
@@ -277,6 +277,7 @@ if (boundOnData) {
 process.stdin.removeListener("data", boundOnData);
 boundOnData = null;
 }
+cursorAnchorValid = false;
 };
 
 // Simple text suggestions: show matching commands as plain text below the input line
@@ -285,17 +286,21 @@ let suggestionLines: number = 0;
 function showSuggestions(items: Array<{ cmd: string; description: string }>): void {
 clearSuggestions(false);
 suggestionLines = items.length;
+// Save cursor at prompt position before writing suggestion lines (DECSC)
+process.stdout.write("\x1b[s");
 for (const item of items) {
 process.stdout.write(" " + c.cyan(item.cmd) + " " + c.dim(item.description) + "\n");
 }
-// Move cursor back UP to the input line
-process.stdout.write("\x1b[" + items.length + "A");
+// Restore cursor to the prompt row (immune to ANSI-width drift)
+process.stdout.write("\x1b[u");
 // Redraw input
 process.stdout.write("\x1b[2K\r" + inputPrompt + state.line);
 }
 
 function clearSuggestions(redraw = true): void {
 if (suggestionLines === 0) return;
+// Save anchor at current (prompt) position before stepping down
+process.stdout.write("\x1b[s");
 // Move cursor DOWN to where the suggestions are
 process.stdout.write("\x1b[" + suggestionLines + "B");
 // Clear each suggestion line
@@ -303,8 +308,8 @@ for (let i = 0; i < suggestionLines; i++) {
 process.stdout.write("\x1b[2K");
 if (i < suggestionLines - 1) process.stdout.write("\n");
 }
-// Move cursor BACK UP to input line
-process.stdout.write("\x1b[" + suggestionLines + "A");
+// Restore cursor back to the prompt position (immune to ANSI-width drift)
+process.stdout.write("\x1b[u");
 suggestionLines = 0;
 if (redraw) {
 process.stdout.write("\x1b[2K\r" + inputPrompt + state.line);
@@ -432,9 +437,7 @@ close(): void {
 if (closeFn) closeFn();
 },
 showPrompt(): void {
-process.stdout.write("\n");
 process.stdout.write(c.magenta("> "));
-saveCursorPosition();
 },
 };
 }
