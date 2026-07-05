@@ -230,6 +230,7 @@ export function createInput(): {
     showPrompt: () => void;
 } {
     let closeFn: (() => void) | null = null;
+    let boundOnData: ((key: string) => void) | null = null; // stable ref for removeListener
     const DD = 3; // fixed 3-row dropdown zone
 
     return {
@@ -238,6 +239,7 @@ export function createInput(): {
                 process.stdin.setRawMode(true);
                 process.stdin.resume();
                 process.stdin.setEncoding("utf8");
+                process.stdin.setMaxListeners(20);
 
                 const state = new InputState();
                 const inputPrompt = c.magenta("> ");
@@ -255,15 +257,17 @@ export function createInput(): {
                     process.stdin.setRawMode(false);
                     process.stdin.pause();
                     finalize("");
-                    try { process.stdin.removeListener("data", onData); } catch {}
+                    if (boundOnData) {
+                        process.stdin.removeListener("data", boundOnData);
+                        boundOnData = null;
+                    }
                 };
 
-                // Draw the input block (separator + blank + 3-dd + input)
+                // Draw the input block (blank + DD rows)
                 process.stdout.write("\n");
-                process.stdout.write(c.dim("-".repeat(80)) + "\n");
-                for (let i = 0; i < 4; i++) {
+                                for (let i = 0; i < DD; i++) {
                     process.stdout.write("\x1b[2K");
-                    if (i < 3) process.stdout.write("\n");
+                    if (i < DD - 1) process.stdout.write("\n");
                 }
                 process.stdout.write("\r" + inputPrompt);
                 process.stdout.write("\x1b[?25h");
@@ -453,7 +457,8 @@ export function createInput(): {
                     }
                 }
 
-                process.stdin.on("data", onData);
+                boundOnData = (key: string) => onData(key);
+                process.stdin.on("data", boundOnData);
             });
         },
         close(): void {
