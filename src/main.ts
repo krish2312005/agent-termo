@@ -100,7 +100,7 @@ async function openVsCodeDiff(change: ProposedFileChange): Promise<void> {
 				// VS Code not available or user closed — continue silently
 			});
 		} else {
-			// New file: no original to diff against
+			// New file: just open the proposed file
 			execAsync(`code "${tmpFile}" --wait`).catch(() => {
 				// Silently fall back
 			});
@@ -158,6 +158,73 @@ async function executeToolWithReview(
 
 	printToolResult(toolName, toolResult);
 	return { toolResult, applied: false };
+}
+
+/**
+ * Run the tool-call loop: execute tools, feed results back to the LLM,
+ * and repeat until the LLM stops issuing tool calls.
+ */
+async function runToolLoop(
+	conversation: ConversationMessage[],
+	projectRoot: string,
+	initialToolCalls: ToolCall[],
+	input: InputController,
+	nimClient: NimClient,
+): Promise<string> {
+	let toolCalls = initialToolCalls;
+	let finalText = '';
+
+	// Continue looping while the LLM keeps issuing tool calls
+	while (toolCalls.length > 0) {
+		// Execute all tool calls from this turn
+		for (const tc of toolCalls) {
+			const execution = await executeToolWithReview(tc.name, tc.arguments, projectRoot, input);
+
+			const toolResult = execution.toolResult;
+			const statusText = toolResult.success ? 'OK' : ('ERR: ' + (toolResult.error ? toolResult.error.slice(0, 80) : 'unknown error'));
+			const changeNote = execution.change ? (execution.applied ? ' (applied)' : ' (rejected)') : '';
+
+			conversation.push({
+				id: crypto.randomUUID(),
+				role: 'tool',
+				content: (toolResult.success ? 'Result: ' : 'Error: ') + (toolResult.success ? (toolResult.output ?? '') : toolResult.error) + changeNote,
+				timestamp: new Date(),
+			});
+
+			logToTimeline(projectRoot, 'Tool: ' + tc.name + ' -- ' + statusText + changeNote);
+			logAgentTermoTimeline('Tool: ' + tc.name + ' -- ' + statusText + changeNote);
+		}
+
+		// Send conversation (including tool results) back to the LLM
+		// The LLM will either produce text or more tool calls
+		moveToFreshLine();
+		startSpinner('Working...');
+		try {
+			const tools = nimClient.buildToolDefs(TOOL_DEFINITIONS);
+			const result = await nimClient.complete(conversation, tools);
+			finalText = result.content;
+			toolCalls = dedup(result.toolCalls);
+			process.stdout.write('\n');
+			stopSpinner(true);
+
+			// If the LLM produced text alongside tool calls, save it
+			if (finalText && finalText.trim() && finalText.trim() !== 'null') {
+				conversation.push({
+					id: crypto.randomUUID(),
+					role: 'assistant',
+					content: finalText.trim(),
+					timestamp: new Date(),
+				});
+			}
+		} catch (err) {
+			process.stdout.write('\n');
+			stopSpinner(false);
+			printError('LLM error: ' + (err instanceof Error ? err.message : String(err)));
+			break;
+		}
+	}
+
+	return finalText;
 }
 
 export async function runRepl(projectRoot?: string): Promise<void> {
@@ -269,18 +336,32 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 			const useTools = mightNeedTools(userInput);
 			const tools = useTools ? nimClient.buildToolDefs(TOOL_DEFINITIONS) : undefined;
 
-			let fullText = '';
-			let toolCalls: ToolCall[] = [];
-			let streamingDeliveredToTerminal = false;
-
 			if (useTools) {
 				startSpinner('Working...');
 				try {
 					const result = await nimClient.complete(conversation, tools);
-					fullText = result.content;
-					toolCalls = dedup(result.toolCalls);
-					process.stdout.write('\n');
+					const fullText = result.content;
+					let toolCalls = dedup(result.toolCalls);
 					stopSpinner(true);
+
+					if (toolCalls.length === 0) {
+						// No tool calls — just display the text response
+						const cleanText = (fullText ?? '').trim().replace(/^null$/, '').trim();
+						if (cleanText) {
+							conversation.push({
+								id: crypto.randomUUID(),
+								role: 'assistant',
+								content: cleanText,
+								timestamp: new Date(),
+							});
+						}
+					} else {
+						// Run the tool-call loop: execute tools, feed results back, repeat
+						const finalText = await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient);
+						if (finalText && finalText.trim() && finalText.trim() !== 'null') {
+							printAssistantMessage(finalText.trim());
+						}
+					}
 				} catch (err) {
 					process.stdout.write('\n');
 					stopSpinner(false);
@@ -289,16 +370,17 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					continue mainLoop;
 				}
 			} else {
+				// No tools — stream the response
 				startSpinner('Thinking...');
 				try {
 					const gen = nimClient.streamComplete(conversation, undefined, (text: string) => {
 						process.stdout.write(text);
-						streamingDeliveredToTerminal = true;
 					});
 					let receivedContent = false;
 					for await (const result of gen) {
-						fullText = result.content;
-						receivedContent = true;
+						if (result.content && result.content.trim()) {
+							receivedContent = true;
+						}
 					}
 					if (receivedContent) {
 						process.stdout.write('\n');
@@ -315,7 +397,15 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						const result = await nimClient.complete(conversation, undefined);
 						process.stdout.write('\n');
 						stopSpinner(true);
-						fullText = result.content || fullText;
+						const cleanText = (result.content ?? '').trim();
+						if (cleanText) {
+							conversation.push({
+								id: crypto.randomUUID(),
+								role: 'assistant',
+								content: cleanText,
+								timestamp: new Date(),
+							});
+						}
 					} catch (err2) {
 						process.stdout.write('\n');
 						stopSpinner(false);
@@ -324,39 +414,6 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						continue mainLoop;
 					}
 				}
-			}
-
-			const cleanText = (fullText ?? '').trim().replace(/^null$/, '').trim();
-			if (cleanText) {
-				conversation.push({
-					id: crypto.randomUUID(),
-					role: 'assistant',
-					content: cleanText,
-					timestamp: new Date(),
-				});
-			}
-
-			toolCalls = dedup(toolCalls);
-			for (const tc of toolCalls) {
-				const execution = await executeToolWithReview(tc.name, tc.arguments, projectRoot as string, input);
-
-				const toolResult = execution.toolResult;
-				const statusText = toolResult.success ? 'OK' : ('ERR: ' + (toolResult.error ? toolResult.error.slice(0, 80) : 'unknown error'));
-				const changeNote = execution.change ? (execution.applied ? ' (applied)' : ' (rejected)') : '';
-
-				conversation.push({
-					id: crypto.randomUUID(),
-					role: 'tool',
-					content: (toolResult.success ? 'Result: ' : 'Error: ') + (toolResult.success ? (toolResult.output ?? '') : toolResult.error) + changeNote,
-					timestamp: new Date(),
-				});
-
-				logToTimeline(projectRoot, 'Tool: ' + tc.name + ' -- ' + statusText + changeNote);
-				logAgentTermoTimeline('Tool: ' + tc.name + ' -- ' + statusText + changeNote);
-			}
-
-			if (toolCalls.length === 0 && cleanText && cleanText !== 'null' && !streamingDeliveredToTerminal) {
-				printAssistantMessage(cleanText);
 			}
 
 			if (conversation.length > 42) {
