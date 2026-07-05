@@ -225,234 +225,246 @@ class InputState {
 // =============================================================================
 
 export function createInput(): {
- question: (prompt: string) => Promise<string>;
- close: () => void;
- showPrompt: () => void;
+    question: (prompt: string) => Promise<string>;
+    close: () => void;
+    showPrompt: () => void;
 } {
- let closeFn: (() => void) | null = null;
+    let closeFn: (() => void) | null = null;
+    const DD = 3; // fixed 3-row dropdown zone
 
- const DDH = 9; // dropdown max visible rows
+    return {
+        async question(_prompt: string): Promise<string> {
+            return new Promise<string>((resolve) => {
+                process.stdin.setRawMode(true);
+                process.stdin.resume();
+                process.stdin.setEncoding("utf8");
 
- return {
-   async question(_prompt: string): Promise<string> {
-     return new Promise<string>((resolve) => {
-       process.stdin.setRawMode(true);
-       process.stdin.resume();
-       process.stdin.setEncoding('utf8');
+                const state = new InputState();
+                const inputPrompt = c.magenta("> ");
 
-       const state = new InputState();
+                function finalize(l: string): void {
+                    if (l.trim()) {
+                        state.history.unshift(l);
+                        if (state.history.length > 50) state.history.pop();
+                    }
+                    state.histIdx = -1;
+                    state.ddVisible = false;
+                }
 
-       function finalize(l: string): void {
-         if (l.trim()) {
-           state.history.unshift(l);
-           if (state.history.length > 50) state.history.pop();
-         }
-         state.histIdx = -1;
-         process.stdin.setRawMode(false);
-         process.stdin.pause();
-       }
+                closeFn = (): void => {
+                    process.stdin.setRawMode(false);
+                    process.stdin.pause();
+                    finalize("");
+                    try { process.stdin.removeListener("data", onData); } catch {}
+                };
 
-       closeFn = (): void => {
-         process.stdin.setRawMode(false);
-         process.stdin.pause();
-         try { process.stdin.removeListener('data', onData); } catch {}
-         process.stdout.write('\n');
-       };
+                // Draw the input block (separator + blank + 3-dd + input)
+                process.stdout.write("\n");
+                process.stdout.write(c.dim("-".repeat(80)) + "\n");
+                for (let i = 0; i < 4; i++) {
+                    process.stdout.write("\x1b[2K");
+                    if (i < 3) process.stdout.write("\n");
+                }
+                process.stdout.write("\r" + inputPrompt);
+                process.stdout.write("\x1b[?25h");
 
-       // Show the input prompt (no leading newline — caller already printed a blank line)
-       process.stdout.write(c.magenta('> ') + '\x1b[?25h');
+                // Helpers (cursor on input row)
+                function clearDropdown(): void {
+                    process.stdout.write("\x1b[" + DD + "A");
+                    for (let i = 0; i < DD; i++) {
+                        process.stdout.write("\x1b[2K");
+                        if (i < DD - 1) process.stdout.write("\x1b[B");
+                    }
+                    process.stdout.write("\x1b[" + DD + "B");
+                    state.ddVisible = false;
+                }
 
-       function onData(key: string): void {
-         const keyName = getKeyName(key);
-         const items = filterCommands(state.line);
+                function renderDropdown(
+                    items: Array<{ cmd: string; description: string }>,
+                ): void {
+                    if (!state.ddVisible || items.length === 0) {
+                        clearDropdown();
+                        return;
+                    }
+                    const sel = Math.min(state.ddSelected, items.length - 1);
+                    const startIdx = Math.max(0, sel - 1);
+                    const visible = items.slice(startIdx, startIdx + DD);
+                    process.stdout.write("\x1b[" + DD + "A");
+                    for (let i = 0; i < DD; i++) {
+                        process.stdout.write("\x1b[2K");
+                        if (i < visible.length) {
+                            const item = visible[i]!;
+                            const active = (startIdx + i) === sel;
+                            if (active) {
+                                process.stdout.write(
+                                    c.bgWhite.black(" ") +
+                                    c.bgWhite.black(item.cmd) +
+                                    " " +
+                                    c.bgWhite.black(item.description)
+                                );
+                            } else {
+                                process.stdout.write(
+                                    " " + c.cyan(item.cmd) + " " + c.dim(item.description)
+                                );
+                            }
+                        }
+                        if (i < DD - 1) process.stdout.write("\x1b[B");
+                    }
+                    process.stdout.write("\x1b[" + DD + "B");
+                }
 
-         // ── Dropdown active ──────────────────────────────────
-         if (state.ddVisible) {
-           if (keyName === 'escape') {
-             // Dismiss dropdown: move cursor back down, clear line, redraw prompt
-             state.line = '';
-             state.cursor = 0;
-             state.ddVisible = false;
-             process.stdout.write('\x1b[' + DDH + 'B\x1b[2K\r' + c.magenta('> '));
-             return;
-           }
-           if (keyName === 'return' || keyName === 'enter') {
-             finalize(state.line);
-             if (items.length > 0) {
-               const sel = items[state.ddSelected]!;
-               const finalLine = sel.isExact ? sel.cmd : sel.cmd + ' ';
-               // Clear dropdown, write command on the same line as prompt
-               process.stdout.write('\x1b[' + Math.min(items.length, DDH - 1) + 'B\x1b[2K');
-               process.stdout.write('\r> ' + finalLine + '\n');
-               resolve(finalLine);
-             } else {
-               process.stdout.write('\x1b[' + Math.min(items.length, DDH - 1) + 'B\x1b[2K\r> ' + state.line + '\n');
-               resolve(state.line);
-             }
-             return;
-           }
-           if (keyName === 'up') {
-             state.ddSelected = Math.max(0, Math.min(items.length - 1, state.ddSelected - 1));
-             drawDropdown(items);
-             return;
-           }
-           if (keyName === 'down') {
-             state.ddSelected = Math.max(0, Math.min(items.length - 1, state.ddSelected + 1));
-             drawDropdown(items);
-             return;
-           }
-           if (keyName === 'tab') {
-             if (items.length > 0) {
-               const sel = items[state.ddSelected]!;
-               state.line = sel.cmd;
-               state.cursor = sel.cmd.length;
-               state.ddVisible = false;
-               const rows = Math.min(items.length, DDH - 1);
-               process.stdout.write('\x1b[' + rows + 'B\x1b[2K\r' + c.magenta('> ') + state.line);
-             }
-             return;
-           }
-         }
+                function redrawInput(): void {
+                    process.stdout.write("\x1b[2K\r" + inputPrompt + state.line);
+                    const cmds = filterCommands(state.line);
+                    if (cmds.length > 0) {
+                        state.ddVisible = true;
+                        state.ddSelected = Math.min(state.ddSelected, cmds.length - 1);
+                        renderDropdown(cmds);
+                    } else {
+                        state.ddVisible = false;
+                        clearDropdown();
+                    }
+                }
 
-         // ── Normal key handling ──────────────────────────────
-         if (keyName === 'ctrl+c') {
-           finalize(state.line);
-           process.stdout.write('\r' + c.magenta('> ') + state.line + '\n');
-           resolve(state.line);
-           process.stdin.setRawMode(false);
-           process.stdin.pause();
-           process.exit(0);
-           return;
-         }
+                function onData(key: string): void {
+                    const keyName = getKeyName(key);
 
-         if (keyName === 'escape') return; // stray ESC, ignore
+                    // Dropdown navigation
+                    if (state.ddVisible) {
+                        const items = filterCommands(state.line);
+                        if (keyName === "escape") {
+                            state.line = "";
+                            state.cursor = 0;
+                            state.ddVisible = false;
+                            redrawInput();
+                            return;
+                        }
+                        if (keyName === "return" || keyName === "enter") {
+                            finalize(state.line);
+                            state.ddVisible = false;
+                            clearDropdown();
+                            if (items.length > 0) {
+                                const sel = items[state.ddSelected]!;
+                                state.line = sel.isExact ? sel.cmd : sel.cmd + " ";
+                                state.cursor = state.line.length;
+                            }
+                            process.stdout.write("\r" + inputPrompt + state.line + "\n");
+                            resolve(state.line);
+                            return;
+                        }
+                        if (keyName === "up") {
+                            state.ddSelected = Math.max(0, state.ddSelected - 1);
+                            renderDropdown(items);
+                            return;
+                        }
+                        if (keyName === "down") {
+                            state.ddSelected = Math.min(items.length - 1, state.ddSelected + 1);
+                            renderDropdown(items);
+                            return;
+                        }
+                        if (keyName === "tab") {
+                            if (items.length > 0) {
+                                const sel = items[state.ddSelected]!;
+                                state.line = sel.cmd;
+                                state.cursor = sel.cmd.length;
+                                state.ddVisible = false;
+                                redrawInput();
+                            }
+                            return;
+                        }
+                    }
 
-         if (keyName === 'return' || keyName === 'enter') {
-           finalize(state.line);
-           process.stdout.write('\r> ' + state.line + '\n');
-           resolve(state.line);
-           return;
-         }
+                    // Control keys
+                    if (keyName === "ctrl+c") {
+                        finalize(state.line);
+                        state.ddVisible = false;
+                        clearDropdown();
+                        process.stdout.write("\r" + inputPrompt + state.line + "\n");
+                        resolve(state.line);
+                        process.stdin.setRawMode(false);
+                        process.stdin.pause();
+                        process.exit(0);
+                        return;
+                    }
+                    if (keyName === "escape") return;
+                    if (keyName === "return" || keyName === "enter") {
+                        finalize(state.line);
+                        state.ddVisible = false;
+                        clearDropdown();
+                        process.stdout.write("\r" + inputPrompt + state.line + "\n");
+                        resolve(state.line);
+                        return;
+                    }
 
-         if (keyName === 'backspace') {
-           if (state.cursor > 0) {
-             state.line = state.line.slice(0, state.cursor - 1) + state.line.slice(state.cursor);
-             state.cursor = Math.max(0, state.cursor - 1);
-             drawInput();
-             if (state.ddVisible) drawDropdown(filterCommands(state.line));
-           }
-           return;
-         }
+                    // History (only when dd not visible)
+                    if (!state.ddVisible) {
+                        if (keyName === "up") {
+                            if (state.history.length > 0) {
+                                state.histIdx = Math.min(state.histIdx + 1, state.history.length - 1);
+                                state.line = state.history[state.histIdx] ?? "";
+                                state.cursor = state.line.length;
+                                redrawInput();
+                            }
+                            return;
+                        }
+                        if (keyName === "down") {
+                            if (state.histIdx > 0) {
+                                state.histIdx--;
+                                state.line = state.history[state.histIdx] ?? "";
+                            } else {
+                                state.histIdx = -1;
+                                state.line = "";
+                            }
+                            state.cursor = state.line.length;
+                            redrawInput();
+                            return;
+                        }
+                    }
 
-         if (keyName === 'left') {
-           if (state.cursor > 0) {
-             state.cursor--;
-             process.stdout.write('\r> ' + state.line);
-           }
-           return;
-         }
+                    // Editing keys
+                    if (keyName === "backspace") {
+                        if (state.cursor > 0) {
+                            state.line = state.line.slice(0, state.cursor - 1) + state.line.slice(state.cursor);
+                            state.cursor = Math.max(0, state.cursor - 1);
+                            redrawInput();
+                        }
+                        return;
+                    }
+                    if (keyName === "left") {
+                        if (state.cursor > 0) {
+                            state.cursor--;
+                            redrawInput();
+                        }
+                        return;
+                    }
+                    if (keyName === "right") {
+                        if (state.cursor < state.line.length) {
+                            state.cursor++;
+                            redrawInput();
+                        }
+                        return;
+                    }
 
-         if (keyName === 'right') {
-           if (state.cursor < state.line.length) {
-             state.cursor++;
-             process.stdout.write('\r> ' + state.line);
-           }
-           return;
-         }
+                    // Printable characters
+                    if (key.length === 1 && key.charCodeAt(0) >= 0x20) {
+                        state.line = state.line.slice(0, state.cursor) + key + state.line.slice(state.cursor);
+                        state.cursor++;
+                        redrawInput();
+                    }
+                }
 
-         if (keyName === 'up') {
-           if (!state.ddVisible && state.history.length > 0) {
-             state.histIdx = Math.min(state.histIdx + 1, state.history.length - 1);
-             state.line = state.history[state.histIdx] ?? '';
-             state.cursor = state.line.length;
-             process.stdout.write('\r> ' + state.line);
-           }
-           return;
-         }
-
-         if (keyName === 'down') {
-           if (!state.ddVisible) {
-             if (state.histIdx > 0) {
-               state.histIdx--;
-               state.line = state.history[state.histIdx] ?? '';
-             } else {
-               state.histIdx = -1;
-               state.line = '';
-             }
-             state.cursor = state.line.length;
-             process.stdout.write('\r> ' + state.line);
-           }
-           return;
-         }
-
-         if (keyName === 'tab') {
-           if (state.ddVisible) {
-             const cmds = filterCommands(state.line);
-             if (cmds.length > 0) {
-               const sel = cmds[state.ddSelected]!;
-               state.line = sel.cmd;
-               state.cursor = sel.cmd.length;
-               state.ddVisible = false;
-               const rows = Math.min(cmds.length, DDH - 1);
-               process.stdout.write('\x1b[' + rows + 'B\x1b[2K\r' + c.magenta('> ') + state.line);
-             }
-           }
-           return;
-         }
-
-         // ── Printable characters ─────────────────────────────
-         if (key.length === 1) {
-           const ch = key;
-           if (ch.charCodeAt(0) < 0x20) return;
-           state.line = state.line.slice(0, state.cursor) + ch + state.line.slice(state.cursor);
-           state.cursor++;
-           drawInput();
-           const cmds = filterCommands(state.line);
-           if (cmds.length > 0) {
-             state.ddVisible = true;
-             state.ddSelected = Math.min(state.ddSelected, cmds.length - 1);
-             drawDropdown(cmds);
-           } else {
-             state.ddVisible = false;
-           }
-         }
-       }
-
-       function drawInput(): void {
-         process.stdout.write('\x1b[2K\r' + c.magenta('> ') + state.line);
-       }
-
-       function drawDropdown(items: Array<{ cmd: string; description: string; isExact: boolean }>): void {
-         if (!state.ddVisible || items.length === 0) return;
-         const sel = Math.min(state.ddSelected, items.length - 1);
-         const start = Math.max(0, sel - Math.floor((DDH - 1) / 2));
-         const visible = items.slice(start, start + DDH - 1);
-
-         // Move cursor up (dropdown rows + 1 input line)
-         process.stdout.write('\x1b[' + visible.length + 'A');
-
-         for (let i = 0; i < visible.length; i++) {
-           const item = visible[i]!;
-           const active = i === sel - start;
-           process.stdout.write('\x1b[2K');
-           if (active) {
-             process.stdout.write(c.bgWhite.black(' ') + c.bgWhite.black(item.cmd) + ' ' + c.bgWhite.black(item.description));
-           } else {
-             process.stdout.write(' ' + c.cyan(item.cmd) + ' ' + c.dim(item.description));
-           }
-         }
-
-         // Move cursor back down + redraw input line
-         process.stdout.write('\x1b[' + visible.length + 'B\x1b[2K\r' + c.magenta('> ') + state.line);
-       }
-
-       process.stdin.on('data', onData);
-     });
-   },
-   close(): void { if (closeFn) closeFn(); },
-   showPrompt(): void { process.stdout.write(c.magenta('> ')); },
- };
+                process.stdin.on("data", onData);
+            });
+        },
+        close(): void {
+            if (closeFn) closeFn();
+        },
+        showPrompt(): void {
+            process.stdout.write(c.magenta("> "));
+        },
+    };
 }
+
 
 // =============================================================================
 // SPINNER
