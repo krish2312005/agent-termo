@@ -23,21 +23,21 @@ export function printWelcome(projectRoot: string): void {
   console.log(c.dim(' Commands:'));
   console.log(
     ' ' +
-    c.cyan('/help') + c.dim(' — show all commands') + '\n' +
-    ' ' +
-    c.cyan('/clear') + c.dim(' — clear conversation & screen') + '\n' +
-    ' ' +
-    c.cyan('/memory') + c.dim(' — view Agent-Termo memory') + '\n' +
-    ' ' +
-    c.cyan('/timeline') + c.dim(' — view recent activity') + '\n' +
-    ' ' +
-    c.cyan('/model') + c.dim(' — show current AI model') + '\n' +
-    ' ' +
-    c.cyan('/agents') + c.dim(' — list all agents') + '\n' +
-    ' ' +
-    c.cyan('/history') + c.dim(' — show message count') + '\n' +
-    ' ' +
-    c.cyan('/exit') + c.dim(' — quit'),
+      c.cyan('/help') + c.dim(' — show all commands') + '\n' +
+      ' ' +
+      c.cyan('/clear') + c.dim(' — clear conversation & screen') + '\n' +
+      ' ' +
+      c.cyan('/memory') + c.dim(' — view Agent-Termo memory') + '\n' +
+      ' ' +
+      c.cyan('/timeline') + c.dim(' — view recent activity') + '\n' +
+      ' ' +
+      c.cyan('/model') + c.dim(' — show current AI model') + '\n' +
+      ' ' +
+      c.cyan('/agents') + c.dim(' — list all agents') + '\n' +
+      ' ' +
+      c.cyan('/history') + c.dim(' — show message count') + '\n' +
+      ' ' +
+      c.cyan('/exit') + c.dim(' — quit'),
   );
   console.log('');
   console.log(c.dim(' ────────────────────────────────────────────────────────────────'));
@@ -214,12 +214,12 @@ export function restoreCursorPosition(): void {
   process.stdout.write("\x1b[u");
 }
 
-// cursor-down-to-next-row-start: guarantee the cursor lands at column 0 of a
-// **fresh** display row.  After streaming output the terminal cursor can sit on
-// a wrapped continuation row (not the row immediately after the last \n).  A
-// plain \r only targets column 0 of the *current* row, which may still be a
-// continuation; \x1b[0E always jumps down at least one full display row.
-const CURSOR_HOME_FIRST_COL = '\r\x1b[0E';
+// moveToFreshLine: the cursor is already on a blank line (all display functions
+// end with \n, and the Enter handler leaves the cursor below the completed
+// input). We just need to clear any residue and go to column 0.
+// \x1b[2K — erase the entire current row (wipes any leftover characters)
+// \r — return cursor to column 0 of that blank row
+const CURSOR_HOME_FIRST_COL = '\x1b[2K\r';
 
 export function moveToFreshLine(): void {
   process.stdout.write(CURSOR_HOME_FIRST_COL);
@@ -262,11 +262,10 @@ export function createInput(): {
           }
         };
 
-        // Land on a fresh display row first, then place the prompt and stamp
-        // the anchor.  Uses \x1b[0E (not plain \r) so cursor is guaranteed to
-        // be on a blank row after any prior streaming / concurrent writes.
+        // The cursor is already on a blank line from prior display output.
+        // We just need to ensure it's clean and at column 0.
         moveToFreshLine();
-        process.stdout.write("\x1b[2K" + inputPrompt);
+        process.stdout.write(inputPrompt);
         saveCursorPosition();
         process.stdout.write("\x1b[?25h");
 
@@ -275,7 +274,6 @@ export function createInput(): {
 
           if (keyName === "ctrl+c") {
             finalize(state.line);
-            moveToFreshLine();
             process.stdout.write("\x1b[2K\r" + inputPrompt + state.line + "\n");
             resolve(state.line);
             process.stdin.setRawMode(false);
@@ -286,7 +284,6 @@ export function createInput(): {
 
           if (keyName === "return" || keyName === "enter") {
             finalize(state.line);
-            moveToFreshLine();
             process.stdout.write("\x1b[2K\r" + inputPrompt + state.line + "\n");
             resolve(state.line);
             process.stdin.setRawMode(false);
@@ -367,7 +364,7 @@ export function createInput(): {
 
     showPrompt(): void {
       moveToFreshLine();
-      process.stdout.write("\x1b[2K" + c.magenta("> "));
+      process.stdout.write(c.magenta("> "));
       saveCursorPosition();
     },
   };
