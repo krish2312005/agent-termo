@@ -56,6 +56,85 @@ function dedup(arr: ToolCall[]): ToolCall[] {
 	});
 }
 
+/**
+ * Get a plain-text assistant response without tool calling: stream first, fall
+ * back to a single non-streaming completion. Appends the assistant message to
+ * the conversation and prints it. Never throws: if both the stream and the
+ * retry fail, an LLM error is printed and no message is appended.
+ */
+async function replyWithText(
+	conversation: ConversationMessage[],
+	nimClient: NimClient,
+): Promise<void> {
+	startSpinner('Thinking');
+	const md = new MarkdownPrinter(() => stopSpinner());
+	try {
+		const gen = nimClient.streamComplete(conversation, undefined, (text: string) => md.push(text));
+		// The generator streams everything, then yields once at the end; the
+		// chunks have already been rendered through the callback.
+		await gen.next();
+		md.end();
+		stopSpinner();
+		return;
+	} catch {
+		md.end();
+		stopSpinner();
+	}
+
+	startSpinner('Retrying');
+	try {
+		const result = await nimClient.complete(conversation, undefined);
+		stopSpinner();
+		const cleanText = (result.content ?? '').trim();
+		if (cleanText) {
+			conversation.push({
+				id: crypto.randomUUID(),
+				role: 'assistant',
+				content: cleanText,
+				timestamp: new Date(),
+			});
+			printAssistantMessage(cleanText);
+		}
+	} catch (err) {
+		stopSpinner();
+		printError('LLM error: ' + (err instanceof Error ? err.message : String(err)));
+	}
+}
+
+/**
+ * Parse JSON tool calls that a non-tool-calling model may emit as plain text,
+ * e.g. {"tool_calls":[{"id":"call_1","name":"file:write","arguments":{...}}]}.
+ * Returns an empty array when nothing parseable is found.
+ */
+function parseToolCallsFromText(text: string): ToolCall[] {
+	let cleaned = (text ?? '').trim();
+	cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+
+	let obj: { tool_calls?: unknown };
+	try {
+		obj = JSON.parse(cleaned);
+	} catch {
+		const start = cleaned.indexOf('{');
+		const end = cleaned.lastIndexOf('}');
+		if (start === -1 || end === -1 || end <= start) return [];
+		try {
+			obj = JSON.parse(cleaned.slice(start, end + 1));
+		} catch {
+			return [];
+		}
+	}
+
+	const rawCalls = Array.isArray(obj.tool_calls) ? obj.tool_calls : [];
+	return rawCalls.map((tc: { id?: string; name?: string; function?: { name?: string; arguments?: unknown } }) => ({
+		id: tc.id ?? crypto.randomUUID(),
+		name: tc.name ?? (tc.function?.name ?? ''),
+		arguments:
+			typeof tc.function?.arguments === 'string'
+				? (() => { try { return JSON.parse(tc.function.arguments as string); } catch { return { _raw: tc.function.arguments }; } })()
+				: (tc.function?.arguments ?? {}),
+	}));
+}
+
 function extractProposedChange(toolName: string, resultOutput: string): ProposedFileChange | undefined {
 	const isFileTool = toolName === 'file:write' || toolName === 'file:edit';
 	if (!isFileTool) return undefined;
@@ -200,29 +279,41 @@ async function runToolLoop(
 		// Send conversation (including tool results) back to the LLM
 		// The LLM will either produce text or more tool calls
 		startSpinner('Working');
+		let result: { content: string; toolCalls: ToolCall[] };
 		try {
 			const tools = nimClient.buildToolDefs(TOOL_DEFINITIONS);
-			const result = await nimClient.complete(conversation, tools);
-			finalText = result.content;
-			toolCalls = dedup(result.toolCalls);
-			stopSpinner();
-
-			// If the LLM produced text alongside tool calls, save it
-			if (finalText && finalText.trim() && finalText.trim() !== 'null') {
-				conversation.push({
-					id: crypto.randomUUID(),
-					role: 'assistant',
-					content: finalText.trim(),
-					timestamp: new Date(),
-				});
-				// Narration that comes with more tool calls is shown now; the
-				// final answer (no tool calls) is printed by the caller.
-				if (toolCalls.length > 0) printAssistantMessage(finalText.trim());
+			result = await nimClient.complete(conversation, tools);
+		} catch {
+			// Model doesn't support native tool calling — fall back to plain text
+			// and parse any JSON tool calls emitted in the content.
+			try {
+				const fallback = await nimClient.complete(conversation, undefined);
+				result = {
+					content: fallback.content,
+					toolCalls: parseToolCallsFromText(fallback.content),
+				};
+			} catch (err2) {
+				stopSpinner();
+				printError('LLM error: ' + (err2 instanceof Error ? err2.message : String(err2)));
+				break;
 			}
-		} catch (err) {
-			stopSpinner();
-			printError('LLM error: ' + (err instanceof Error ? err.message : String(err)));
-			break;
+		}
+		stopSpinner();
+
+		finalText = result.content;
+		toolCalls = dedup(result.toolCalls);
+
+		// If the LLM produced text alongside tool calls, save it
+		if (finalText && finalText.trim() && finalText.trim() !== 'null') {
+			conversation.push({
+				id: crypto.randomUUID(),
+				role: 'assistant',
+				content: finalText.trim(),
+				timestamp: new Date(),
+			});
+			// Narration that comes with more tool calls is shown now; the
+			// final answer (no tool calls) is printed by the caller.
+			if (toolCalls.length > 0) printAssistantMessage(finalText.trim());
 		}
 	}
 
@@ -414,29 +505,15 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					}
 				} catch (err) {
 					stopSpinner();
-					printError('LLM error: ' + (err instanceof Error ? err.message : String(err)));
-					conversation.pop();
-					continue mainLoop;
-				}
-			} else {
-				// No tools — stream the response, rendering markdown line by line.
-				startSpinner('Thinking');
-				const md = new MarkdownPrinter(() => stopSpinner());
-				try {
-					const gen = nimClient.streamComplete(conversation, undefined, (text: string) => md.push(text));
-					// The generator streams everything, then yields once at the end; the
-					// chunks have already been rendered through the callback.
-					await gen.next();
-					md.end();
-					stopSpinner();
-				} catch {
-					md.end();
-					stopSpinner();
-					startSpinner('Retrying');
+					// Tool calling failed (e.g. HTTP 400 because the model does not
+					// support the `tools` parameter). Retry without tools and parse
+					// any JSON tool calls the model may have emitted as plain text.
+					printInfo('Tool calls not supported by this model — retrying without tools.');
 					try {
-						const result = await nimClient.complete(conversation, undefined);
-						stopSpinner();
-						const cleanText = (result.content ?? '').trim();
+						const fallback = await nimClient.complete(conversation, undefined);
+						const text = (fallback.content ?? '').trim();
+						// Strip any leading/trailing "null" reasoning noise
+						const cleanText = text.replace(/^null$/, '').trim();
 						if (cleanText) {
 							conversation.push({
 								id: crypto.randomUUID(),
@@ -444,15 +521,25 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 								content: cleanText,
 								timestamp: new Date(),
 							});
-							printAssistantMessage(cleanText);
+						}
+						const narration = cleanText.replace(/^null$/, '').trim();
+						if (narration) printAssistantMessage(narration);
+
+						const toolCalls = dedup(parseToolCallsFromText(fallback.content));
+						if (toolCalls.length > 0) {
+							const finalText = await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient);
+							if (finalText && finalText.trim() && finalText.trim() !== 'null') {
+								printAssistantMessage(finalText.trim());
+							}
 						}
 					} catch (err2) {
-						stopSpinner();
 						printError('LLM error: ' + (err2 instanceof Error ? err2.message : String(err2)));
 						conversation.pop();
 						continue mainLoop;
 					}
 				}
+			} else {
+				await replyWithText(conversation, nimClient);
 			}
 
 			if (conversation.length > 42) {
