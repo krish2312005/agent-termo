@@ -39,17 +39,11 @@ npm run dev
 
 ## Configuration
 
-1. Copy `.env.example` to `.env`:
-   ```bash
-   cp .env.example .env
-   ```
+On the first launch, Agent-Termo prompts you to enter your NVIDIA NIM API key. The input is hidden, and the key is saved in your user configuration at `~/.agent-termo/config.json` so you are not prompted again.
 
-2. Add your Nvidia NIM API key to `.env`:
-   ```
-   NIM_API_KEY=your_api_key_here
-   ```
+Get a free API key from [https://build.nvidia.com/](https://build.nvidia.com/).
 
-3. Get your free API key from [https://build.nvidia.com/](https://build.nvidia.com/)
+You can also provide `NIM_API_KEY` through your shell environment or a project `.env` file. Existing environment variables take precedence over the saved key.
 
 ## Usage
 
