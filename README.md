@@ -53,6 +53,31 @@ You can also provide `NIM_API_KEY` through your shell environment or a project `
 agent-termo
 ```
 
+### The terminal UI
+
+Like Claude Code, the input box stays pinned to the bottom of the terminal while the conversation scrolls above it. The status line under the box shows the active model and project.
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Send |
+| `↑` / `↓` | Input history |
+| `Tab` | Complete a `/command` (matching commands show on the status line as you type) |
+| `←` `→`, `Ctrl+A` / `Ctrl+E`, `Ctrl+←` / `Ctrl+→` | Move by character, to line start/end, by word |
+| `Ctrl+W` / `Ctrl+U` / `Ctrl+K` | Delete word / to line start / to line end |
+| `Ctrl+C` | Clear the line; quit when the line is empty |
+
+Pasted text is kept on one line (newlines become spaces). Terminals smaller than 12 rows × 40 columns, and non-interactive input, fall back to a plain `>` prompt.
+
+### Choosing a model
+
+Agent-Termo works with any chat model on NVIDIA NIM.
+
+- `/model` opens a picker with the models your API key can use (fetched live from NIM; embedding and reranking models are hidden). Use `↑`/`↓`, type to filter, `Enter` to select, `Esc` to cancel. Type an `org/name` ID that isn't listed to use it as typed.
+- `/model <model-id>` switches directly, e.g. `/model meta/llama-3.3-70b-instruct`.
+- `agent-termo --model <model-id>` picks the model for one run.
+
+Your selection is saved in `~/.agent-termo/config.json` and used next time. Order of precedence: `--model` flag, then the saved `/model` choice, then `NIM_MODEL` from `.env`, then the built-in default. If the live list can't be fetched, a built-in list of suggestions is shown instead.
+
 ### Tell it what to build
 
 ```
@@ -73,9 +98,9 @@ agent-termo/
 ├── src/
 │   ├── cli.ts           # Commander entry point
 │   ├── main.ts          # Main application
-│   ├── ui/              # Terminal UI (blessed)
+│   ├── ui/              # Terminal UI (output rendering, pinned input box, model picker)
 │   ├── agents/          # 12 agent implementations
-│   ├── llm/             # OpenAI/NIM integration
+│   ├── llm/             # OpenAI/NIM integration, model catalogue
 │   ├── tools/           # File, bash, git tools
 │   └── memory/          # Memory system
 ├── .claude/agents/      # Agent prompts

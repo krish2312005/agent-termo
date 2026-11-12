@@ -1,58 +1,175 @@
 // =============================================================================
-// Terminal UI — chalk-based, clean CLI styling with diff viewer
+// Terminal UI — chalk-based styling, markdown output, diff viewer
+// Layout (pinned input box, scroll region) and keyboard input live in screen.ts
 // =============================================================================
 
 import Chalk from 'chalk';
 import type { ProposedFileChange } from '../types/index.js';
 import { loadAgentTermoMemory, loadAgentTermoTimeline } from '../memory/index.js';
-import type { ConversationMessage } from '../types/index.js';
+import {
+	clipText,
+	listenKeys,
+	resetScreen,
+	setCommands,
+	terminalWidth,
+	type CommandInfo,
+} from './screen.js';
+
+export {
+	createInput,
+	initScreen,
+	pick,
+	setScreenStatus,
+	type InputController,
+	type PickItem,
+} from './screen.js';
 
 const c: typeof Chalk = Chalk as unknown as typeof Chalk;
+const out = process.stdout;
+
+export const COMMANDS: CommandInfo[] = [
+	{ name: '/help', description: 'show all commands' },
+	{ name: '/clear', description: 'clear conversation & screen' },
+	{ name: '/memory', description: 'view Agent-Termo memory' },
+	{ name: '/timeline', description: 'view recent activity' },
+	{ name: '/model', description: 'switch NVIDIA NIM model (or /model <id>)' },
+	{ name: '/agents', description: 'list all agents' },
+	{ name: '/history', description: 'show message count' },
+	{ name: '/exit', description: 'quit' },
+];
+setCommands(COMMANDS);
+
+// eslint-disable-next-line no-control-regex
+const ANSI_RE = /\x1b\[[0-9;?]*[A-Za-z]/g;
+const visibleLength = (s: string): number => s.replace(ANSI_RE, '').length;
+const rule = (): string => c.dim('─'.repeat(Math.max(10, Math.min(terminalWidth() - 2, 100))));
 
 // =============================================================================
 // WELCOME BANNER
 // =============================================================================
 
-export function printWelcome(projectRoot: string): void {
-	console.log('');
-	console.log(c.magenta.bold(' AGENT-TERMO'));
-	console.log(c.dim(' AI-Powered Terminal Coding Agent'));
-	console.log('');
-	console.log(c.dim(' Model: ') + c.cyan.bold('Nvidia NIM (OpenAI-compatible)'));
-	console.log(c.dim(' Project: ') + c.white(projectRoot));
-	console.log('');
-	console.log(c.dim(' Commands:'));
-	console.log(
-		' ' + c.cyan('/help') + c.dim(' — show all commands') + '\n' +
-		' ' + c.cyan('/clear') + c.dim(' — clear conversation & screen') + '\n' +
-		' ' + c.cyan('/memory') + c.dim(' — view Agent-Termo memory') + '\n' +
-		' ' + c.cyan('/timeline') + c.dim(' — view recent activity') + '\n' +
-		' ' + c.cyan('/model') + c.dim(' — show current AI model') + '\n' +
-		' ' + c.cyan('/agents') + c.dim(' — list all agents') + '\n' +
-		' ' + c.cyan('/history') + c.dim(' — show message count') + '\n' +
-		' ' + c.cyan('/exit') + c.dim(' — quit'),
+export function printWelcome(projectRoot: string, model: string): void {
+	const width = Math.max(40, Math.min(terminalWidth() - 2, 64));
+	const inner = width - 2;
+	const room = inner - 2;
+	const row = (content: string): string =>
+		' ' + c.magenta('│') + ' ' + content + ' '.repeat(Math.max(0, room - visibleLength(content))) + ' ' + c.magenta('│');
+	const field = (label: string, value: string): string =>
+		c.dim(label.padEnd(7)) + c.cyan(clipText(value, room - 7));
+
+	out.write('\n');
+	out.write(' ' + c.magenta('╭' + '─'.repeat(inner) + '╮') + '\n');
+	out.write(row(c.magenta.bold('✻ Agent-Termo')) + '\n');
+	out.write(row(c.dim(clipText('AI coding agent for your terminal', room))) + '\n');
+	out.write(row('') + '\n');
+	out.write(row(field('model', model)) + '\n');
+	out.write(row(field('cwd', projectRoot)) + '\n');
+	out.write(' ' + c.magenta('╰' + '─'.repeat(inner) + '╯') + '\n');
+	out.write('\n');
+	out.write(
+		c.dim('  ') + c.cyan('/help') + c.dim(' commands · ') + c.cyan('/model') + c.dim(' switch NIM model · ') +
+			c.cyan('Tab') + c.dim(' completes') + '\n\n',
 	);
-	console.log('');
-	console.log(c.dim(' ────────────────────────────────────────────────────────────────'));
-	console.log('');
+}
+
+// =============================================================================
+// MARKDOWN OUTPUT — line-buffered so streamed replies render as they arrive
+// =============================================================================
+
+function inline(text: string): string {
+	return text
+		.split(/(`[^`]+`)/)
+		.map((seg) =>
+			seg.length > 1 && seg.startsWith('`') && seg.endsWith('`')
+				? c.cyan(seg.slice(1, -1))
+				: seg.replace(/\*\*(.+?)\*\*/g, (_m, g: string) => c.bold(g)),
+		)
+		.join('');
+}
+
+export class MarkdownPrinter {
+	private pending = '';
+	private inCode = false;
+	private first = true;
+	private lastBlank = false;
+
+	/** `beforeFirstOutput` runs once, just before the first line is printed (stop the spinner there). */
+	constructor(private readonly beforeFirstOutput?: () => void) {}
+
+	push(text: string): void {
+		this.pending += text;
+		let nl = this.pending.indexOf('\n');
+		while (nl !== -1) {
+			const line = this.pending.slice(0, nl).replace(/\r$/, '');
+			this.pending = this.pending.slice(nl + 1);
+			this.emit(line);
+			nl = this.pending.indexOf('\n');
+		}
+	}
+
+	end(): void {
+		if (this.pending) this.emit(this.pending.replace(/\r$/, ''));
+		this.pending = '';
+	}
+
+	get printed(): boolean {
+		return !this.first;
+	}
+
+	private emit(line: string): void {
+		const blank = line.trim() === '';
+		if (!this.inCode && blank && (this.first || this.lastBlank)) return;
+		this.lastBlank = blank && !this.inCode;
+
+		if (this.first) {
+			this.beforeFirstOutput?.();
+			out.write('\n');
+		}
+		const prefix = this.first ? c.magenta('● ') : '  ';
+		this.first = false;
+		// Blank prose lines stay empty (no trailing indent); code keeps its gutter.
+		out.write(blank && !this.inCode ? '\n' : prefix + this.render(line) + '\n');
+	}
+
+	private render(line: string): string {
+		const fence = /^\s*```\s*([\w+-]*)/.exec(line);
+		if (fence) {
+			this.inCode = !this.inCode;
+			return this.inCode ? c.dim('┌─ ' + (fence[1] || 'code')) : c.dim('└─');
+		}
+		if (this.inCode) return c.dim('│ ') + c.cyan(line.replace(/\t/g, '  '));
+
+		const heading = /^#{1,6}\s+(.*)$/.exec(line);
+		if (heading) return c.bold.magenta(inline(heading[1] ?? ''));
+		if (/^\s*([-*_])\1{2,}\s*$/.test(line)) return c.dim('─'.repeat(Math.min(40, terminalWidth() - 4)));
+
+		const bullet = /^(\s*)[-*+]\s+(.*)$/.exec(line);
+		if (bullet) return (bullet[1] ?? '') + c.magenta('•') + ' ' + inline(bullet[2] ?? '');
+
+		const numbered = /^(\s*)(\d+)[.)]\s+(.*)$/.exec(line);
+		if (numbered) return (numbered[1] ?? '') + c.magenta(numbered[2] + '.') + ' ' + inline(numbered[3] ?? '');
+
+		const quote = /^>\s?(.*)$/.exec(line);
+		if (quote) return c.dim('▎ ') + c.italic(inline(quote[1] ?? ''));
+
+		return inline(line);
+	}
 }
 
 // =============================================================================
 // MESSAGE DISPLAY
 // =============================================================================
 
-export function printUserMessage(msg: ConversationMessage): void {
-	const time = new Date(msg.timestamp).toLocaleTimeString('en-US', { hour12: false });
-	console.log('\n' + c.green('[' + time + '] You'));
-	console.log(c.dim('─'.repeat(80)));
-	console.log(c.green(msg.content) + '\n');
+export function printUserMessage(text: string): void {
+	const lines = text.split('\n');
+	out.write('\n' + c.green.bold('❯ ') + c.bold(lines[0] ?? '') + '\n');
+	for (const l of lines.slice(1)) out.write('  ' + c.bold(l) + '\n');
 }
 
 export function printAssistantMessage(content: string): void {
-	const time = new Date().toLocaleTimeString('en-US', { hour12: false });
-	console.log('\n' + c.magenta('[' + time + '] Agent-Termo'));
-	console.log(c.dim('─'.repeat(80)));
-	console.log(c.magenta(content) + '\n');
+	const md = new MarkdownPrinter();
+	md.push(content);
+	md.end();
 }
 
 // =============================================================================
@@ -60,13 +177,14 @@ export function printAssistantMessage(content: string): void {
 // =============================================================================
 
 export function printToolCall(toolName: string, args: Record<string, unknown>): void {
-	const argsSummary = Object.entries(args)
-		.map(([k, v]) => k + '=' + JSON.stringify(v))
+	const summary = Object.entries(args)
+		.map(([k, v]) => {
+			const raw = typeof v === 'string' ? v : JSON.stringify(v);
+			return k + '=' + clipText(String(raw ?? '').replace(/\s+/g, ' '), 40);
+		})
 		.join(', ');
-	console.log('');
-	console.log(c.blue('[Tool] ') + c.cyan(toolName));
-	const truncated = argsSummary.slice(0, 200);
-	if (truncated) console.log(c.dim(' ' + truncated));
+	const room = terminalWidth() - toolName.length - 6;
+	out.write('\n' + c.blue('● ') + c.bold(toolName) + c.dim('(' + clipText(summary, room) + ')') + '\n');
 }
 
 export function printToolResult(
@@ -74,122 +192,81 @@ export function printToolResult(
 	result: { success: boolean; output?: string; error?: string },
 	parsedOutput?: { needsApproval?: boolean; proposedChange?: ProposedFileChange },
 ): void {
-	// If the tool result contains a proposed change, show the diff + prompt
+	// A proposed file change is shown as a diff, then the accept/reject prompt.
 	if (parsedOutput?.needsApproval && parsedOutput.proposedChange) {
-		console.log('');
 		printDiffViewer(parsedOutput.proposedChange);
 		return;
 	}
 
+	const room = terminalWidth() - 8;
 	if (result.success) {
-		const out = result.output
-			? result.output.slice(0, 200) + (result.output.length > 200 ? '...' : '')
-			: '(success)';
-		console.log('');
-		console.log(c.green('[Done] ') + c.cyan(toolName) + ' ' + c.green('OK'));
-		const short = out.length > 80 ? out.slice(0, 80) + '...' : out;
-		console.log(c.green(' ' + short));
+		// One line of output is shown as-is; longer output (file contents, command
+		// logs) is summarised, since the full text goes to the model.
+		const lines = (result.output ?? '').split('\n').filter((l) => l.trim() !== '');
+		const summary = lines.length > 1 ? `${lines.length} lines` : clipText((lines[0] ?? '').trim() || 'done', room);
+		out.write(c.dim('  ⎿  ') + c.green('✓ ') + summary + '\n');
 	} else {
-		console.log('');
-		console.log(c.red('[Error] ') + c.red(toolName + ': ' + (result.error?.slice(0, 200) ?? 'unknown error')));
+		const message = (result.error ?? 'unknown error').split('\n')[0] ?? 'unknown error';
+		out.write(c.dim('  ⎿  ') + c.red('✗ ' + clipText(`${toolName}: ${message}`, room)) + '\n');
 	}
 }
 
 // =============================================================================
-// DIFF VIEWER — Claude Code-style change display
+// DIFF VIEWER
 // =============================================================================
 
 export function printDiffViewer(change: ProposedFileChange): void {
 	const diff = change.diff;
+	const room = Math.max(20, terminalWidth() - 14);
 
-	// File header
-	console.log('');
-	console.log(c.bold(c.cyan(' ─── ' + diff.file + ' ───')));
-
-	// Stat line
-	const actionLabel = change.isDeletion
-		? c.red('[- DELETE]')
+	const label = change.isDeletion
+		? c.red('DELETE')
 		: change.isNewFile
-			? c.green('[+ NEW]')
-			: c.blue('[~ MODIFY]');
-	const stat = c.dim('+' + diff.additions) + ' ' + c.red('-' + diff.deletions);
-	console.log(' ' + actionLabel + ' ' + stat);
+			? c.green('NEW')
+			: c.blue('MODIFY');
 
-	// Diff lines
+	out.write('\n  ' + c.bold.cyan(diff.file) + '  ' + label + '  ' + c.green('+' + diff.additions) + ' ' + c.red('-' + diff.deletions) + '\n');
+	out.write('  ' + c.dim('─'.repeat(Math.max(10, Math.min(terminalWidth() - 4, 100)))) + '\n');
+
 	for (const line of diff.lines) {
 		const prefix = line.type === 'add' ? '+' : line.type === 'remove' ? '-' : ' ';
 		const color = line.type === 'add' ? c.green : line.type === 'remove' ? c.red : c.dim;
-		const lineNum = line.lineNumber > 0 ? String(line.lineNumber).padStart(4) : ' ';
-		console.log(' ' + color(prefix + lineNum + '│' + line.content));
+		const num = line.lineNumber > 0 ? String(line.lineNumber).padStart(4) : '    ';
+		const text = clipText(line.content.replace(/\t/g, '  '), room);
+		out.write('  ' + color(prefix + num + ' │ ' + text) + '\n');
 	}
-
-	// Summary footer
-	console.log('');
-	console.log(c.dim(' ── ') + c.green('+' + diff.additions) + c.dim(' added, ') + c.red('-' + diff.deletions) + c.dim(' removed ') + c.dim('─'));
+	out.write('\n');
 }
 
 // =============================================================================
-// ACCEPT / REJECT PROMPT — Claude Code-style keyboard interaction
+// ACCEPT / REJECT PROMPT
 // =============================================================================
 
-export async function promptAcceptReject(message: string = 'Accept this change?'): Promise<'accept' | 'reject'> {
-	process.stdout.write('\n' + c.yellow(message) + ' ');
-	process.stdout.write(c.dim('[') + c.green('Y') + c.dim('/') + c.red('n') + c.dim('] '));
+export function promptAcceptReject(message: string = 'Accept this change?'): Promise<'accept' | 'reject'> {
+	out.write(
+		'\n' + c.yellow('? ') + c.bold(message) + c.dim(' [') + c.green('Y') + c.dim('/') + c.red('n') + c.dim('] '),
+	);
 
 	return new Promise((resolve) => {
-		// Allow a flag to auto-reject (used when detecting stale REPL listeners)
-		let alreadyHandled = false;
+		let done = false;
+		let stop: () => void = () => undefined;
 
-		const onData = (key: string): void => {
-			if (alreadyHandled) return;
-			alreadyHandled = true;
-			const keyName = getKeyName(key);
-
-			switch (keyName) {
-				case 'y':
-				case 'Y':
-				case 'enter':
-				case 'return':
-					process.stdout.write(c.green('yes') + '\n');
-					cleanup();
-					resolve('accept');
-					break;
-				case 'n':
-				case 'N':
-				case 'escape':
-					process.stdout.write(c.red('no') + '\n');
-					cleanup();
-					resolve('reject');
-					break;
-				case 'ctrl+c':
-					process.stdout.write(c.red('cancelled') + '\n');
-					cleanup();
-					resolve('reject');
-					break;
-				default:
-					// Ignore other keys, re-arm for next key
-					alreadyHandled = false;
-					break;
-			}
+		const answer = (accepted: boolean | 'cancelled'): void => {
+			done = true;
+			stop();
+			out.write(
+				accepted === true ? c.green('yes') + '\n' : accepted === false ? c.red('no') + '\n' : c.red('cancelled') + '\n',
+			);
+			resolve(accepted === true ? 'accept' : 'reject');
 		};
 
-		const cleanup = (): void => {
-			process.stdin.setRawMode(false);
-			process.stdin.pause();
-			process.stdin.removeListener('data', onData);
-		};
-
-		// Remove any other stale data listeners to prevent double-handling
-		const listeners = process.stdin.listenerCount('data');
-		if (listeners > 5) {
-			// Sanity: if there are too many listeners, something went wrong
-			process.stdin.removeAllListeners('data');
-		}
-
-		process.stdin.setRawMode(true);
-		process.stdin.resume();
-		process.stdin.setEncoding('utf8');
-		process.stdin.on('data', onData);
+		stop = listenKeys((key) => {
+			if (done) return;
+			const first = key.text?.[0]?.toLowerCase();
+			if (key.name === 'enter' || first === 'y') answer(true);
+			else if (key.name === 'escape' || first === 'n') answer(false);
+			else if (key.name === 'ctrl+c') answer('cancelled');
+		});
 	});
 }
 
@@ -198,65 +275,45 @@ export async function promptAcceptReject(message: string = 'Accept this change?'
 // =============================================================================
 
 export function printError(message: string, hint?: string): void {
-	console.log('');
-	console.log(c.red('[Error] ' + message));
-	if (hint) console.log(c.dim(' Hint: ' + hint));
+	out.write('\n' + c.red('✗ ' + message) + '\n');
+	if (hint) out.write(c.dim('  Hint: ' + hint) + '\n');
 }
 
 export function printSuccess(message: string): void {
-	console.log(c.green('Done: ' + message));
+	out.write(c.green('✓ ' + message) + '\n');
 }
 
 export function printInfo(message: string): void {
-	console.log(c.blue('[Info] ') + message);
+	out.write(c.blue('ℹ ') + message + '\n');
 }
 
 // =============================================================================
 // AGENT-TERMO MEMORY + TIMELINE DISPLAY
 // =============================================================================
 
-function clearCurrentLine(): void {
-	process.stdout.write('\x1b[2K');
-}
-
 export async function printMemoryFile(): Promise<void> {
 	const mem = loadAgentTermoMemory();
 	if (!mem) {
-		process.stdout.write('\n');
-		clearCurrentLine();
-		process.stdout.write(c.blue('[Info] ') + 'Agent-Termo memory is empty. (Normal for new sessions.)\n');
+		printInfo('Agent-Termo memory is empty. (Normal for new sessions.)');
 		return;
 	}
-	process.stdout.write('\n');
-	clearCurrentLine();
-	process.stdout.write(c.bold('=== AGENT-TERMO MEMORY ===') + '\n');
-	process.stdout.write(c.dim('─'.repeat(80)) + '\n');
-	process.stdout.write(mem + '\n');
-	process.stdout.write(c.dim('─'.repeat(80)) + '\n\n');
+	out.write('\n' + c.bold('Agent-Termo memory') + '\n' + rule() + '\n' + mem + '\n' + rule() + '\n\n');
 }
 
 export async function printTimelineFile(): Promise<void> {
 	const tl = loadAgentTermoTimeline();
 	if (!tl || tl.trim().length === 0) {
-		process.stdout.write('\n');
-		clearCurrentLine();
-		process.stdout.write(c.blue('[Info] ') + 'Timeline is empty.\n');
+		printInfo('Timeline is empty.');
 		return;
 	}
 	const lines = tl.split('\n');
-	const totalLines = lines.length;
-	const recentCount = Math.min(40, totalLines);
-	const recent = lines.slice(-recentCount).join('\n');
-	process.stdout.write('\n');
-	clearCurrentLine();
-	process.stdout.write(c.bold('=== AGENT-TERMO TIMELINE (recent entries) ===') + '\n');
-	process.stdout.write(c.dim('─'.repeat(80)) + '\n');
-	process.stdout.write(recent + '\n');
-	process.stdout.write(c.dim('─'.repeat(80)) + '\n');
-	if (totalLines > recentCount) {
-		process.stdout.write(c.dim('... (' + (totalLines - recentCount) + ' earlier entries hidden)') + '\n');
+	const recentCount = Math.min(40, lines.length);
+	out.write('\n' + c.bold('Agent-Termo timeline') + c.dim(' (recent entries)') + '\n' + rule() + '\n');
+	out.write(lines.slice(-recentCount).join('\n') + '\n' + rule() + '\n');
+	if (lines.length > recentCount) {
+		out.write(c.dim('… ' + (lines.length - recentCount) + ' earlier entries hidden') + '\n');
 	}
-	process.stdout.write('\n');
+	out.write('\n');
 }
 
 // =============================================================================
@@ -264,256 +321,66 @@ export async function printTimelineFile(): Promise<void> {
 // =============================================================================
 
 export function printHelp(): void {
-	process.stdout.write('\n' + c.bold('Agent-Termo ') + c.dim('— available commands') + '\n');
-	process.stdout.write(c.dim('─'.repeat(80)) + '\n');
-	console.log(' ' + c.cyan('/help') + c.dim(' show all commands'));
-	console.log(' ' + c.cyan('/clear') + c.dim(' clear conversation & screen'));
-	console.log(' ' + c.cyan('/memory') + c.dim(' view Agent-Termo memory'));
-	console.log(' ' + c.cyan('/timeline') + c.dim(' view recent activity'));
-	console.log(' ' + c.cyan('/model') + c.dim(' show current AI model'));
-	console.log(' ' + c.cyan('/agents') + c.dim(' list all agents'));
-	console.log(' ' + c.cyan('/history') + c.dim(' show message count'));
-	console.log(' ' + c.cyan('/exit') + c.dim(' quit'));
-	console.log('');
+	out.write('\n' + c.bold('Commands') + '\n' + rule() + '\n');
+	for (const cmd of COMMANDS) {
+		out.write('  ' + c.cyan(cmd.name.padEnd(11)) + c.dim(cmd.description) + '\n');
+	}
+	out.write('\n' + c.bold('Keys') + '\n' + rule() + '\n');
+	const keys: Array<[string, string]> = [
+		['↑ / ↓', 'input history'],
+		['Tab', 'complete a /command'],
+		['Ctrl+A / Ctrl+E', 'start / end of line'],
+		['Ctrl+W / Ctrl+U', 'delete word / to line start'],
+		['Ctrl+C', 'clear the line, or quit when empty'],
+	];
+	for (const [k, d] of keys) out.write('  ' + c.cyan(k.padEnd(17)) + c.dim(d) + '\n');
+	out.write('\n');
 }
 
 export function printAgentsList(agents: Array<{ name: string; description: string }>): void {
-	process.stdout.write('\n' + c.bold('Available Agents:') + '\n');
-	process.stdout.write(c.dim('─'.repeat(80)) + '\n');
+	out.write('\n' + c.bold('Available agents') + '\n' + rule() + '\n');
+	const room = Math.max(10, terminalWidth() - 34);
 	for (const a of agents) {
-		const short = a.description.length > 40 ? a.description.slice(0, 40) + '...' : a.description;
-		process.stdout.write(' ' + c.cyan(a.name.padEnd(28)) + ' ' + c.dim(short) + '\n');
+		out.write('  ' + c.cyan(a.name.padEnd(30)) + c.dim(clipText(a.description.replace(/\s+/g, ' '), room)) + '\n');
 	}
-	process.stdout.write(c.dim('─'.repeat(80)) + '\n\n');
-}
-
-// =============================================================================
-// INPUT STATE + REPL LOOP
-// =============================================================================
-
-class InputState {
-	line = '';
-	cursor = 0;
-	histIdx = -1;
-	history: string[] = [];
-	boundOnData: ((key: string) => void) | null = null;
-
-	constructor() { this.history = []; }
-}
-
-// =============================================================================
-// Cursor helpers
-// =============================================================================
-
-export function saveCursorPosition(): void {
-	process.stdout.write('\x1b[s');
-}
-
-export function restoreCursorPosition(): void {
-	process.stdout.write('\x1b[u');
-}
-
-export function moveToFreshLine(): void {
-	process.stdout.write(' '.repeat(200) + '\r');
-}
-
-/**
- * Create an input handler that manages stdin raw mode for the REPL.
- * IMPORTANT: The listener is removed when Enter/Return is pressed to
- * prevent stale listeners from interfering with promptAcceptReject().
- */
-export function createInput(): {
-	question: (prompt: string) => Promise<string>;
-	close: () => void;
-	showPrompt: () => void;
-} {
-	let closeFn: (() => void) | null = null;
-
-	return {
-		async question(_prompt: string): Promise<string> {
-			return new Promise<string>((resolve) => {
-				process.stdin.setRawMode(true);
-				process.stdin.resume();
-				process.stdin.setEncoding('utf8');
-				process.stdin.setMaxListeners(20);
-
-				const state = new InputState();
-				const inputPrompt = c.magenta('> ');
-
-				function finalize(l: string): void {
-					if (l.trim()) {
-						state.history.unshift(l);
-						if (state.history.length > 50) state.history.pop();
-					}
-					state.histIdx = -1;
-				}
-
-				closeFn = (): void => {
-					process.stdin.setRawMode(false);
-					process.stdin.pause();
-					finalize('');
-					if (state.boundOnData) {
-						process.stdin.removeListener('data', state.boundOnData);
-						state.boundOnData = null;
-					}
-				};
-
-				moveToFreshLine();
-				process.stdout.write(inputPrompt);
-				saveCursorPosition();
-				process.stdout.write('\x1b[?25h');
-
-				function onData(key: string): void {
-					const keyName = getKeyName(key);
-
-					if (keyName === 'return' || keyName === 'enter') {
-						finalize(state.line);
-						process.stdout.write('\n');
-						// CRITICAL: Remove listener so promptAcceptReject doesn't get double-handled
-						process.stdin.removeListener('data', state.boundOnData!);
-						state.boundOnData = null;
-						process.stdin.setRawMode(false);
-						process.stdin.pause();
-						resolve(state.line);
-						return;
-					}
-
-					if (keyName === 'ctrl+c') {
-						finalize(state.line);
-						process.stdout.write('\n');
-						process.stdin.removeListener('data', state.boundOnData!);
-						state.boundOnData = null;
-						process.stdin.setRawMode(false);
-						process.stdin.pause();
-						process.exit(0);
-						return;
-					}
-
-					if (keyName === 'up') {
-						if (state.history.length > 0 && state.histIdx < state.history.length - 1) {
-							state.histIdx++;
-							state.line = state.history[state.histIdx] ?? '';
-							state.cursor = state.line.length;
-							restoreCursorPosition();
-							process.stdout.write(' '.repeat(200) + '\r' + inputPrompt + state.line);
-						}
-						return;
-					}
-
-					if (keyName === 'down') {
-						if (state.histIdx > 0) {
-							state.histIdx--;
-							state.line = state.history[state.histIdx] ?? '';
-						} else {
-							state.histIdx = -1;
-							state.line = '';
-						}
-						state.cursor = state.line.length;
-						restoreCursorPosition();
-						process.stdout.write(' '.repeat(200) + '\r' + inputPrompt + state.line);
-						return;
-					}
-
-					if (keyName === 'backspace') {
-						if (state.cursor > 0) {
-							state.line = state.line.slice(0, state.cursor - 1) + state.line.slice(state.cursor);
-							state.cursor = Math.max(0, state.cursor - 1);
-							restoreCursorPosition();
-							process.stdout.write(' '.repeat(200) + '\r' + inputPrompt + state.line);
-						}
-						return;
-					}
-
-					if (keyName === 'left') {
-						if (state.cursor > 0) {
-							state.cursor--;
-							restoreCursorPosition();
-							process.stdout.write('\r' + inputPrompt + state.line);
-						}
-						return;
-					}
-
-					if (keyName === 'right') {
-						if (state.cursor < state.line.length) {
-							state.cursor++;
-							restoreCursorPosition();
-							process.stdout.write('\r' + inputPrompt + state.line);
-						}
-						return;
-					}
-
-					if (key.length === 1 && key.charCodeAt(0) >= 0x20) {
-						state.line = state.line.slice(0, state.cursor) + key + state.line.slice(state.cursor);
-						state.cursor++;
-						restoreCursorPosition();
-						process.stdout.write(' '.repeat(200) + '\r' + inputPrompt + state.line);
-					}
-				}
-
-				state.boundOnData = (key: string) => onData(key);
-				process.stdin.on('data', state.boundOnData);
-			});
-		},
-
-		close(): void { if (closeFn) closeFn(); },
-
-		showPrompt(): void {
-			moveToFreshLine();
-			process.stdout.write(c.magenta('> '));
-			saveCursorPosition();
-		},
-	};
+	out.write('\n');
 }
 
 // =============================================================================
 // SPINNER
 // =============================================================================
 
-let spinnerInterval: ReturnType<typeof setInterval> | null = null;
+const FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+let spinnerTimer: ReturnType<typeof setInterval> | null = null;
 
 export function startSpinner(message: string): void {
-	spinnerInterval = setInterval(() => {
-		process.stdout.write('\r' + ' ' + c.dim(message) + '... ');
-	}, 80);
+	stopSpinner();
+	if (!out.isTTY) {
+		out.write(c.dim(message + '…') + '\n');
+		return;
+	}
+
+	const startedAt = Date.now();
+	let frame = 0;
+	const label = clipText(message, Math.max(10, terminalWidth() - 14));
+	const render = (): void => {
+		const secs = Math.floor((Date.now() - startedAt) / 1000);
+		out.write('\r\x1b[2K' + c.magenta(FRAMES[frame++ % FRAMES.length] ?? '⠋') + ' ' + c.dim(`${label}… ${secs}s`));
+	};
+
+	out.write('\x1b[?25l');
+	render();
+	spinnerTimer = setInterval(render, 80);
 }
 
-export function stopSpinner(success?: boolean): void {
-	if (spinnerInterval) {
-		clearInterval(spinnerInterval);
-		spinnerInterval = null;
-	}
-	if (success === true) {
-		process.stdout.write('\r' + c.green('done.') + '\n');
-	} else if (success === false) {
-		process.stdout.write('\r' + c.red('failed.') + '\n');
-	}
+/** Stops the spinner and clears its line. The argument is kept for older call sites and is ignored. */
+export function stopSpinner(_success?: boolean): void {
+	if (!spinnerTimer) return;
+	clearInterval(spinnerTimer);
+	spinnerTimer = null;
+	out.write('\r\x1b[2K\x1b[?25h');
 }
 
 export function clearScreen(): void {
-	process.stdout.write('\x1b[2J\x1b[H');
-}
-
-// =============================================================================
-// KEY NAME PARSER
-// =============================================================================
-
-export function getKeyName(ch: string): string {
-	if (ch === '\r') return 'return';
-	if (ch === '\n') return 'enter';
-	if (ch === '\x03') return 'ctrl+c';
-	if (ch === '\x1b') return 'escape';
-	if (ch === '\x7f' || ch === '\b') return 'backspace';
-	if (ch === '\x04') return 'ctrl+d';
-	if (ch === '\t') return 'tab';
-	if (ch === '\x1b[A') return 'up';
-	if (ch === '\x1b[B') return 'down';
-	if (ch === '\x1b[C') return 'right';
-	if (ch === '\x1b[D') return 'left';
-	if (ch === '\x1b[3~') return 'delete';
-	if (ch === '\x1b[F') return 'end';
-	if (ch === '\x1b[H') return 'home';
-	if (ch === '\x1b[5~') return 'pageup';
-	if (ch === '\x1b[6~') return 'pagedown';
-	if (ch.startsWith('\x1b[')) return ch;
-	return ch.length === 1 ? ch : ch;
+	resetScreen();
 }

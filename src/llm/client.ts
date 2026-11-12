@@ -4,6 +4,7 @@
 
 import OpenAI from 'openai';
 import type { ToolCall, ConversationMessage, ToolDef } from '../types/index.js';
+import { mergeModels, type ModelInfo } from './models.js';
 
 type NIMTool = OpenAI.Chat.ChatCompletionTool;
 
@@ -38,6 +39,29 @@ export class NimClient {
 
   getModel(): string {
     return this.model;
+  }
+
+  setModel(model: string): void {
+    this.model = model;
+  }
+
+  /**
+   * Fetch the models this API key can use. Never throws: on failure the curated
+   * list is returned with `live: false` and the reason in `error`.
+   */
+  async listModels(): Promise<{ models: ModelInfo[]; live: boolean; error?: string }> {
+    try {
+      const page = await this.client.models.list({ timeout: 10_000 });
+      const ids = page.data.map((m) => m.id);
+      if (ids.length === 0) throw new Error('empty model list');
+      return { models: mergeModels(ids), live: true };
+    } catch (err) {
+      return {
+        models: mergeModels(null),
+        live: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
   }
 
   /**

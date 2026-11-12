@@ -52,37 +52,25 @@ export function getAgentTermoDir(): string {
   return resolve(process.env.HOME || process.env.USERPROFILE || '.', '.agent-termo');
 }
 
-function loadStoredNimApiKey(): void {
-  if (process.env.NIM_API_KEY) return;
-
+function readStoredConfig(): Record<string, unknown> {
   try {
-    const stored = JSON.parse(
+    const existing: unknown = JSON.parse(
       readFileSync(resolve(getAgentTermoDir(), 'config.json'), 'utf-8'),
-    ) as { nimApiKey?: unknown };
-
-    if (typeof stored.nimApiKey === 'string' && stored.nimApiKey.trim()) {
-      process.env.NIM_API_KEY = stored.nimApiKey;
+    );
+    if (existing && typeof existing === 'object' && !Array.isArray(existing)) {
+      return existing as Record<string, unknown>;
     }
   } catch {
     // No saved user configuration yet.
   }
+  return {};
 }
 
-export function saveNimApiKey(apiKey: string): void {
+function updateStoredConfig(patch: Record<string, unknown>): void {
   const configDir = getAgentTermoDir();
   const configPath = resolve(configDir, 'config.json');
-  let storedConfig: Record<string, unknown> = {};
+  const storedConfig = { ...readStoredConfig(), ...patch };
 
-  try {
-    const existing: unknown = JSON.parse(readFileSync(configPath, 'utf-8'));
-    if (existing && typeof existing === 'object' && !Array.isArray(existing)) {
-      storedConfig = existing as Record<string, unknown>;
-    }
-  } catch {
-    // Create a new configuration file when one does not exist.
-  }
-
-  storedConfig.nimApiKey = apiKey;
   mkdirSync(configDir, { recursive: true, mode: 0o700 });
   writeFileSync(configPath, `${JSON.stringify(storedConfig, null, 2)}\n`, {
     encoding: 'utf-8',
@@ -93,7 +81,36 @@ export function saveNimApiKey(apiKey: string): void {
   if (process.platform !== 'win32') chmodSync(configPath, 0o600);
 }
 
+function loadStoredNimApiKey(): void {
+  if (process.env.NIM_API_KEY) return;
+
+  const { nimApiKey } = readStoredConfig();
+  if (typeof nimApiKey === 'string' && nimApiKey.trim()) {
+    process.env.NIM_API_KEY = nimApiKey;
+  }
+}
+
+/**
+ * A model picked with /model is saved and wins over NIM_MODEL from .env, so
+ * the choice survives restarts. The --model CLI flag still overrides it.
+ */
+function loadStoredNimModel(): void {
+  const { nimModel } = readStoredConfig();
+  if (typeof nimModel === 'string' && nimModel.trim()) {
+    process.env.NIM_MODEL = nimModel;
+  }
+}
+
+export function saveNimApiKey(apiKey: string): void {
+  updateStoredConfig({ nimApiKey: apiKey });
+}
+
+export function saveNimModel(model: string): void {
+  updateStoredConfig({ nimModel: model });
+}
+
 loadStoredNimApiKey();
+loadStoredNimModel();
 
 export function getConfig(projectRoot: string): AppConfig {
   loadEnvFile(resolve(projectRoot, '.env'));
