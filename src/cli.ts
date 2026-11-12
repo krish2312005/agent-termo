@@ -25,6 +25,7 @@ async function promptForApiKey(): Promise<string> {
 
   return new Promise((resolve, reject) => {
     let apiKey = '';
+    let previousWasCarriageReturn = false;
 
     const restoreTerminal = () => {
       input.off('data', onData);
@@ -35,6 +36,12 @@ async function promptForApiKey(): Promise<string> {
 
     const onData = (data: Buffer) => {
       for (const char of data.toString('utf-8')) {
+        if (char === '\n' && previousWasCarriageReturn) {
+          previousWasCarriageReturn = false;
+          continue;
+        }
+        previousWasCarriageReturn = char === '\r';
+
         if (char === '\u0003' || char === '\u0004') {
           restoreTerminal();
           reject(new Error('API key setup cancelled.'));
