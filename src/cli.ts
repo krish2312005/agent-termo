@@ -96,7 +96,7 @@ async function startAgent(
 program
   .name('agent-termo')
   .description('Terminal AI coding agent with Nvidia NIM APIs')
-  .version('1.0.1')
+  .version('1.0.2')
   .argument('[project]', 'Project directory to operate in', process.cwd())
   .option('-k, --api-key <key>', 'Nvidia NIM API key')
   .option('-m, --model <model>', 'Model name to use')

@@ -10,6 +10,7 @@ const isWindows = process.platform === 'win32';
 // Common build options
 const commonOptions = {
   bundle: true,
+  packages: 'external',
   platform: 'node',
   target: 'node20',
   format: 'esm',
