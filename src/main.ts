@@ -8,8 +8,9 @@ import { executeTool, applyFileChange } from './tools/index.js';
 import { loadMemory, logToTimeline, logAgentTermoTimeline } from './memory/index.js';
 import { loadAllAgents } from './agents/index.js';
 import { buildSystemPrompt } from './agents/index.js';
-import { resolveProjectRoot } from './utils/config.js';
+import { resolveProjectRoot, saveNimModel } from './utils/config.js';
 import {
+	MarkdownPrinter,
 	printWelcome,
 	printUserMessage,
 	printAssistantMessage,
@@ -26,7 +27,9 @@ import {
 	stopSpinner,
 	clearScreen,
 	createInput,
-	moveToFreshLine,
+	initScreen,
+	pick,
+	setScreenStatus,
 	promptAcceptReject,
 } from './ui/index.js';
 import type { ConversationMessage, ToolCall, ProposedFileChange } from './types/index.js';
@@ -116,7 +119,6 @@ async function executeToolWithReview(
 	projectRoot: string,
 	input: InputController,
 ): Promise<{ toolResult: { success: boolean; output?: string; error?: string }; change?: ProposedFileChange; applied: boolean }> {
-	console.log('');
 	printToolCall(toolName, args);
 	startSpinner('Running ' + toolName);
 	const toolResult = await executeTool(toolName, args, projectRoot);
@@ -197,15 +199,13 @@ async function runToolLoop(
 
 		// Send conversation (including tool results) back to the LLM
 		// The LLM will either produce text or more tool calls
-		moveToFreshLine();
-		startSpinner('Working...');
+		startSpinner('Working');
 		try {
 			const tools = nimClient.buildToolDefs(TOOL_DEFINITIONS);
 			const result = await nimClient.complete(conversation, tools);
 			finalText = result.content;
 			toolCalls = dedup(result.toolCalls);
-			process.stdout.write('\n');
-			stopSpinner(true);
+			stopSpinner();
 
 			// If the LLM produced text alongside tool calls, save it
 			if (finalText && finalText.trim() && finalText.trim() !== 'null') {
@@ -215,16 +215,64 @@ async function runToolLoop(
 					content: finalText.trim(),
 					timestamp: new Date(),
 				});
+				// Narration that comes with more tool calls is shown now; the
+				// final answer (no tool calls) is printed by the caller.
+				if (toolCalls.length > 0) printAssistantMessage(finalText.trim());
 			}
 		} catch (err) {
-			process.stdout.write('\n');
-			stopSpinner(false);
+			stopSpinner();
 			printError('LLM error: ' + (err instanceof Error ? err.message : String(err)));
 			break;
 		}
 	}
 
 	return finalText;
+}
+
+/**
+ * /model            — pick from the live NVIDIA NIM catalogue (falls back to a built-in list)
+ * /model <model-id> — switch directly, e.g. /model meta/llama-3.3-70b-instruct
+ */
+async function handleModelCommand(arg: string, nimClient: NimClient, projectRoot: string): Promise<void> {
+	let selected: string | null = arg || null;
+
+	if (!selected) {
+		startSpinner('Fetching NVIDIA NIM models');
+		const { models, live, error } = await nimClient.listModels();
+		stopSpinner();
+		if (!live) {
+			printInfo('Could not fetch the live model list (' + (error ?? 'unknown error') + '). Showing built-in suggestions; you can type any model ID.');
+		}
+
+		selected = await pick({
+			title: 'Select a model',
+			items: models.map((m) => ({ value: m.id, label: m.id, hint: m.note })),
+			current: nimClient.getModel(),
+			allowCustom: true,
+		});
+		if (!selected) {
+			printInfo('Model unchanged: ' + nimClient.getModel());
+			return;
+		}
+	}
+
+	if (selected === nimClient.getModel()) {
+		printInfo('Already using ' + selected);
+		return;
+	}
+
+	nimClient.setModel(selected);
+	setScreenStatus({ model: selected });
+	logAgentTermoTimeline('Model switched to ' + selected);
+	logToTimeline(projectRoot, 'Model switched to ' + selected);
+
+	try {
+		saveNimModel(selected);
+		printSuccess('Model set to ' + selected + ' (saved as your default)');
+	} catch {
+		printSuccess('Model set to ' + selected + ' for this session');
+		printInfo('Could not save it as your default.');
+	}
 }
 
 export async function runRepl(projectRoot?: string): Promise<void> {
@@ -245,8 +293,8 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 		},
 	];
 
-	printWelcome(projectRoot);
-	console.log('Model: ' + nimClient.getModel());
+	initScreen({ model: nimClient.getModel(), project: projectRoot });
+	printWelcome(projectRoot, nimClient.getModel());
 	logAgentTermoTimeline('Agent-Termo session started. Model: ' + nimClient.getModel());
 	logToTimeline(projectRoot, 'Agent-Termo session started. Model: ' + nimClient.getModel());
 	logAgentTermoTimeline('Commands: /help /clear /memory /timeline /model /agents /history');
@@ -277,6 +325,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 
 			if (userInput.startsWith('/')) {
 				const cmd = userInput.toLowerCase().trim();
+				printUserMessage(userInput);
 
 				if (cmd === '/help' || cmd === '/') {
 					printHelp();
@@ -285,7 +334,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				if (cmd === '/clear' || cmd === '/cls') {
 					conversation.length = 1;
 					clearScreen();
-					printWelcome(projectRoot);
+					printWelcome(projectRoot, nimClient.getModel());
 					printSuccess('Conversation cleared.');
 					continue mainLoop;
 				}
@@ -297,8 +346,9 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					await printTimelineFile();
 					continue mainLoop;
 				}
-				if (cmd === '/model') {
-					printInfo('Current model: ' + nimClient.getModel());
+				if (cmd === '/model' || cmd.startsWith('/model ')) {
+					// Take the argument from the original text: model IDs are case-sensitive.
+					await handleModelCommand(userInput.trim().slice('/model'.length).trim(), nimClient, projectRoot);
 					continue mainLoop;
 				}
 				if (cmd === '/agents') {
@@ -315,10 +365,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					break;
 				}
 
-				console.log('');
-				printHelp();
-				console.log('Unknown command: ' + cmd);
-				console.log('Type /help for available commands.\n');
+				printError('Unknown command: ' + cmd, 'Type /help for available commands.');
 				continue mainLoop;
 			}
 
@@ -329,20 +376,18 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				timestamp: new Date(),
 			};
 			conversation.push(userMsg);
-			printUserMessage(userMsg);
-
-			moveToFreshLine();
+			printUserMessage(userInput);
 
 			const useTools = mightNeedTools(userInput);
 			const tools = useTools ? nimClient.buildToolDefs(TOOL_DEFINITIONS) : undefined;
 
 			if (useTools) {
-				startSpinner('Working...');
+				startSpinner('Working');
 				try {
 					const result = await nimClient.complete(conversation, tools);
 					const fullText = result.content;
 					let toolCalls = dedup(result.toolCalls);
-					stopSpinner(true);
+					stopSpinner();
 
 					if (toolCalls.length === 0) {
 						// No tool calls — just display the text response
@@ -354,8 +399,13 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 								content: cleanText,
 								timestamp: new Date(),
 							});
+							printAssistantMessage(cleanText);
 						}
 					} else {
+						// Show any narration that came with the first tool calls
+						const narration = (fullText ?? '').trim().replace(/^null$/, '').trim();
+						if (narration) printAssistantMessage(narration);
+
 						// Run the tool-call loop: execute tools, feed results back, repeat
 						const finalText = await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient);
 						if (finalText && finalText.trim() && finalText.trim() !== 'null') {
@@ -363,40 +413,29 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						}
 					}
 				} catch (err) {
-					process.stdout.write('\n');
-					stopSpinner(false);
+					stopSpinner();
 					printError('LLM error: ' + (err instanceof Error ? err.message : String(err)));
 					conversation.pop();
 					continue mainLoop;
 				}
 			} else {
-				// No tools — stream the response
-				startSpinner('Thinking...');
+				// No tools — stream the response, rendering markdown line by line.
+				startSpinner('Thinking');
+				const md = new MarkdownPrinter(() => stopSpinner());
 				try {
-					const gen = nimClient.streamComplete(conversation, undefined, (text: string) => {
-						process.stdout.write(text);
-					});
-					let receivedContent = false;
-					for await (const result of gen) {
-						if (result.content && result.content.trim()) {
-							receivedContent = true;
-						}
-					}
-					if (receivedContent) {
-						process.stdout.write('\n');
-						stopSpinner(true);
-					} else {
-						process.stdout.write('\n');
-						stopSpinner(undefined);
-					}
+					const gen = nimClient.streamComplete(conversation, undefined, (text: string) => md.push(text));
+					// The generator streams everything, then yields once at the end; the
+					// chunks have already been rendered through the callback.
+					await gen.next();
+					md.end();
+					stopSpinner();
 				} catch {
-					process.stdout.write('\n');
-					stopSpinner(false);
-					startSpinner('Retrying...');
+					md.end();
+					stopSpinner();
+					startSpinner('Retrying');
 					try {
 						const result = await nimClient.complete(conversation, undefined);
-						process.stdout.write('\n');
-						stopSpinner(true);
+						stopSpinner();
 						const cleanText = (result.content ?? '').trim();
 						if (cleanText) {
 							conversation.push({
@@ -405,10 +444,10 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 								content: cleanText,
 								timestamp: new Date(),
 							});
+							printAssistantMessage(cleanText);
 						}
 					} catch (err2) {
-						process.stdout.write('\n');
-						stopSpinner(false);
+						stopSpinner();
 						printError('LLM error: ' + (err2 instanceof Error ? err2.message : String(err2)));
 						conversation.pop();
 						continue mainLoop;
@@ -420,7 +459,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				conversation.splice(1, conversation.length - 42);
 			}
 		} catch (err) {
-			stopSpinner(false);
+			stopSpinner();
 			printError('Session error: ' + (err instanceof Error ? err.message : String(err)));
 		}
 	}
