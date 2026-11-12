@@ -2,7 +2,7 @@
 // Config Management
 // =============================================================================
 
-import { readFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AppConfig } from '../types/index.js';
@@ -51,6 +51,49 @@ export function getAgentTermoDir(): string {
   }
   return resolve(process.env.HOME || process.env.USERPROFILE || '.', '.agent-termo');
 }
+
+function loadStoredNimApiKey(): void {
+  if (process.env.NIM_API_KEY) return;
+
+  try {
+    const stored = JSON.parse(
+      readFileSync(resolve(getAgentTermoDir(), 'config.json'), 'utf-8'),
+    ) as { nimApiKey?: unknown };
+
+    if (typeof stored.nimApiKey === 'string' && stored.nimApiKey.trim()) {
+      process.env.NIM_API_KEY = stored.nimApiKey;
+    }
+  } catch {
+    // No saved user configuration yet.
+  }
+}
+
+export function saveNimApiKey(apiKey: string): void {
+  const configDir = getAgentTermoDir();
+  const configPath = resolve(configDir, 'config.json');
+  let storedConfig: Record<string, unknown> = {};
+
+  try {
+    const existing: unknown = JSON.parse(readFileSync(configPath, 'utf-8'));
+    if (existing && typeof existing === 'object' && !Array.isArray(existing)) {
+      storedConfig = existing as Record<string, unknown>;
+    }
+  } catch {
+    // Create a new configuration file when one does not exist.
+  }
+
+  storedConfig.nimApiKey = apiKey;
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  writeFileSync(configPath, `${JSON.stringify(storedConfig, null, 2)}\n`, {
+    encoding: 'utf-8',
+    mode: 0o600,
+  });
+
+  // Restrict permissions even when updating an existing file on Unix.
+  if (process.platform !== 'win32') chmodSync(configPath, 0o600);
+}
+
+loadStoredNimApiKey();
 
 export function getConfig(projectRoot: string): AppConfig {
   loadEnvFile(resolve(projectRoot, '.env'));
