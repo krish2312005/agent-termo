@@ -5,25 +5,97 @@
 
 import { Command } from 'commander';
 import { runRepl } from './main.js';
+import { saveNimApiKey } from './utils/config.js';
 
 const program = new Command();
+
+async function promptForApiKey(): Promise<string> {
+  const input = process.stdin;
+  const output = process.stdout;
+
+  if (!input.isTTY || typeof input.setRawMode !== 'function') {
+    throw new Error(
+      'NVIDIA NIM API key is missing. Run Agent-Termo in an interactive terminal or set NIM_API_KEY before starting.',
+    );
+  }
+
+  console.log('An NVIDIA NIM API key is required to start Agent-Termo.');
+  console.log('Get your key at https://build.nvidia.com/');
+  output.write('Enter your API key (input hidden): ');
+
+  return new Promise((resolve, reject) => {
+    let apiKey = '';
+
+    const restoreTerminal = () => {
+      input.off('data', onData);
+      input.setRawMode(false);
+      input.pause();
+      output.write('\n');
+    };
+
+    const onData = (data: Buffer) => {
+      for (const char of data.toString('utf-8')) {
+        if (char === '\u0003' || char === '\u0004') {
+          restoreTerminal();
+          reject(new Error('API key setup cancelled.'));
+          return;
+        }
+
+        if (char === '\r' || char === '\n') {
+          if (!apiKey.trim()) {
+            output.write('\nAn API key is required. Enter your API key: ');
+            continue;
+          }
+
+          restoreTerminal();
+          resolve(apiKey.trim());
+          return;
+        }
+
+        if (char === '\u007f' || char === '\b') {
+          apiKey = apiKey.slice(0, -1);
+        } else if (char >= ' ') {
+          apiKey += char;
+        }
+      }
+    };
+
+    input.setRawMode(true);
+    input.resume();
+    input.on('data', onData);
+  });
+}
+
+async function startAgent(
+  project: string,
+  options: { apiKey?: string; model?: string; debug?: boolean },
+): Promise<void> {
+  // Apply CLI overrides to env before main initializes.
+  if (options.apiKey) process.env.NIM_API_KEY = options.apiKey;
+  if (options.model) process.env.NIM_MODEL = options.model;
+  if (options.debug) process.env.LOG_LEVEL = 'debug';
+
+  if (!process.env.NIM_API_KEY?.trim()) {
+    const apiKey = await promptForApiKey();
+    saveNimApiKey(apiKey);
+    process.env.NIM_API_KEY = apiKey;
+    console.log('API key saved. Agent-Termo will remember it for future sessions.');
+  }
+
+  console.log(`Starting Agent-Termo in: ${project}`);
+  await runRepl(project);
+}
 
 program
   .name('agent-termo')
   .description('Terminal AI coding agent with Nvidia NIM APIs')
-  .version('1.0.0')
+  .version('1.0.1')
   .argument('[project]', 'Project directory to operate in', process.cwd())
   .option('-k, --api-key <key>', 'Nvidia NIM API key')
   .option('-m, --model <model>', 'Model name to use')
   .option('--debug', 'Enable debug logging')
   .action(async (project: string, options: { apiKey?: string; model?: string; debug?: boolean }) => {
-    // Apply CLI overrides to env before main initializes
-    if (options.apiKey) process.env.NIM_API_KEY = options.apiKey;
-    if (options.model) process.env.NIM_MODEL = options.model;
-    if (options.debug) process.env.LOG_LEVEL = 'debug';
-
-    console.log(`Starting Agent-Termo in: ${project}`);
-    await runRepl(project);
+    await startAgent(project, options);
   });
 
 program
@@ -56,14 +128,14 @@ program
 
     console.log(`\n✓ Initialized Agent-Termo in ${resolve(dir)}`);
     console.log('  Created: docs/MEMORY.md, docs/TIMELINE.md');
-    console.log('  Create a .env file with your NIM_API_KEY to get started.');
+    console.log('  Agent-Termo will ask for your NVIDIA NIM API key the first time you launch it.');
   });
 
 async function main() {
-  // Check for unparsed arguments — if none, run repl mode
+  // Run REPL mode directly when no command or options are supplied.
   const args = process.argv.slice(2);
   if (args.length === 0) {
-    await runRepl(process.cwd());
+    await startAgent(process.cwd(), {});
     return;
   }
 
