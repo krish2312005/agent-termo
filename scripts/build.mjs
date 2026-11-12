@@ -25,9 +25,6 @@ await esbuild.build({
   ...commonOptions,
   entryPoints: ['src/cli.ts'],
   outfile: 'dist/cli.js',
-  banner: {
-    js: '#!/usr/bin/env node',
-  },
 });
 
 // Build the main application
