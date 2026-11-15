@@ -48,6 +48,7 @@ export const COMMANDS: CommandInfo[] = [
 		{ name: '/status', description: 'show session status' },
 		{ name: '/context', description: 'show context and runtime paths' },
 		{ name: '/compact', description: 'summarize and compact conversation context' },
+		{ name: '/continue', description: 'resume an interrupted task from where it stopped' },
 		{ name: '/report', description: 'analyze the project and create a report file' },
 		{ name: '/history', description: 'show message count' },
 	{ name: '/exit', description: 'quit' },
@@ -64,7 +65,9 @@ const rule = (): string => c.dim('─'.repeat(Math.max(10, Math.min(terminalWidt
 // =============================================================================
 
 export function printWelcome(projectRoot: string, model: string): void {
-	const width = Math.max(40, Math.min(terminalWidth() - 2, 64));
+	// The box is wide enough that the model name is always shown in full —
+	// never truncated by a label or a narrow box.
+	const width = Math.max(40, Math.min(terminalWidth() - 2, Math.max(64, model.length + 14)));
 	const inner = width - 2;
 	const room = inner - 2;
 	const row = (content: string): string =>
@@ -402,8 +405,10 @@ export function printHelp(): void {
 	}
 	out.write('\n' + c.bold('Keys') + '\n' + rule() + '\n');
 	const keys: Array<[string, string]> = [
-		['↑ / ↓', 'input history'],
-		['Tab', 'complete a /command'],
+		['Enter', 'send the message'],
+		['Shift+Enter', 'insert a new line (multi-line input)'],
+		['↑ / ↓', 'move between lines, or input history'],
+		['Tab', 'complete a /command or @mention'],
 		['Ctrl+A / Ctrl+E', 'start / end of line'],
 		['Ctrl+W / Ctrl+U', 'delete word / to line start'],
 		['Ctrl+C', 'clear the line, or quit when empty'],

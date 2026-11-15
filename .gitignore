@@ -52,3 +52,5 @@ Thumbs.db
 
 # pkg cache
 .degree/
+# Agent-Termo runtime state (per-machine session memory/timeline)
+.agent-termo/

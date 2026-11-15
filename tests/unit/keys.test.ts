@@ -42,6 +42,13 @@ describe('parseKeys', () => {
     ]);
   });
 
+  it('maps line feed and kitty shift-enter to shift+enter for multi-line input', () => {
+    const names = (s: string) => parse(s).map((k) => k.name);
+    expect(names('\n')).toEqual(['shift+enter']);
+    expect(names('\x1b[13;2u')).toEqual(['shift+enter']);
+    expect(names('\x1b[13;5u')).toEqual(['shift+enter']);
+  });
+
   it('carries a paste across chunks', () => {
     const state = { paste: null as string | null };
     expect(parse('\x1b[200~first half ', state)).toEqual([]);
