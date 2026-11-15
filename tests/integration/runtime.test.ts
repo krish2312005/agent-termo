@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, readFileSync, existsSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { appendToMemory, logToTimeline, loadTimeline, logAgentTermoTimeline } from '../../src/memory/index.js';
+import { appendToMemory, logToTimeline, loadTimeline, logAgentTermoTimeline, appendToAgentTermoMemory, loadAgentTermoMemory } from '../../src/memory/index.js';
 import { loadAllAgents } from '../../src/agents/index.js';
 
 describe('packaged-project runtime initialization', () => {
@@ -38,6 +38,19 @@ describe('packaged-project runtime initialization', () => {
       expect(agents).toHaveLength(1);
       expect(agents[0]?.name).toBe('reviewer');
       expect(agents[0]?.systemPrompt).toContain('focused code reviewer');
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('persists the current chat in project-local Agent-Termo memory', () => {
+    const projectRoot = mkdtempSync(join(tmpdir(), 'agent-termo-chat-memory-'));
+    try {
+      appendToAgentTermoMemory('### User\n\nExplain the architecture', projectRoot);
+      appendToAgentTermoMemory('### Assistant\n\nThe project uses layered modules.', projectRoot);
+      const memory = loadAgentTermoMemory(projectRoot);
+      expect(memory).toContain('Explain the architecture');
+      expect(memory).toContain('layered modules');
     } finally {
       rmSync(projectRoot, { recursive: true, force: true });
     }

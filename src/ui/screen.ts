@@ -37,6 +37,7 @@ const S = {
 	model: '',
 	project: '',
 	commands: [] as CommandInfo[],
+	agentNames: [] as string[],
 	buffer: '',
 	cursor: 0,
 	offset: 0,
@@ -44,6 +45,10 @@ const S = {
 
 export function setCommands(commands: CommandInfo[]): void {
 	S.commands = commands;
+}
+
+export function setAgentNames(names: string[]): void {
+	S.agentNames = [...names].sort();
 }
 
 function dims(): { rows: number; cols: number } {
@@ -311,11 +316,27 @@ export function parseKeys(chunk: string, state: { paste: string | null }): Key[]
  * Put stdin in raw mode and call `handler` for every key until the returned
  * function is called, which restores the terminal.
  */
-export function listenKeys(handler: (key: Key) => void): () => void {
+export function listenKeys(handler: (key: Key) => void, onError?: () => void): () => void {
 	const stdin = process.stdin;
 	const state = { paste: null as string | null };
+	let stopped = false;
+	const stop = (): void => {
+		if (stopped) return;
+		stopped = true;
+		stdin.off('data', onData);
+		if (out.isTTY) out.write(`${CSI}?2004l`);
+		stdin.setRawMode?.(false);
+		stdin.pause();
+	};
 	const onData = (chunk: string | Buffer): void => {
-		for (const key of parseKeys(chunk.toString(), state)) handler(key);
+		try {
+			for (const key of parseKeys(chunk.toString(), state)) handler(key);
+		} catch {
+			// Always release raw mode if a UI handler throws. The REPL can recover
+			// on its next prompt instead of leaving the terminal permanently stuck.
+			stop();
+			onError?.();
+		}
 	};
 
 	stdin.setRawMode?.(true);
@@ -324,12 +345,7 @@ export function listenKeys(handler: (key: Key) => void): () => void {
 	if (out.isTTY) out.write(`${CSI}?2004h`); // bracketed paste
 	stdin.on('data', onData);
 
-	return () => {
-		stdin.off('data', onData);
-		if (out.isTTY) out.write(`${CSI}?2004l`);
-		stdin.setRawMode?.(false);
-		stdin.pause();
-	};
+	return stop;
 }
 
 // =============================================================================
@@ -358,6 +374,14 @@ function sanitizePaste(text: string): string {
 }
 
 function completeCommand(): void {
+	if (S.buffer.toLowerCase().startsWith('/agent ')) {
+		const prefix = S.buffer.slice('/agent '.length);
+		const names = S.agentNames.filter((name) => name.toLowerCase().startsWith(prefix.toLowerCase()));
+		if (names.length === 0) return;
+		S.buffer = '/agent ' + names[0];
+		S.cursor = S.buffer.length;
+		return;
+	}
 	if (!S.buffer.startsWith('/') || S.buffer.includes(' ')) return;
 	const typed = S.buffer.toLowerCase();
 	const names = S.commands.map((cmd) => cmd.name).filter((n) => n.startsWith(typed));
@@ -526,14 +550,21 @@ export function createInput(): InputController {
 						default:
 							return;
 					}
-				});
+					}, () => {
+						leave();
+						resolve('');
+					});
 			});
 		},
 
-		close(): void {
-			stop?.();
-			stop = null;
-		},
+			close(): void {
+				stop?.();
+				stop = null;
+				S.editing = false;
+				S.buffer = '';
+				S.cursor = 0;
+				S.offset = 0;
+			},
 
 		showPrompt(): void {
 			paint();
@@ -693,6 +724,6 @@ export function pick(opts: {
 					return;
 			}
 			draw(false);
-		});
+		}, () => end(null));
 	});
 }

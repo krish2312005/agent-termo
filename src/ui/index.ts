@@ -21,6 +21,7 @@ export {
 	pick,
 	setScreenStatus,
 	listenKeys,
+	setAgentNames,
 	type InputController,
 	type PickItem,
 } from './screen.js';

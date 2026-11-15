@@ -5,7 +5,7 @@
 import { NimClient, fromWireToolName } from './llm/client.js';
 import { TOOL_DEFINITIONS } from './llm/tools.js';
 import { executeTool, applyFileChange } from './tools/index.js';
-import { loadMemory, logToTimeline, logAgentTermoTimeline } from './memory/index.js';
+import { loadMemory, logToTimeline, logAgentTermoTimeline, appendToAgentTermoMemory } from './memory/index.js';
 import { loadAllAgents } from './agents/index.js';
 import { buildSystemPrompt } from './agents/index.js';
 import { resolveProjectRoot, saveNimModel } from './utils/config.js';
@@ -33,6 +33,7 @@ import {
 	setScreenStatus,
 	promptAcceptReject,
 	listenKeys,
+	setAgentNames,
 } from './ui/index.js';
 import type { ConversationMessage, ToolCall, ProposedFileChange } from './types/index.js';
 
@@ -98,6 +99,7 @@ async function withEscapeCancellation<T>(nimClient: NimClient, operation: () => 
 async function replyWithText(
 	conversation: ConversationMessage[],
 	nimClient: NimClient,
+	projectRoot: string,
 ): Promise<void> {
 	startSpinner('Thinking');
 	const md = new MarkdownPrinter(() => stopSpinner());
@@ -105,10 +107,15 @@ async function replyWithText(
 		const gen = nimClient.streamComplete(conversation, undefined, (text: string) => md.push(text));
 		// The generator streams everything, then yields once at the end; the
 		// chunks have already been rendered through the callback.
-			await withEscapeCancellation(nimClient, () => gen.next().then(() => undefined));
-		md.end();
-		stopSpinner();
-		return;
+			const streamed = await withEscapeCancellation(nimClient, () => gen.next());
+			md.end();
+			stopSpinner();
+			const streamedText = streamed.value?.content?.trim() ?? '';
+			if (streamedText) {
+				conversation.push({ id: crypto.randomUUID(), role: 'assistant', content: streamedText, timestamp: new Date() });
+				rememberChat(projectRoot, 'Assistant', streamedText);
+			}
+			return;
 		} catch (err) {
 			md.end();
 			stopSpinner();
@@ -124,10 +131,11 @@ async function replyWithText(
 			conversation.push({
 				id: crypto.randomUUID(),
 				role: 'assistant',
-				content: cleanText,
-				timestamp: new Date(),
-			});
-			printAssistantMessage(cleanText);
+					content: cleanText,
+					timestamp: new Date(),
+				});
+				rememberChat(projectRoot, 'Assistant', cleanText);
+				printAssistantMessage(cleanText);
 		}
 	} catch (err) {
 		stopSpinner();
@@ -443,6 +451,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 	const agentRoot = resolve(projectRoot, '.agent-termo');
 	const projectAgents = loadAllAgents(agentRoot);
 	const customAgents = projectAgents.length > 0 ? projectAgents : loadAllAgents(resolve(projectRoot, '.claude'));
+	setAgentNames(customAgents.map((agent) => agent.name));
 	let activeAgentName = '';
 	let activeAgentPrompt = '';
 	let currentGoal = '';
@@ -472,6 +481,30 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 
 	const input = createInput();
 
+	const activateAgent = (name: string): boolean => {
+		const selected = customAgents.find((agent) => agent.name === name);
+		if (!selected) return false;
+		activeAgentName = selected.name;
+		activeAgentPrompt = selected.systemPrompt;
+		conversation[0]!.content = buildSessionPrompt();
+		logAgentTermoTimeline('Active custom agent: ' + selected.name, projectRoot);
+		printSuccess('Active agent: ' + selected.name);
+		return true;
+	};
+
+	const chooseAgent = async (): Promise<void> => {
+		if (customAgents.length === 0) {
+			printInfo('No custom agents found. Add Markdown agents to ' + agentRoot + '/agents');
+			return;
+		}
+		const selected = await pick({
+			title: 'Select an agent',
+			items: customAgents.map((agent) => ({ value: agent.name, label: agent.name, hint: agent.description })),
+			current: activeAgentName,
+		});
+		if (selected) activateAgent(selected);
+	};
+
 	const cleanup = () => {
 		input.close();
 		process.stdout.write('\n');
@@ -500,10 +533,20 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					const requestedPath = userInput.trim().slice('/report'.length).trim() || 'report.md';
 					printUserMessage(rawInput);
 					displayedInput = true;
-					userInput = `Review the current project and our entire conversation context. Identify bugs, risks, and actionable improvements. Create a detailed Markdown report at ${requestedPath} using file:write. Include evidence with file paths and line references, severity, reproduction steps, and recommended fixes. Do not only describe the report: write it to disk, then summarize what was written.`;
-				}
+						userInput = `Review the current project and our entire conversation context. Identify bugs, risks, and actionable improvements. Create a detailed Markdown report at ${requestedPath} using file:write. Include evidence with file paths and line references, severity, reproduction steps, and recommended fixes. Do not only describe the report: write it to disk, then summarize what was written.`;
+					}
+					const agentTask = /^\/agent\s+(\S+)\s+(.+)$/i.exec(userInput);
+					if (agentTask) {
+						if (!activateAgent(agentTask[1]!)) {
+							printError('Unknown agent: ' + agentTask[1], 'Use /agents to list available agents.');
+							continue mainLoop;
+						}
+						printUserMessage(rawInput);
+						displayedInput = true;
+						userInput = agentTask[2]!;
+					}
 
-				if (userInput.startsWith('/') && !displayedInput) {
+					if (userInput.startsWith('/') && !displayedInput) {
 				const cmd = userInput.toLowerCase().trim();
 				printUserMessage(userInput);
 
@@ -534,23 +577,13 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					if (cmd === '/agents') {
 						printAgentsList(customAgents);
 						printInfo('Custom agents directory: ' + agentRoot + '/agents');
+						await chooseAgent();
 						continue mainLoop;
 					}
 					if (cmd === '/agent' || cmd.startsWith('/agent ')) {
 						const requested = userInput.trim().slice('/agent'.length).trim();
-						if (!requested) {
-							printAgentsList(customAgents);
-						} else {
-							const selected = customAgents.find((agent) => agent.name === requested);
-							if (!selected) printError('Unknown agent: ' + requested, 'Use /agents to list available agents.');
-							else {
-								activeAgentName = selected.name;
-								activeAgentPrompt = selected.systemPrompt;
-								conversation[0]!.content = buildSessionPrompt();
-								logAgentTermoTimeline('Active custom agent: ' + selected.name, projectRoot);
-								printSuccess('Active agent: ' + selected.name);
-							}
-						}
+							if (!requested) await chooseAgent();
+							else if (!activateAgent(requested)) printError('Unknown agent: ' + requested, 'Use /agents to list available agents.');
 						continue mainLoop;
 					}
 					if (cmd === '/goal' || cmd.startsWith('/goal ')) {
@@ -599,9 +632,10 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				role: 'user',
 				content: userInput,
 				timestamp: new Date(),
-			};
-			conversation.push(userMsg);
-				if (!displayedInput) printUserMessage(userInput);
+				};
+				conversation.push(userMsg);
+				rememberChat(projectRoot, 'User', userInput);
+					if (!displayedInput) printUserMessage(userInput);
 
 			const useTools = mightNeedTools(userInput);
 			const tools = useTools ? nimClient.buildToolDefs(TOOL_DEFINITIONS) : undefined;
@@ -623,8 +657,9 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 								role: 'assistant',
 								content: cleanText,
 								timestamp: new Date(),
-							});
-							printAssistantMessage(cleanText);
+				});
+				rememberChat(projectRoot, 'Assistant', cleanText);
+				printAssistantMessage(cleanText);
 						}
 					} else {
 						// Show any narration that came with the first tool calls
@@ -656,6 +691,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 							if (narration && !narration.includes('"tool_calls"')) printAssistantMessage(narration);
 							const finalText = await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient);
 							if (finalText && finalText.trim() && finalText.trim() !== 'null') {
+								rememberChat(projectRoot, 'Assistant', finalText);
 								printAssistantMessage(finalText.trim());
 							}
 						} else {
@@ -672,15 +708,21 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					}
 				}
 			} else {
-				await replyWithText(conversation, nimClient);
+				await replyWithText(conversation, nimClient, projectRoot);
 			}
 
 			if (conversation.length > 42) {
 				conversation.splice(1, conversation.length - 42);
 			}
 		} catch (err) {
+			input.close();
 			stopSpinner();
 			printError('Session error: ' + (err instanceof Error ? err.message : String(err)));
 		}
 	}
+}
+
+function rememberChat(projectRoot: string, role: 'User' | 'Assistant', content: string): void {
+	const trimmed = content.trim();
+	if (trimmed) appendToAgentTermoMemory('### ' + role + '\n\n' + trimmed.slice(0, 12000), projectRoot);
 }
