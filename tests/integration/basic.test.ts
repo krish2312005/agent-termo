@@ -6,11 +6,37 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { executeTool } from '../../src/tools/index.js';
+import { executeTool, applyFileChange } from '../../src/tools/index.js';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 const PROJECT_ROOT = process.cwd();
 
 describe('executeTool', () => {
+	const lifecyclePath = '.test-tool-lifecycle.txt';
+	const lifecycleAbsolutePath = resolve(PROJECT_ROOT, lifecyclePath);
+
+	it('file:write, file:edit, and file:delete apply real filesystem changes', async () => {
+		rmSync(lifecycleAbsolutePath, { force: true });
+
+		const write = await executeTool('file:write', { path: lifecyclePath, content: 'before\n' }, PROJECT_ROOT);
+		expect(write.success).toBe(true);
+		const proposedWrite = JSON.parse(write.output ?? '').proposedChange;
+		expect((await applyFileChange(proposedWrite, PROJECT_ROOT)).success).toBe(true);
+		expect(readFileSync(lifecycleAbsolutePath, 'utf-8')).toBe('before\n');
+
+		const edit = await executeTool('file:edit', { path: lifecyclePath, old_string: 'before', new_string: 'after' }, PROJECT_ROOT);
+		const proposedEdit = JSON.parse(edit.output ?? '').proposedChange;
+		expect((await applyFileChange(proposedEdit, PROJECT_ROOT)).success).toBe(true);
+		expect(readFileSync(lifecycleAbsolutePath, 'utf-8')).toBe('after\n');
+
+		const deletion = await executeTool('file:delete', { path: lifecyclePath }, PROJECT_ROOT);
+		expect(deletion.success).toBe(true);
+		const proposedDeletion = JSON.parse(deletion.output ?? '').proposedChange;
+		expect((await applyFileChange(proposedDeletion, PROJECT_ROOT)).success).toBe(true);
+		expect(existsSync(lifecycleAbsolutePath)).toBe(false);
+	});
+
   it('file:read — reads package.json successfully', async () => {
     const result = await executeTool('file:read', { path: 'package.json' }, PROJECT_ROOT);
 

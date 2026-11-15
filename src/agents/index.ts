@@ -12,7 +12,7 @@ function parseAgentMeta(content: string): { description: string; tools: string[]
   const toolsStr = toolsMatch?.[1] ?? '';
   const tools = toolsStr
     ? toolsStr.split(',').map((t) => t.trim().replace(/^["']|["']$/g, ''))
-    : ['file:read', 'file:write', 'file:edit', 'file:glob', 'grep', 'bash:execute', 'git:status', 'git:commit', 'git:push', 'git:log'];
+    : ['file:read', 'file:write', 'file:edit', 'file:delete', 'file:glob', 'grep', 'bash:execute', 'git:status', 'git:commit', 'git:push', 'git:log'];
   return { description: descMatch?.[1]?.trim() ?? '', tools };
 }
 
@@ -68,6 +68,7 @@ Available functions:
 - file:read(path) → read a file
 - file:write(path, content) → overwrite a file completely
 - file:edit(path, old_string, new_string) → edit a specific line section
+- file:delete(path) → delete a file after explicit user instruction
 - file:glob(pattern) → list files matching a glob (e.g. "src/**/*.ts")
 - grep(pattern, path, glob?) → search for text in files
 - bash:execute(command) → run a shell command
