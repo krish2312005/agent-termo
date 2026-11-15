@@ -72,23 +72,41 @@ export async function loadMemory(projectRoot: string): Promise<string> {
 }
 
 export async function appendToMemory(projectRoot: string, entry: string): Promise<void> {
- const path = resolve(projectRoot, 'docs', 'MEMORY.md');
+ let path: string;
+ try {
+   path = ensureProjectDocs(projectRoot).memoryPath;
+ } catch {
+   return;
+ }
  const timestamp = new Date().toISOString().split('T')[0];
- appendFile(path, '\n\n## ' + timestamp + '\n\n' + entry, 'utf-8');
+ try {
+   appendFile(path, '\n\n## ' + timestamp + '\n\n' + entry, 'utf-8');
+ } catch {
+   // Project memory persistence must not crash the agent.
+ }
 }
 
 // ── Timeline System ──────────────────────────────────────────────────────────
 
 const TIMELINE_TEMPLATE = '# Project Timeline\n\nThis document tracks the complete chronological history of the project.\n\n---\n\n';
+const MEMORY_TEMPLATE = '# Project Memory\n\n## Project Context\n(Add project context here)\n';
+
+function ensureProjectDocs(projectRoot: string): { memoryPath: string; timelinePath: string } {
+ const docsDir = resolve(projectRoot, 'docs');
+ const memoryPath = resolve(docsDir, 'MEMORY.md');
+ const timelinePath = resolve(docsDir, 'TIMELINE.md');
+
+ mkdirSync(docsDir, { recursive: true });
+ if (!existsSync(memoryPath)) writeFile(memoryPath, MEMORY_TEMPLATE, 'utf-8');
+ if (!existsSync(timelinePath)) writeFile(timelinePath, TIMELINE_TEMPLATE, 'utf-8');
+ return { memoryPath, timelinePath };
+}
 
 export async function loadTimeline(projectRoot: string): Promise<string> {
- const path = resolve(projectRoot, 'docs', 'TIMELINE.md');
- if (!existsSync(path)) {
-   try {
-     writeFile(path, TIMELINE_TEMPLATE, 'utf-8');
-   } catch {
-     // ignore
-   }
+ let path: string;
+ try {
+   path = ensureProjectDocs(projectRoot).timelinePath;
+ } catch {
    return '';
  }
  try {
@@ -105,7 +123,12 @@ export async function appendToTimeline(
  actions: string[],
  notes: string[] = [],
 ): Promise<void> {
- const path = resolve(projectRoot, 'docs', 'TIMELINE.md');
+ let path: string;
+ try {
+   path = ensureProjectDocs(projectRoot).timelinePath;
+ } catch {
+   return;
+ }
  const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 16);
 
  const entry =
@@ -120,11 +143,24 @@ export async function appendToTimeline(
    '\n\n### Notes\n' +
    (notes.length > 0 ? notes.map((n) => '- ' + n).join('\n') : '- (none)');
 
- appendFile(path, entry, 'utf-8');
+ try {
+   appendFile(path, entry, 'utf-8');
+ } catch {
+   // Project logging must never prevent the agent from starting.
+ }
 }
 
 export async function logToTimeline(projectRoot: string, message: string): Promise<void> {
- const path = resolve(projectRoot, 'docs', 'TIMELINE.md');
+ let path: string;
+ try {
+   path = ensureProjectDocs(projectRoot).timelinePath;
+ } catch {
+   return;
+ }
  const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 16);
- appendFile(path, '\n- [' + timestamp + '] ' + message, 'utf-8');
+ try {
+   appendFile(path, '\n- [' + timestamp + '] ' + message, 'utf-8');
+ } catch {
+   // Project logging must never prevent the agent from starting.
+ }
 }
