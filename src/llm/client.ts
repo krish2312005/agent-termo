@@ -147,11 +147,11 @@ export class NimClient {
 		messages: ConversationMessage[],
 		tools?: NIMTool[],
 		onChunk?: (text: string) => void,
-		onReasoning?: (stage: string) => void,
+		// onReasoning?: (stage: string) => void,
 	): AsyncGenerator<{ content: string; toolCalls: ToolCall[] }, void, unknown> {
 			const rawChunks: string[] = [];
 			const toolCallMap: Map<number, { id: string; name: string; arguments: string }> = new Map();
-			let reasoningAnnounced = false;
+			// let reasoningAnnounced = false;
 		const controller = new AbortController();
 		this.activeController = controller;
 
@@ -191,10 +191,10 @@ export class NimClient {
 	      const delta = chunk.choices[0]?.delta;
 
 	      if (!delta) continue;
-			if (!reasoningAnnounced && ('reasoning_content' in delta || 'reasoning' in delta)) {
-				reasoningAnnounced = true;
-				onReasoning?.('Model is reasoning through the request…');
-			}
+			// if (!reasoningAnnounced && ('reasoning_content' in delta || 'reasoning' in delta)) {
+			// 	reasoningAnnounced = true;
+			// 	onReasoning?.('Model is reasoning through the request…');
+			// }
 
       // Text delta — filter out "null" chunks (Stepfun's reasoning output)
       const rawContent = delta.content ?? '';
@@ -250,7 +250,7 @@ export class NimClient {
 	async complete(
 		messages: ConversationMessage[],
 		tools?: NIMTool[],
-		onReasoning?: (stage: string) => void,
+		// onReasoning?: (stage: string) => void,
 	): Promise<{ content: string; toolCalls: ToolCall[] }> {
 		const controller = new AbortController();
 		this.activeController = controller;
@@ -280,8 +280,8 @@ export class NimClient {
 		}, { signal: controller.signal });
 
 		const msg = response.choices[0]?.message;
-		const rawMessage = msg as (typeof msg & { reasoning_content?: string; reasoning?: string }) | undefined;
-		if (rawMessage?.reasoning_content || rawMessage?.reasoning) onReasoning?.('Model completed a reasoning pass…');
+		// const rawMessage = msg as (typeof msg & { reasoning_content?: string; reasoning?: string }) | undefined;
+		// if (rawMessage?.reasoning_content || rawMessage?.reasoning) onReasoning?.('Model completed a reasoning pass…');
 		const responseUsage = response.usage;
 		if (responseUsage) this.recordUsage(responseUsage.prompt_tokens ?? 0, responseUsage.completion_tokens ?? 0);
 		else this.recordUsage(this.estimatePromptTokens(messages), Math.ceil((msg?.content?.length ?? 0) / 4));
