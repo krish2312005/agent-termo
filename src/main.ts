@@ -2,14 +2,15 @@
 // Agent-Termo — Main REPL entry point
 // =============================================================================
 
-import { NimClient, fromWireToolName } from './llm/client.js';
+import { NimClient, fromWireToolName, type ThinkingCapacity } from './llm/client.js';
 import { TOOL_DEFINITIONS } from './llm/tools.js';
 import { executeTool, applyFileChange } from './tools/index.js';
 import { loadMemory, logToTimeline, logAgentTermoTimeline, appendToAgentTermoMemory } from './memory/index.js';
 import { loadAllAgents } from './agents/index.js';
 import { buildSystemPrompt } from './agents/index.js';
-import { resolveProjectRoot, saveNimModel } from './utils/config.js';
+import { resolveProjectRoot, saveNimModel, saveNimThinking } from './utils/config.js';
 import { resolve } from 'node:path';
+import { readdirSync, readFileSync } from 'node:fs';
 import { ensureAgentFolder, loadAgentCommands, type AgentCommand } from './runtime/agent-folder.js';
 import {
 	MarkdownPrinter,
@@ -38,6 +39,7 @@ import {
 	setNextInput,
 	setCommands,
 	COMMANDS,
+	setContextFiles,
 } from './ui/index.js';
 import type { ConversationMessage, ToolCall, ToolResult, ProposedFileChange } from './types/index.js';
 
@@ -48,6 +50,38 @@ const TOOL_KEYWORDS = [
 	'configure', 'setup', 'src', 'package', 'app', 'project', 'api', 'deploy',
 	'test', 'compile', 'typescript', 'javascript', 'python', 'node', 'add', 'delete', 'report', 'analyze', 'analysis', 'bug', 'issue', 'sub-agent', 'subagent', 'delegate',
 ];
+
+function discoverProjectFiles(projectRoot: string): string[] {
+	const files: string[] = [];
+	const ignored = new Set(['.git', 'node_modules', '.agent-termo', 'dist', 'build', 'coverage']);
+	const walk = (directory: string, depth: number): void => {
+		if (depth > 4 || files.length >= 500) return;
+		for (const entry of readdirSync(directory, { withFileTypes: true })) {
+			if (ignored.has(entry.name) || entry.name.startsWith('.')) continue;
+			const full = resolve(directory, entry.name);
+			if (entry.isDirectory()) walk(full, depth + 1);
+			else files.push(full.slice(projectRoot.length + 1));
+			if (files.length >= 500) return;
+		}
+	};
+	try { walk(projectRoot, 0); } catch { /* inaccessible directories are omitted */ }
+	return files;
+}
+
+function expandContextMentions(input: string, projectRoot: string, contextFiles: string[]): { text: string; attached: string[] } {
+	const attached: string[] = [];
+	const text = input.replace(/(^|\s)@([^\s]+)/g, (whole, prefix: string, name: string) => {
+		if (!contextFiles.includes(name)) return whole;
+		try {
+			const content = readFileSync(resolve(projectRoot, name), 'utf-8').slice(0, 30_000);
+				attached.push(`## Attached file: ${name}\n\n\`\`\`\n${content}\n\`\`\``);
+			return prefix;
+		} catch {
+			return whole;
+		}
+	});
+	return { text: text.trim() || (attached.length > 0 ? 'Inspect the attached project files and summarize the relevant context.' : input), attached };
+}
 
 function mightNeedTools(message: string): boolean {
 	const lower = message.toLowerCase();
@@ -85,7 +119,9 @@ async function withEscapeCancellation<T>(nimClient: NimClient, operation: () => 
 		}
 	});
 	try {
-		return await operation();
+		const result = await operation();
+		if (cancelled) throw new RequestCancelledError();
+		return result;
 	} catch (err) {
 		if (cancelled || isRequestCancelled(err)) throw new RequestCancelledError();
 		throw err;
@@ -421,14 +457,14 @@ function compactConversation(conversation: ConversationMessage[]): string {
 		.filter((message) => message.role === 'user' || message.role === 'assistant')
 		.map((message) => `${message.role}: ${message.content.replace(/\s+/g, ' ').slice(0, 500)}`)
 		.join('\n');
-	conversation.splice(1, conversation.length - 1 - keep);
-	conversation.splice(1, 0, {
-		id: crypto.randomUUID(),
-		role: 'system',
-		content: '## Compacted Conversation Context\n' + summary.slice(0, 6000),
-		timestamp: new Date(),
-	});
-	return `Compacted ${prior.length} earlier messages; preserved the latest ${Math.min(keep, conversation.length - 2)} messages.`;
+	const base = conversation[0];
+	if (base) {
+		base.content = base.content.replace(/\n\n## Compacted Conversation Context[\s\S]*$/, '') + '\n\n## Compacted Conversation Context\n' + summary.slice(0, 6000);
+	}
+	const recent = conversation.slice(-keep).filter((message) => message.role !== 'tool' && !message.toolCalls);
+	conversation.splice(1);
+	conversation.push(...recent);
+	return `Compacted ${prior.length} earlier messages; preserved the latest ${recent.length} messages.`;
 }
 
 /**
@@ -440,7 +476,15 @@ async function handleModelCommand(arg: string, nimClient: NimClient, projectRoot
 
 	if (!selected) {
 		startSpinner('Fetching NVIDIA NIM models');
-		const { models, live, error } = await nimClient.listModels();
+			let modelList: Awaited<ReturnType<NimClient['listModels']>>;
+			try {
+				modelList = await withEscapeCancellation(nimClient, () => nimClient.listModels());
+			} catch (error) {
+				stopSpinner();
+				if (isRequestCancelled(error)) return;
+				throw error;
+			}
+			const { models, live, error } = modelList;
 		stopSpinner();
 		if (!live) {
 			printInfo('Could not fetch the live model list (' + (error ?? 'unknown error') + '). Showing built-in suggestions; you can type any model ID.');
@@ -477,8 +521,34 @@ async function handleModelCommand(arg: string, nimClient: NimClient, projectRoot
 	}
 }
 
+async function handleThinkingCommand(arg: string, nimClient: NimClient, projectRoot: string): Promise<void> {
+	const capacities: Array<{ value: ThinkingCapacity; label: string; hint: string }> = [
+		{ value: 'off', label: 'off', hint: 'NVIDIA /no_think concise mode' },
+		{ value: 'auto', label: 'auto', hint: 'let the selected model decide' },
+		{ value: 'low', label: 'low', hint: 'short focused reasoning' },
+		{ value: 'medium', label: 'medium', hint: 'moderate reasoning' },
+		{ value: 'high', label: 'high', hint: 'thorough reasoning' },
+	];
+	const requested = arg.trim().toLowerCase() as ThinkingCapacity;
+	const valid = capacities.some((item) => item.value === requested);
+	const selectedValue = valid ? requested : await pick({ title: 'Select thinking capacity', items: capacities, current: nimClient.getThinkingCapacity() });
+	if (!selectedValue || !capacities.some((item) => item.value === selectedValue)) return;
+	const selected = selectedValue as ThinkingCapacity;
+	nimClient.setThinkingCapacity(selected);
+	process.env.NIM_THINKING = selected;
+	setScreenStatus({ thinking: selected });
+	try {
+		saveNimThinking(selected);
+	} catch {
+		printInfo('Thinking capacity set for this session; could not save the preference.');
+	}
+	logAgentTermoTimeline('Thinking capacity set to ' + selected, projectRoot);
+	void logToTimeline(projectRoot, 'Thinking capacity set to ' + selected);
+	printSuccess('Thinking capacity: ' + selected);
+}
+
 export async function runRepl(projectRoot?: string): Promise<void> {
-	projectRoot = resolveProjectRoot(projectRoot);
+	projectRoot = resolve(resolveProjectRoot(projectRoot ?? process.cwd()));
 
 	const memory = await loadMemory(projectRoot);
 	const nimClient = new NimClient(projectRoot);
@@ -489,6 +559,8 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 	};
 	let customAgents = loadProjectAgents();
 	setAgentNames(customAgents.map((agent) => agent.name));
+	const contextFiles = discoverProjectFiles(projectRoot);
+	setContextFiles(contextFiles);
 	let customCommands: AgentCommand[] = loadAgentCommands(projectRoot);
 	const refreshCommandCompletion = (): void => {
 		setCommands([...COMMANDS, ...customCommands.map((command) => ({ name: '/' + command.name, description: command.description || 'project command' }))]);
@@ -513,13 +585,17 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 			timestamp: new Date(),
 		},
 	];
+	const refreshSystemPrompt = (): void => {
+		const compacted = conversation[0]?.content.match(/\n\n## Compacted Conversation Context[\s\S]*$/)?.[0] ?? '';
+		conversation[0]!.content = buildSessionPrompt() + compacted;
+	};
 
-	initScreen({ model: nimClient.getModel(), project: projectRoot });
+	initScreen({ model: nimClient.getModel(), project: projectRoot, thinking: nimClient.getThinkingCapacity() });
 	printWelcome(projectRoot, nimClient.getModel());
 	logAgentTermoTimeline('Agent-Termo session started. Model: ' + nimClient.getModel(), projectRoot);
 	void logToTimeline(projectRoot, 'Agent-Termo session started. Model: ' + nimClient.getModel());
-	logAgentTermoTimeline('Commands: /help /clear /memory /timeline /model /agents /history', projectRoot);
-	void logToTimeline(projectRoot, 'Commands: /help /clear /memory /timeline /model /agents /history');
+	logAgentTermoTimeline('Commands: /help /clear /memory /timeline /model /thinking /agents /history', projectRoot);
+	void logToTimeline(projectRoot, 'Commands: /help /clear /memory /timeline /model /thinking /agents /history');
 
 	const input = createInput();
 
@@ -528,7 +604,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 		if (!selected) return false;
 		activeAgentName = selected.name;
 		activeAgentPrompt = selected.systemPrompt;
-		conversation[0]!.content = buildSessionPrompt();
+		refreshSystemPrompt();
 		if (seedInput) setNextInput('@' + selected.name + ' ');
 		logAgentTermoTimeline('Active custom agent: ' + selected.name, projectRoot);
 		printSuccess('Active agent: ' + selected.name);
@@ -581,6 +657,12 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						displayedInput = true;
 						const args = customCommandMatch?.[2]?.trim() ?? '';
 						userInput = customCommand.prompt.replace(/\$ARGUMENTS|\$ARGS/g, args) + (args && !customCommand.prompt.includes('$ARGUMENTS') && !customCommand.prompt.includes('$ARGS') ? `\n\nUser arguments:\n${args}` : '');
+					}
+					const contextExpansion = expandContextMentions(userInput, projectRoot, contextFiles);
+					if (contextExpansion.attached.length > 0) {
+						if (!displayedInput) printUserMessage(rawInput);
+						displayedInput = true;
+						userInput = contextExpansion.text + '\n\n' + contextExpansion.attached.join('\n\n');
 					}
 					if (lowerInput === '/report' || lowerInput.startsWith('/report ')) {
 					const requestedPath = userInput.trim().slice('/report'.length).trim() || 'report.md';
@@ -636,11 +718,15 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					await printTimelineFile(projectRoot);
 					continue mainLoop;
 				}
-				if (cmd === '/model' || cmd.startsWith('/model ')) {
-					// Take the argument from the original text: model IDs are case-sensitive.
-					await handleModelCommand(userInput.trim().slice('/model'.length).trim(), nimClient, projectRoot);
-					continue mainLoop;
-				}
+					if (cmd === '/model' || cmd.startsWith('/model ')) {
+						// Take the argument from the original text: model IDs are case-sensitive.
+						await handleModelCommand(userInput.trim().slice('/model'.length).trim(), nimClient, projectRoot);
+						continue mainLoop;
+					}
+					if (cmd === '/thinking' || cmd.startsWith('/thinking ')) {
+						await handleThinkingCommand(userInput.trim().slice('/thinking'.length).trim(), nimClient, projectRoot);
+						continue mainLoop;
+					}
 					if (cmd === '/agents') {
 						printAgentsList(customAgents);
 						printInfo('Custom agents directory: ' + agentRoot + '/agents');
@@ -667,7 +753,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						const requested = userInput.trim().slice('/goal'.length).trim();
 						if (requested) {
 							currentGoal = requested;
-							conversation[0]!.content = buildSessionPrompt();
+								refreshSystemPrompt();
 							printSuccess('Goal set: ' + currentGoal);
 						} else printInfo(currentGoal ? 'Current goal: ' + currentGoal : 'No goal set. Use /goal <description>.');
 						continue mainLoop;
@@ -675,6 +761,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					if (cmd === '/status') {
 						printInfo(`Project: ${projectRoot}`);
 						printInfo(`Model: ${nimClient.getModel()}`);
+						printInfo(`Thinking: ${nimClient.getThinkingCapacity()}`);
 						printInfo(`Agent: ${activeAgentName || '(default)'}`);
 						printInfo(`Goal: ${currentGoal || '(none)'}`);
 						printInfo(`Messages: ${conversation.length - 1}`);
@@ -685,6 +772,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						printInfo('Approximate context characters: ' + conversation.reduce((total, message) => total + message.content.length, 0));
 						printInfo('Active agent: ' + (activeAgentName || '(default)'));
 						printInfo('Current goal: ' + (currentGoal || '(none)'));
+						printInfo('Use @agent or @path/to/file to add context.');
 						printInfo('Runtime directory: ' + agentRoot);
 						printInfo('Project docs: ' + resolve(projectRoot, 'docs'));
 						printInfo('Use /compact when the conversation becomes large.');
@@ -798,7 +886,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 			}
 
 			if (conversation.length > 42) {
-				conversation.splice(1, conversation.length - 42);
+				compactConversation(conversation);
 			}
 		} catch (err) {
 			input.close();

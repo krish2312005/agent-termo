@@ -35,9 +35,11 @@ const S = {
 	savedValid: true,
 	rows: 0,
 	model: '',
+	thinking: 'auto',
 	project: '',
 	commands: [] as CommandInfo[],
 	agentNames: [] as string[],
+	contextFiles: [] as string[],
 	nextInput: '',
 	buffer: '',
 	cursor: 0,
@@ -50,6 +52,10 @@ export function setCommands(commands: CommandInfo[]): void {
 
 export function setAgentNames(names: string[]): void {
 	S.agentNames = [...names].sort();
+}
+
+export function setContextFiles(files: string[]): void {
+	S.contextFiles = [...files].sort();
 }
 
 export function setNextInput(text: string): void {
@@ -97,17 +103,25 @@ function statusLine(max: number): string {
 			return c.cyan(clipText(' ' + hits.map((h) => h.name).join('  '), max));
 		}
 	}
+	if (S.editing && /^@[^\s]*$/.test(S.buffer)) {
+		const typed = S.buffer.slice(1).toLowerCase();
+		const agents = S.agentNames.filter((name) => name.toLowerCase().startsWith(typed)).map((name) => '@' + name);
+		const files = S.contextFiles.filter((file) => file.toLowerCase().startsWith(typed)).map((file) => '@' + file);
+		const hits = [...agents, ...files].slice(0, 8);
+		if (hits.length > 0) return c.cyan(clipText(' ' + hits.join('  '), max));
+	}
 
 	const hint = '/help · @agent · ctrl+c to interrupt';
 	const modelPart = clipText(' ' + S.model, max);
-	const roomWithHint = max - modelPart.length - hint.length - 2;
+	const thinkingPart = clipText(' · think:' + S.thinking, max);
+	const roomWithHint = max - modelPart.length - thinkingPart.length - hint.length - 2;
 	const showHint = roomWithHint >= 15;
 	const projPart = clipText(
 		' · ' + shortPath(S.project),
-		showHint ? roomWithHint : Math.max(0, max - modelPart.length),
+		showHint ? roomWithHint : Math.max(0, max - modelPart.length - thinkingPart.length),
 	);
-	const gap = Math.max(1, max - modelPart.length - projPart.length - hint.length);
-	return c.cyan(modelPart) + c.dim(projPart + (showHint ? ' '.repeat(gap) + hint : ''));
+	const gap = Math.max(1, max - modelPart.length - thinkingPart.length - projPart.length - hint.length);
+	return c.cyan(modelPart) + c.yellow(thinkingPart) + c.dim(projPart + (showHint ? ' '.repeat(gap) + hint : ''));
 }
 
 function chromeString(): string {
@@ -176,9 +190,10 @@ function onResize(): void {
 // Screen lifecycle
 // =============================================================================
 
-export function initScreen(info: { model: string; project: string }): void {
+export function initScreen(info: { model: string; project: string; thinking?: string }): void {
 	S.model = info.model;
 	S.project = info.project;
+	S.thinking = info.thinking ?? S.thinking;
 	if (S.active || !layoutSupported()) return;
 
 	S.active = true;
@@ -190,9 +205,10 @@ export function initScreen(info: { model: string; project: string }): void {
 	process.on('exit', teardownScreen);
 }
 
-export function setScreenStatus(info: { model?: string; project?: string }): void {
+export function setScreenStatus(info: { model?: string; project?: string; thinking?: string }): void {
 	if (info.model !== undefined) S.model = info.model;
 	if (info.project !== undefined) S.project = info.project;
+	if (info.thinking !== undefined) S.thinking = info.thinking;
 	paint();
 }
 
@@ -379,6 +395,17 @@ function sanitizePaste(text: string): string {
 }
 
 function completeCommand(): void {
+	if (S.buffer.startsWith('@') && !S.buffer.includes(' ')) {
+		const prefix = S.buffer.slice(1).toLowerCase();
+		const agents = S.agentNames.filter((name) => name.toLowerCase().startsWith(prefix)).map((name) => '@' + name);
+		const files = S.contextFiles.filter((file) => file.toLowerCase().startsWith(prefix)).map((file) => '@' + file);
+		const first = [...agents, ...files][0];
+		if (first) {
+			S.buffer = first + ' ';
+			S.cursor = S.buffer.length;
+		}
+		return;
+	}
 	if (S.buffer.toLowerCase().startsWith('/agent ')) {
 		const prefix = S.buffer.slice('/agent '.length);
 		const names = S.agentNames.filter((name) => name.toLowerCase().startsWith(prefix.toLowerCase()));
@@ -427,10 +454,10 @@ export function createInput(): InputController {
 			if (!S.active) return plainQuestion();
 
 			return new Promise<string>((resolve) => {
-				let histIdx = -1;
+					let histIdx = -1;
 					let draft = S.nextInput;
 					S.nextInput = '';
-				let done = false;
+					let done = false;
 
 					S.editing = true;
 					S.savedValid = true;
@@ -441,13 +468,13 @@ export function createInput(): InputController {
 				paint();
 
 				// Return the cursor to the scrolling region and go idle.
-				const leave = (): void => {
-					done = true;
-					stop?.();
-					stop = null;
-					S.editing = false;
-					S.buffer = draft;
-					S.cursor = draft.length;
+					const leave = (): void => {
+						done = true;
+						stop?.();
+						stop = null;
+						S.editing = false;
+						S.buffer = '';
+						S.cursor = 0;
 					S.offset = 0;
 					out.write(S.savedValid ? RESTORE : `${CSI}${regionBottom()};1H`);
 					paint();

@@ -81,8 +81,9 @@ AVAILABLE FILES:
 - docs/MEMORY.md — project context
 - docs/TIMELINE.md — recent activity log`;
 
-export function buildSystemPrompt(memory: string, timeline: string, _agentDir: string, activeAgentPrompt = ''): string {
+export function buildSystemPrompt(memory: string, timeline: string, agentDir: string, activeAgentPrompt = ''): string {
 	let prompt = SYSTEM_BASE;
+	prompt += `\n\n## Project Working Directory\n${agentDir}\nAll relative file paths and shell commands must operate inside this directory. Create and modify the user's files here. Never use /tmp, an OS temp directory, the npm package directory, or another workspace for project files.`;
 
 	if (activeAgentPrompt) {
 		prompt += '\n\n## Active Custom Agent Instructions\n' + activeAgentPrompt;
@@ -92,9 +93,10 @@ export function buildSystemPrompt(memory: string, timeline: string, _agentDir: s
     prompt += '\n\n## Project Memory\n' + memory;
   }
 
-  if (timeline) {
-    prompt += '\n\n## Recent Timeline (last entries)\n' + timeline.slice(-1500);
-  }
+	if (timeline) {
+		prompt += '\n\n## Recent Timeline (last entries)\n' + timeline.slice(-1500);
+	}
+	prompt += `\n\nFINAL PATH RULE: The only valid project workspace is ${agentDir}. All created or modified project files must be written there. Do not create project files in /tmp or any temporary workspace.`;
 
-  return prompt;
+	return prompt;
 }

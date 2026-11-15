@@ -75,14 +75,24 @@ describe('executeTool', () => {
     expect(result.error).toContain('Access denied');
   });
 
-  it('file:glob — finds TypeScript files', async () => {
+	it('file:glob — finds TypeScript files', async () => {
     const result = await executeTool('file:glob', { pattern: 'src/**/*.ts' }, PROJECT_ROOT);
 
     expect(result.success).toBe(true);
     expect(result.name).toBe('file:glob');
     expect(result.output).toBeDefined();
-    expect(result.output).toContain('src/cli.ts');
-  });
+		expect(result.output).toContain('src/cli.ts');
+	});
+
+	it('file:glob and bash:execute resolve relative cwd from the project root', async () => {
+		const glob = await executeTool('file:glob', { pattern: '*.json', cwd: '.' }, PROJECT_ROOT);
+		expect(glob.success).toBe(true);
+		expect(glob.output).toContain('package.json');
+
+		const bash = await executeTool('bash:execute', { command: 'pwd', cwd: '.' }, PROJECT_ROOT);
+		expect(bash.success).toBe(true);
+		expect(bash.output).toContain(PROJECT_ROOT);
+	});
 
   it('file:glob — returns error when pattern is missing', async () => {
     const result = await executeTool('file:glob', {}, PROJECT_ROOT);

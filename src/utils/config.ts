@@ -98,7 +98,12 @@ function loadStoredNimModel(): void {
   const { nimModel } = readStoredConfig();
   if (typeof nimModel === 'string' && nimModel.trim()) {
     process.env.NIM_MODEL = nimModel;
-  }
+	}
+}
+
+function loadStoredNimThinking(): void {
+	const { nimThinking } = readStoredConfig();
+	if (typeof nimThinking === 'string' && nimThinking.trim()) process.env.NIM_THINKING = nimThinking;
 }
 
 export function saveNimApiKey(apiKey: string): void {
@@ -106,11 +111,16 @@ export function saveNimApiKey(apiKey: string): void {
 }
 
 export function saveNimModel(model: string): void {
-  updateStoredConfig({ nimModel: model });
+	updateStoredConfig({ nimModel: model });
+}
+
+export function saveNimThinking(thinking: string): void {
+	updateStoredConfig({ nimThinking: thinking });
 }
 
 loadStoredNimApiKey();
 loadStoredNimModel();
+loadStoredNimThinking();
 
 export function getConfig(projectRoot: string): AppConfig {
   loadEnvFile(resolve(projectRoot, '.env'));

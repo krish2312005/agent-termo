@@ -8,6 +8,8 @@ import { mergeModels, type ModelInfo } from './models.js';
 
 type NIMTool = OpenAI.Chat.ChatCompletionTool;
 
+export type ThinkingCapacity = 'off' | 'auto' | 'low' | 'medium' | 'high';
+
 const TOOL_NAME_ALIASES: Record<string, string> = {
 	'file:read': 'file_read',
 	'file:write': 'file_write',
@@ -32,12 +34,15 @@ export function fromWireToolName(name: string): string {
 export class NimClient {
 	private client: OpenAI;
 	private model: string;
+	private thinkingCapacity: ThinkingCapacity;
 	private activeController: AbortController | null = null;
 
   constructor(_projectRoot?: string) {
     const apiKey = process.env.NIM_API_KEY ?? '';
     const baseUrl = process.env.NIM_BASE_URL ?? 'https://integrate.api.nvidia.com/v1';
-    this.model = process.env.NIM_MODEL ?? 'stepfun-ai/step-3.7-flash';
+	    this.model = process.env.NIM_MODEL ?? 'stepfun-ai/step-3.7-flash';
+	    const thinking = process.env.NIM_THINKING;
+	    this.thinkingCapacity = thinking === 'off' || thinking === 'low' || thinking === 'medium' || thinking === 'high' || thinking === 'auto' ? thinking : 'auto';
     const timeout = parseInt(process.env.LLM_TIMEOUT ?? '120000', 10);
 
     this.client = new OpenAI({
@@ -59,9 +64,28 @@ export class NimClient {
     })) as NIMTool[];
   }
 
-  getModel(): string {
-    return this.model;
-  }
+	getModel(): string {
+		return this.model;
+	}
+
+	getThinkingCapacity(): ThinkingCapacity {
+		return this.thinkingCapacity;
+	}
+
+	setThinkingCapacity(capacity: ThinkingCapacity): void {
+		this.thinkingCapacity = capacity;
+	}
+
+	private messageContent(message: ConversationMessage): string {
+		if (message.role !== 'system' || this.thinkingCapacity === 'auto') return message.content;
+		const instruction: Record<Exclude<ThinkingCapacity, 'auto'>, string> = {
+			off: '/no_think',
+			low: 'detailed thinking on. Use a short, focused reasoning pass before answering.',
+			medium: 'detailed thinking on. Use a moderate reasoning pass before answering.',
+			high: 'detailed thinking on. Reason thoroughly before answering, but do not expose private chain-of-thought.',
+		};
+		return `${message.content}\n\n## Thinking Control\n${instruction[this.thinkingCapacity]}`;
+	}
 
 	setModel(model: string): void {
 		this.model = model;
@@ -71,24 +95,28 @@ export class NimClient {
 		this.activeController?.abort();
 	}
 
-  /**
-   * Fetch the models this API key can use. Never throws: on failure the curated
-   * list is returned with `live: false` and the reason in `error`.
-   */
-  async listModels(): Promise<{ models: ModelInfo[]; live: boolean; error?: string }> {
-    try {
-      const page = await this.client.models.list({ timeout: 10_000 });
+	  /**
+	   * Fetch the models this API key can use. Never throws: on failure the curated
+	   * list is returned with `live: false` and the reason in `error`.
+	   */
+	  async listModels(): Promise<{ models: ModelInfo[]; live: boolean; error?: string }> {
+		const controller = new AbortController();
+		this.activeController = controller;
+	    try {
+	      const page = await this.client.models.list({ timeout: 10_000, signal: controller.signal });
       const ids = page.data.map((m) => m.id);
       if (ids.length === 0) throw new Error('empty model list');
       return { models: mergeModels(ids), live: true };
     } catch (err) {
-      return {
-        models: mergeModels(null),
-        live: false,
-        error: err instanceof Error ? err.message : String(err),
-      };
-    }
-  }
+	      return {
+	        models: mergeModels(null),
+	        live: false,
+	        error: err instanceof Error ? err.message : String(err),
+	      };
+	    } finally {
+			if (this.activeController === controller) this.activeController = null;
+	    }
+	  }
 
   /**
    * Streaming chat completion.
@@ -108,10 +136,10 @@ export class NimClient {
 		const stream = await this.client.chat.completions.create({
       model: this.model,
 		messages: messages.map((m) => {
-			if (m.role === 'tool') {
-				return {
-					role: 'tool' as const,
-					content: m.content,
+				if (m.role === 'tool') {
+					return {
+						role: 'tool' as const,
+						content: m.content,
 					tool_call_id: m.id,
 				};
 			}
@@ -126,10 +154,10 @@ export class NimClient {
 					})),
 				};
 			}
-			return {
-          role: m.role as 'system' | 'user' | 'assistant',
-          content: m.content,
-        };
+				return {
+	          role: m.role as 'system' | 'user' | 'assistant',
+	          content: this.messageContent(m),
+	        };
       }),
       tools: tools,
       temperature: 0.3,
@@ -215,7 +243,7 @@ export class NimClient {
 					})),
 				};
 			}
-			return { role: m.role as 'system' | 'user' | 'assistant', content: m.content };
+				return { role: m.role as 'system' | 'user' | 'assistant', content: this.messageContent(m) };
       }),
       tools: tools,
       temperature: 0.3,
