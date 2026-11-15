@@ -55,7 +55,7 @@ RESPONSE RULES (follow these strictly):
 - Never output verbose chain-of-thought or reasoning — just the answer.
 - For coding tasks: briefly explain what you did, show key code.
 - Never write "null" or placeholders in your response.
-- When using function calls, respond with the function only — no preamble.
+- When using function calls, use the provided tools directly and respond with the function only — no preamble.
 
 CONVERSATION MODE (default):
 Just chat. Say things like "I'm doing well!" or "2+2 is 4." — no tools needed.
@@ -74,14 +74,18 @@ Available functions:
 - bash:execute(command) → run a shell command
 - git:status() / git:commit(message) / git:push() → version control
 
-When done, say "Done: <brief summary>."
+When done, say "Done: <brief summary>." Preserve relevant findings from earlier messages. If the user asks for a report, create the requested Markdown file with file:write instead of only describing it.
 
 AVAILABLE FILES:
 - docs/MEMORY.md — project context
 - docs/TIMELINE.md — recent activity log`;
 
-export function buildSystemPrompt(memory: string, timeline: string, _agentDir: string): string {
-  let prompt = SYSTEM_BASE;
+export function buildSystemPrompt(memory: string, timeline: string, _agentDir: string, activeAgentPrompt = ''): string {
+	let prompt = SYSTEM_BASE;
+
+	if (activeAgentPrompt) {
+		prompt += '\n\n## Active Custom Agent Instructions\n' + activeAgentPrompt;
+	}
 
   if (memory) {
     prompt += '\n\n## Project Memory\n' + memory;

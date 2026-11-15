@@ -30,8 +30,9 @@ export function fromWireToolName(name: string): string {
 }
 
 export class NimClient {
-  private client: OpenAI;
-  private model: string;
+	private client: OpenAI;
+	private model: string;
+	private activeController: AbortController | null = null;
 
   constructor(_projectRoot?: string) {
     const apiKey = process.env.NIM_API_KEY ?? '';
@@ -62,9 +63,13 @@ export class NimClient {
     return this.model;
   }
 
-  setModel(model: string): void {
-    this.model = model;
-  }
+	setModel(model: string): void {
+		this.model = model;
+	}
+
+	cancelCurrentRequest(): void {
+		this.activeController?.abort();
+	}
 
   /**
    * Fetch the models this API key can use. Never throws: on failure the curated
@@ -94,11 +99,13 @@ export class NimClient {
     messages: ConversationMessage[],
     tools?: NIMTool[],
     onChunk?: (text: string) => void,
-  ): AsyncGenerator<{ content: string; toolCalls: ToolCall[] }, void, unknown> {
-    const rawChunks: string[] = [];
-    const toolCallMap: Map<number, { id: string; name: string; arguments: string }> = new Map();
+	): AsyncGenerator<{ content: string; toolCalls: ToolCall[] }, void, unknown> {
+		const rawChunks: string[] = [];
+		const toolCallMap: Map<number, { id: string; name: string; arguments: string }> = new Map();
+		const controller = new AbortController();
+		this.activeController = controller;
 
-    const stream = await this.client.chat.completions.create({
+		const stream = await this.client.chat.completions.create({
       model: this.model,
 		messages: messages.map((m) => {
 			if (m.role === 'tool') {
@@ -126,9 +133,9 @@ export class NimClient {
       }),
       tools: tools,
       temperature: 0.3,
-      max_tokens: 8192,
-      stream: true,
-    });
+			max_tokens: 8192,
+			stream: true,
+		}, { signal: controller.signal });
 
     for await (const chunk of stream) {
       const delta = chunk.choices[0]?.delta;
@@ -178,7 +185,8 @@ export class NimClient {
 			return { id: tc.id, name: fromWireToolName(tc.name), arguments: args };
     });
 
-    yield { content: finalContent, toolCalls };
+		yield { content: finalContent, toolCalls };
+		if (this.activeController === controller) this.activeController = null;
   }
 
   /**
@@ -187,8 +195,10 @@ export class NimClient {
   async complete(
     messages: ConversationMessage[],
     tools?: NIMTool[],
-  ): Promise<{ content: string; toolCalls: ToolCall[] }> {
-    const response = await this.client.chat.completions.create({
+	): Promise<{ content: string; toolCalls: ToolCall[] }> {
+		const controller = new AbortController();
+		this.activeController = controller;
+		const response = await this.client.chat.completions.create({
       model: this.model,
 		messages: messages.map((m) => {
 			if (m.role === 'tool') {
@@ -209,15 +219,15 @@ export class NimClient {
       }),
       tools: tools,
       temperature: 0.3,
-      max_tokens: 8192,
-      stream: false,
-    });
+		max_tokens: 8192,
+			stream: false,
+		}, { signal: controller.signal });
 
     const msg = response.choices[0]?.message;
     // Strip reasoning noise
     let content =
       msg?.content?.replace(
-        /\[ Reasoning[^\]]*\][^\[]*\[\/ Reasoning\][^\n]*/gi,
+	        /\[ Reasoning[^\]]*\][^[]*\[\/ Reasoning\][^\n]*/gi,
         '',
       ).trim() ?? '';
 
@@ -252,7 +262,8 @@ export class NimClient {
       }
     }
 
-    return { content, toolCalls };
+		if (this.activeController === controller) this.activeController = null;
+		return { content, toolCalls };
   }
 }
 

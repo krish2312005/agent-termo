@@ -20,6 +20,7 @@ export {
 	initScreen,
 	pick,
 	setScreenStatus,
+	listenKeys,
 	type InputController,
 	type PickItem,
 } from './screen.js';
@@ -33,8 +34,14 @@ export const COMMANDS: CommandInfo[] = [
 	{ name: '/memory', description: 'view Agent-Termo memory' },
 	{ name: '/timeline', description: 'view recent activity' },
 	{ name: '/model', description: 'switch NVIDIA NIM model (or /model <id>)' },
-	{ name: '/agents', description: 'list all agents' },
-	{ name: '/history', description: 'show message count' },
+		{ name: '/agents', description: 'list all agents' },
+		{ name: '/agent', description: 'select a custom agent' },
+		{ name: '/goal', description: 'set or show the current goal' },
+		{ name: '/status', description: 'show session status' },
+		{ name: '/context', description: 'show context and runtime paths' },
+		{ name: '/compact', description: 'summarize and compact conversation context' },
+		{ name: '/report', description: 'analyze the project and create a report file' },
+		{ name: '/history', description: 'show message count' },
 	{ name: '/exit', description: 'quit' },
 ];
 setCommands(COMMANDS);
@@ -82,7 +89,11 @@ function inline(text: string): string {
 		.map((seg) =>
 			seg.length > 1 && seg.startsWith('`') && seg.endsWith('`')
 				? c.cyan(seg.slice(1, -1))
-				: seg.replace(/\*\*(.+?)\*\*/g, (_m, g: string) => c.bold(g)),
+				: seg
+					.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, label: string, url: string) => c.cyan(label) + c.dim(' (' + url + ')'))
+					.replace(/\*\*(.+?)\*\*|__(.+?)__/g, (_m, boldA: string, boldB: string) => c.bold(boldA ?? boldB))
+					.replace(/~~(.+?)~~/g, (_m, g: string) => c.strikethrough(g))
+					.replace(/(?<!\w)\*([^*\n]+)\*|(?<!\w)_([^_\n]+)_/g, (_m, italicA: string, italicB: string) => c.italic(italicA ?? italicB)),
 		)
 		.join('');
 }
@@ -143,11 +154,18 @@ export class MarkdownPrinter {
 		if (heading) return c.bold.magenta(inline(heading[1] ?? ''));
 		if (/^\s*([-*_])\1{2,}\s*$/.test(line)) return c.dim('─'.repeat(Math.min(40, terminalWidth() - 4)));
 
+		const task = /^(\s*)[-*+]\s+\[([ xX])\]\s+(.*)$/.exec(line);
+		if (task) return (task[1] ?? '') + c.magenta(task[2]?.toLowerCase() === 'x' ? '☑' : '☐') + ' ' + inline(task[3] ?? '');
 		const bullet = /^(\s*)[-*+]\s+(.*)$/.exec(line);
 		if (bullet) return (bullet[1] ?? '') + c.magenta('•') + ' ' + inline(bullet[2] ?? '');
 
 		const numbered = /^(\s*)(\d+)[.)]\s+(.*)$/.exec(line);
 		if (numbered) return (numbered[1] ?? '') + c.magenta(numbered[2] + '.') + ' ' + inline(numbered[3] ?? '');
+		if (/^\s*\|?(?:\s*:?-+:?\s*\|)+\s*$/.test(line)) return c.dim('─'.repeat(Math.min(terminalWidth() - 4, 80)));
+		if (/^\s*\|.*\|\s*$/.test(line)) {
+			const cells = line.trim().replace(/^\||\|$/g, '').split('|').map((cell) => inline(cell.trim()));
+			return c.dim('│ ') + cells.join(c.dim(' │ ')) + c.dim(' │');
+		}
 
 		const quote = /^>\s?(.*)$/.exec(line);
 		if (quote) return c.dim('▎ ') + c.italic(inline(quote[1] ?? ''));
@@ -291,8 +309,8 @@ export function printInfo(message: string): void {
 // AGENT-TERMO MEMORY + TIMELINE DISPLAY
 // =============================================================================
 
-export async function printMemoryFile(): Promise<void> {
-	const mem = loadAgentTermoMemory();
+export async function printMemoryFile(projectRoot?: string): Promise<void> {
+	const mem = loadAgentTermoMemory(projectRoot);
 	if (!mem) {
 		printInfo('Agent-Termo memory is empty. (Normal for new sessions.)');
 		return;
@@ -300,8 +318,8 @@ export async function printMemoryFile(): Promise<void> {
 	out.write('\n' + c.bold('Agent-Termo memory') + '\n' + rule() + '\n' + mem + '\n' + rule() + '\n\n');
 }
 
-export async function printTimelineFile(): Promise<void> {
-	const tl = loadAgentTermoTimeline();
+export async function printTimelineFile(projectRoot?: string): Promise<void> {
+	const tl = loadAgentTermoTimeline(projectRoot);
 	if (!tl || tl.trim().length === 0) {
 		printInfo('Timeline is empty.');
 		return;
