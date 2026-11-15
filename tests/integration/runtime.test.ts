@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { appendToMemory, logToTimeline, loadTimeline, logAgentTermoTimeline, appendToAgentTermoMemory, loadAgentTermoMemory } from '../../src/memory/index.js';
 import { loadAllAgents } from '../../src/agents/index.js';
+import { ensureAgentFolder } from '../../src/runtime/agent-folder.js';
 
 describe('packaged-project runtime initialization', () => {
   it('creates docs and timeline before logging in an empty project', async () => {
@@ -51,6 +52,22 @@ describe('packaged-project runtime initialization', () => {
       const memory = loadAgentTermoMemory(projectRoot);
       expect(memory).toContain('Explain the architecture');
       expect(memory).toContain('layered modules');
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('scaffolds the complete project-local agent folder', () => {
+    const projectRoot = mkdtempSync(join(tmpdir(), 'agent-termo-folder-'));
+    try {
+      const result = ensureAgentFolder(projectRoot);
+      expect(existsSync(join(projectRoot, '.agent-termo', 'agents'))).toBe(true);
+      expect(existsSync(join(projectRoot, '.agent-termo', 'commands'))).toBe(true);
+      expect(existsSync(join(projectRoot, '.agent-termo', 'docs'))).toBe(true);
+      expect(existsSync(join(projectRoot, '.agent-termo', 'logs'))).toBe(true);
+      expect(existsSync(join(projectRoot, '.agent-termo', 'memory.md'))).toBe(true);
+      expect(existsSync(join(projectRoot, '.agent-termo', 'timeline.md'))).toBe(true);
+      expect(result.root).toBe(join(projectRoot, '.agent-termo'));
     } finally {
       rmSync(projectRoot, { recursive: true, force: true });
     }

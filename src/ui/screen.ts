@@ -38,6 +38,7 @@ const S = {
 	project: '',
 	commands: [] as CommandInfo[],
 	agentNames: [] as string[],
+	nextInput: '',
 	buffer: '',
 	cursor: 0,
 	offset: 0,
@@ -49,6 +50,10 @@ export function setCommands(commands: CommandInfo[]): void {
 
 export function setAgentNames(names: string[]): void {
 	S.agentNames = [...names].sort();
+}
+
+export function setNextInput(text: string): void {
+	S.nextInput = text;
 }
 
 function dims(): { rows: number; cols: number } {
@@ -93,7 +98,7 @@ function statusLine(max: number): string {
 		}
 	}
 
-	const hint = '/help · /model · ctrl+c to exit';
+	const hint = '/help · @agent · ctrl+c to interrupt';
 	const modelPart = clipText(' ' + S.model, max);
 	const roomWithHint = max - modelPart.length - hint.length - 2;
 	const showHint = roomWithHint >= 15;
@@ -423,13 +428,14 @@ export function createInput(): InputController {
 
 			return new Promise<string>((resolve) => {
 				let histIdx = -1;
-				let draft = '';
+					let draft = S.nextInput;
+					S.nextInput = '';
 				let done = false;
 
-				S.editing = true;
-				S.savedValid = true;
-				S.buffer = '';
-				S.cursor = 0;
+					S.editing = true;
+					S.savedValid = true;
+					S.buffer = draft;
+					S.cursor = draft.length;
 				S.offset = 0;
 				out.write(SAVE); // remember where output continues
 				paint();
@@ -440,8 +446,8 @@ export function createInput(): InputController {
 					stop?.();
 					stop = null;
 					S.editing = false;
-					S.buffer = '';
-					S.cursor = 0;
+					S.buffer = draft;
+					S.cursor = draft.length;
 					S.offset = 0;
 					out.write(S.savedValid ? RESTORE : `${CSI}${regionBottom()};1H`);
 					paint();

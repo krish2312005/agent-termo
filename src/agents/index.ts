@@ -73,8 +73,9 @@ Available functions:
 - grep(pattern, path, glob?) → search for text in files
 - bash:execute(command) → run a shell command
 - git:status() / git:commit(message) / git:push() → version control
+- agent:delegate(agent, task, context?) → spawn a specialist sub-agent and receive its result
 
-When done, say "Done: <brief summary>." Preserve relevant findings from earlier messages. If the user asks for a report, create the requested Markdown file with file:write instead of only describing it.
+When done, say "Done: <brief summary>." Preserve relevant findings from earlier messages. If the user asks for a report, create the requested Markdown file with file:write instead of only describing it. For complex work, delegate independent tasks to specialist agents, compare their results, and coordinate the final implementation yourself. Delegated agents must return concise findings and must not claim work they did not perform.
 
 AVAILABLE FILES:
 - docs/MEMORY.md — project context

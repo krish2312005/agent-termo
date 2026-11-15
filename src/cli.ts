@@ -6,6 +6,7 @@
 import { Command } from 'commander';
 import { runRepl } from './main.js';
 import { saveNimApiKey } from './utils/config.js';
+import { ensureAgentFolder } from './runtime/agent-folder.js';
 
 const program = new Command();
 
@@ -96,7 +97,7 @@ async function startAgent(
 program
   .name('agent-termo')
   .description('Terminal AI coding agent with Nvidia NIM APIs')
-  .version('1.0.3')
+  .version('1.0.6')
   .argument('[project]', 'Project directory to operate in', process.cwd())
   .option('-k, --api-key <key>', 'Nvidia NIM API key')
   .option('-m, --model <model>', 'Model name to use')
@@ -117,6 +118,7 @@ program
     for (const d of dirsToCreate) {
       mkdirSync(d, { recursive: true });
     }
+		const agentFolder = ensureAgentFolder(resolve(dir));
 
     // Create stub docs
     const memoryPath = resolve(dir, 'docs', 'MEMORY.md');
@@ -134,7 +136,7 @@ program
     }
 
     console.log(`\n✓ Initialized Agent-Termo in ${resolve(dir)}`);
-    console.log('  Created: docs/MEMORY.md, docs/TIMELINE.md');
+		console.log(`  Created: docs/, .agent-termo/ (agents: ${agentFolder.copiedAgents}, commands: ${agentFolder.copiedCommands})`);
     console.log('  Agent-Termo will ask for your NVIDIA NIM API key the first time you launch it.');
   });
 

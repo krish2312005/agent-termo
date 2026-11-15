@@ -22,6 +22,8 @@ export {
 	setScreenStatus,
 	listenKeys,
 	setAgentNames,
+	setNextInput,
+	setCommands,
 	type InputController,
 	type PickItem,
 } from './screen.js';
@@ -37,6 +39,7 @@ export const COMMANDS: CommandInfo[] = [
 	{ name: '/model', description: 'switch NVIDIA NIM model (or /model <id>)' },
 		{ name: '/agents', description: 'list all agents' },
 		{ name: '/agent', description: 'select a custom agent' },
+		{ name: '/agent-folder', description: 'create or refresh .agent-termo agents and commands' },
 		{ name: '/goal', description: 'set or show the current goal' },
 		{ name: '/status', description: 'show session status' },
 		{ name: '/context', description: 'show context and runtime paths' },
@@ -76,7 +79,7 @@ export function printWelcome(projectRoot: string, model: string): void {
 	out.write('\n');
 	out.write(
 		c.dim('  ') + c.cyan('/help') + c.dim(' commands · ') + c.cyan('/model') + c.dim(' switch NIM model · ') +
-			c.cyan('Tab') + c.dim(' completes') + '\n\n',
+			c.cyan('@agent') + c.dim(' invoke · ') + c.cyan('Tab') + c.dim(' completes') + '\n\n',
 	);
 }
 

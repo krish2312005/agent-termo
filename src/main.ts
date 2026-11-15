@@ -10,6 +10,7 @@ import { loadAllAgents } from './agents/index.js';
 import { buildSystemPrompt } from './agents/index.js';
 import { resolveProjectRoot, saveNimModel } from './utils/config.js';
 import { resolve } from 'node:path';
+import { ensureAgentFolder, loadAgentCommands, type AgentCommand } from './runtime/agent-folder.js';
 import {
 	MarkdownPrinter,
 	printWelcome,
@@ -34,15 +35,18 @@ import {
 	promptAcceptReject,
 	listenKeys,
 	setAgentNames,
+	setNextInput,
+	setCommands,
+	COMMANDS,
 } from './ui/index.js';
-import type { ConversationMessage, ToolCall, ProposedFileChange } from './types/index.js';
+import type { ConversationMessage, ToolCall, ToolResult, ProposedFileChange } from './types/index.js';
 
 const TOOL_KEYWORDS = [
 	'build', 'create', 'write', 'edit', 'modify', 'file', 'code', 'function', 'class',
 	'component', 'debug', 'fix', 'git', 'commit', 'push', 'install', 'npm', 'run',
 	'bash', 'shell', 'command', 'read', 'grep', 'check', 'show', 'implement',
 	'configure', 'setup', 'src', 'package', 'app', 'project', 'api', 'deploy',
-	'test', 'compile', 'typescript', 'javascript', 'python', 'node', 'add', 'delete', 'report', 'analyze', 'analysis', 'bug', 'issue',
+	'test', 'compile', 'typescript', 'javascript', 'python', 'node', 'add', 'delete', 'report', 'analyze', 'analysis', 'bug', 'issue', 'sub-agent', 'subagent', 'delegate',
 ];
 
 function mightNeedTools(message: string): boolean {
@@ -74,10 +78,10 @@ async function withEscapeCancellation<T>(nimClient: NimClient, operation: () => 
 	if (!process.stdin.isTTY) return operation();
 	let cancelled = false;
 	const stop = listenKeys((key) => {
-		if (key.name === 'escape') {
+		if (key.name === 'escape' || key.name === 'ctrl+c') {
 			cancelled = true;
 			nimClient.cancelCurrentRequest();
-			printInfo('Response cancelled.');
+			printInfo(key.name === 'ctrl+c' ? 'Response interrupted.' : 'Response cancelled.');
 		}
 	});
 	try {
@@ -283,6 +287,34 @@ async function executeToolWithReview(
 	return { toolResult, applied: false };
 }
 
+async function runDelegatedAgent(projectRoot: string, toolCall: ToolCall, nimClient: NimClient): Promise<ToolResult> {
+	const started = Date.now();
+	const agentName = String(toolCall.arguments.agent ?? '').trim();
+	const task = String(toolCall.arguments.task ?? '').trim();
+	const context = String(toolCall.arguments.context ?? '').trim();
+	const projectAgentRoot = resolve(projectRoot, '.agent-termo');
+	const projectAgents = loadAllAgents(projectAgentRoot);
+	const agents = projectAgents.length > 0 ? projectAgents : loadAllAgents(resolve(projectRoot, '.claude'));
+	const agent = agents.find((candidate) => candidate.name === agentName);
+	if (!agent || !task) {
+		return { id: toolCall.id, name: toolCall.name, success: false, error: `Unknown agent or empty task: ${agentName}`, durationMs: Date.now() - started };
+	}
+
+	const delegatedMessages: ConversationMessage[] = [
+		{ id: crypto.randomUUID(), role: 'system', content: buildSystemPrompt('', '', projectRoot, agent.systemPrompt), timestamp: new Date(), agent: agent.name },
+		{ id: crypto.randomUUID(), role: 'user', content: `You are a delegated sub-agent named ${agent.name}. Complete only this focused task and return concise findings for the parent agent. Do not claim to modify files unless the parent explicitly asks and you have evidence.\n\nTask:\n${task}\n\nParent context:\n${context || '(none)'}`, timestamp: new Date() },
+	];
+
+	try {
+		const result = await withEscapeCancellation(nimClient, () => nimClient.complete(delegatedMessages, undefined));
+		const output = result.content.trim() || '(sub-agent returned no text)';
+		logAgentTermoTimeline(`Sub-agent ${agent.name} completed delegated task: ${task.slice(0, 120)}`, projectRoot);
+		return { id: toolCall.id, name: toolCall.name, success: true, output: `[${agent.name}]\n${output}`, durationMs: Date.now() - started };
+	} catch (error) {
+		return { id: toolCall.id, name: toolCall.name, success: false, error: error instanceof Error ? error.message : String(error), durationMs: Date.now() - started };
+	}
+}
+
 /**
  * Run the tool-call loop: execute tools, feed results back to the LLM,
  * and repeat until the LLM stops issuing tool calls.
@@ -310,11 +342,13 @@ async function runToolLoop(
 			timestamp: new Date(),
 		});
 
-		// Execute all tool calls from this turn
-		for (const tc of toolCalls) {
-			const execution = await executeToolWithReview(tc.name, tc.arguments, projectRoot, input);
+			// Execute all tool calls from this turn
+			for (const tc of toolCalls) {
+				const execution = tc.name === 'agent:delegate'
+					? { toolResult: await runDelegatedAgent(projectRoot, tc, nimClient), applied: false, change: undefined }
+					: await executeToolWithReview(tc.name, tc.arguments, projectRoot, input);
 
-			const toolResult = execution.toolResult;
+				const toolResult = execution.toolResult;
 			const statusText = toolResult.success ? 'OK' : ('ERR: ' + (toolResult.error ? toolResult.error.slice(0, 80) : 'unknown error'));
 			const changeNote = execution.change ? (execution.applied ? ' (applied)' : ' (rejected)') : '';
 
@@ -449,9 +483,17 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 	const memory = await loadMemory(projectRoot);
 	const nimClient = new NimClient(projectRoot);
 	const agentRoot = resolve(projectRoot, '.agent-termo');
-	const projectAgents = loadAllAgents(agentRoot);
-	const customAgents = projectAgents.length > 0 ? projectAgents : loadAllAgents(resolve(projectRoot, '.claude'));
+	const loadProjectAgents = () => {
+		const projectAgents = loadAllAgents(agentRoot);
+		return projectAgents.length > 0 ? projectAgents : loadAllAgents(resolve(projectRoot, '.claude'));
+	};
+	let customAgents = loadProjectAgents();
 	setAgentNames(customAgents.map((agent) => agent.name));
+	let customCommands: AgentCommand[] = loadAgentCommands(projectRoot);
+	const refreshCommandCompletion = (): void => {
+		setCommands([...COMMANDS, ...customCommands.map((command) => ({ name: '/' + command.name, description: command.description || 'project command' }))]);
+	};
+	refreshCommandCompletion();
 	let activeAgentName = '';
 	let activeAgentPrompt = '';
 	let currentGoal = '';
@@ -481,12 +523,13 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 
 	const input = createInput();
 
-	const activateAgent = (name: string): boolean => {
+	const activateAgent = (name: string, seedInput = true): boolean => {
 		const selected = customAgents.find((agent) => agent.name === name);
 		if (!selected) return false;
 		activeAgentName = selected.name;
 		activeAgentPrompt = selected.systemPrompt;
 		conversation[0]!.content = buildSessionPrompt();
+		if (seedInput) setNextInput('@' + selected.name + ' ');
 		logAgentTermoTimeline('Active custom agent: ' + selected.name, projectRoot);
 		printSuccess('Active agent: ' + selected.name);
 		return true;
@@ -502,7 +545,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 			items: customAgents.map((agent) => ({ value: agent.name, label: agent.name, hint: agent.description })),
 			current: activeAgentName,
 		});
-		if (selected) activateAgent(selected);
+		if (selected) activateAgent(selected, true);
 	};
 
 	const cleanup = () => {
@@ -528,8 +571,18 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 			}
 
 				let displayedInput = false;
-				const lowerInput = userInput.toLowerCase().trim();
-				if (lowerInput === '/report' || lowerInput.startsWith('/report ')) {
+					const lowerInput = userInput.toLowerCase().trim();
+					const customCommandMatch = /^\/([A-Za-z0-9_-]+)(?:\s+([\s\S]*))?$/.exec(userInput);
+					const customCommand = customCommandMatch
+						? customCommands.find((command) => command.name.toLowerCase() === customCommandMatch[1]!.toLowerCase())
+						: undefined;
+					if (customCommand) {
+						printUserMessage(rawInput);
+						displayedInput = true;
+						const args = customCommandMatch?.[2]?.trim() ?? '';
+						userInput = customCommand.prompt.replace(/\$ARGUMENTS|\$ARGS/g, args) + (args && !customCommand.prompt.includes('$ARGUMENTS') && !customCommand.prompt.includes('$ARGS') ? `\n\nUser arguments:\n${args}` : '');
+					}
+					if (lowerInput === '/report' || lowerInput.startsWith('/report ')) {
 					const requestedPath = userInput.trim().slice('/report'.length).trim() || 'report.md';
 					printUserMessage(rawInput);
 					displayedInput = true;
@@ -537,13 +590,27 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					}
 					const agentTask = /^\/agent\s+(\S+)\s+(.+)$/i.exec(userInput);
 					if (agentTask) {
-						if (!activateAgent(agentTask[1]!)) {
+						if (!activateAgent(agentTask[1]!, false)) {
 							printError('Unknown agent: ' + agentTask[1], 'Use /agents to list available agents.');
 							continue mainLoop;
 						}
 						printUserMessage(rawInput);
 						displayedInput = true;
 						userInput = agentTask[2]!;
+					}
+					const atAgent = /^@([A-Za-z0-9._-]+)(?:\s+(.+))?$/.exec(userInput);
+					if (atAgent) {
+						if (!activateAgent(atAgent[1]!, Boolean(!atAgent[2]))) {
+							printError('Unknown agent: ' + atAgent[1], 'Use /agents to list available agents.');
+							continue mainLoop;
+						}
+						if (atAgent[2]) {
+							printUserMessage(rawInput);
+							displayedInput = true;
+							userInput = atAgent[2];
+						} else {
+							continue mainLoop;
+						}
 					}
 
 					if (userInput.startsWith('/') && !displayedInput) {
@@ -580,10 +647,20 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						await chooseAgent();
 						continue mainLoop;
 					}
+					if (cmd === '/agent-folder') {
+						const result = ensureAgentFolder(projectRoot);
+						customAgents = loadProjectAgents();
+						customCommands = loadAgentCommands(projectRoot);
+						setAgentNames(customAgents.map((agent) => agent.name));
+						refreshCommandCompletion();
+						printSuccess('Agent folder ready: ' + result.root);
+						printInfo(`Agents copied: ${result.copiedAgents}; commands copied: ${result.copiedCommands}`);
+						continue mainLoop;
+					}
 					if (cmd === '/agent' || cmd.startsWith('/agent ')) {
 						const requested = userInput.trim().slice('/agent'.length).trim();
 							if (!requested) await chooseAgent();
-							else if (!activateAgent(requested)) printError('Unknown agent: ' + requested, 'Use /agents to list available agents.');
+							else if (!activateAgent(requested, true)) printError('Unknown agent: ' + requested, 'Use /agents to list available agents.');
 						continue mainLoop;
 					}
 					if (cmd === '/goal' || cmd.startsWith('/goal ')) {
@@ -605,6 +682,9 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					}
 					if (cmd === '/context') {
 						printInfo('Context messages: ' + (conversation.length - 1));
+						printInfo('Approximate context characters: ' + conversation.reduce((total, message) => total + message.content.length, 0));
+						printInfo('Active agent: ' + (activeAgentName || '(default)'));
+						printInfo('Current goal: ' + (currentGoal || '(none)'));
 						printInfo('Runtime directory: ' + agentRoot);
 						printInfo('Project docs: ' + resolve(projectRoot, 'docs'));
 						printInfo('Use /compact when the conversation becomes large.');
@@ -614,9 +694,15 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						printSuccess(compactConversation(conversation));
 						continue mainLoop;
 					}
-				if (cmd === '/history' || cmd === '/hist') {
-					printInfo('Conversation (excluding system): ' + (conversation.length - 1) + ' messages');
-					continue mainLoop;
+					if (cmd === '/history' || cmd === '/hist' || cmd.startsWith('/history ')) {
+						const requested = Number.parseInt(userInput.trim().slice('/history'.length).trim() || '12', 10);
+						const count = Number.isFinite(requested) && requested > 0 ? Math.min(requested, 50) : 12;
+						const messages = conversation.filter((message) => message.role !== 'system').slice(-count);
+						printInfo(`Conversation history (${messages.length} messages):`);
+						for (const message of messages) {
+							printInfo(`${message.role}: ${message.content.replace(/\s+/g, ' ').slice(0, 500)}`);
+						}
+						continue mainLoop;
 				}
 				if (cmd === '/exit' || cmd === '/quit') {
 					cleanup();
