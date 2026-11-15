@@ -36,6 +36,7 @@ const S = {
 	rows: 0,
 	model: '',
 	thinking: 'auto',
+	autoApprove: false,
 	project: '',
 	commands: [] as CommandInfo[],
 	agentNames: [] as string[],
@@ -111,7 +112,7 @@ function statusLine(max: number): string {
 		if (hits.length > 0) return c.cyan(clipText(' ' + hits.join('  '), max));
 	}
 
-	const hint = '/help · @agent · ctrl+c to interrupt';
+	const hint = S.autoApprove ? 'AUTO-ACCEPT · /permissions ask to disable' : '/help · @agent · ctrl+c to interrupt';
 	const modelPart = clipText(' ' + S.model, max);
 	const thinkingPart = clipText(' · think:' + S.thinking, max);
 	const roomWithHint = max - modelPart.length - thinkingPart.length - hint.length - 2;
@@ -121,7 +122,7 @@ function statusLine(max: number): string {
 		showHint ? roomWithHint : Math.max(0, max - modelPart.length - thinkingPart.length),
 	);
 	const gap = Math.max(1, max - modelPart.length - thinkingPart.length - projPart.length - hint.length);
-	return c.cyan(modelPart) + c.yellow(thinkingPart) + c.dim(projPart + (showHint ? ' '.repeat(gap) + hint : ''));
+	return c.cyan(modelPart) + c.yellow(thinkingPart) + (S.autoApprove ? c.red.bold(' AUTO') : '') + c.dim(projPart + (showHint ? ' '.repeat(gap) + hint : ''));
 }
 
 function chromeString(): string {
@@ -133,7 +134,7 @@ function chromeString(): string {
 	if (S.cursor < S.offset) S.offset = S.cursor;
 	if (S.cursor > S.offset + width - 1) S.offset = S.cursor - width + 1;
 
-	const edge = S.editing ? c.magenta : c.dim;
+	const edge = S.autoApprove ? c.red : (S.editing ? c.magenta : c.dim);
 	const body = S.buffer
 		? S.buffer.slice(S.offset, S.offset + width).padEnd(width)
 		: c.dim(clipText(PLACEHOLDER, width).padEnd(width));
@@ -142,7 +143,7 @@ function chromeString(): string {
 	const line = (row: number, text: string): string => `${CSI}${row};1H${CSI}2K${text}`;
 	return [
 		line(top, edge('╭' + '─'.repeat(cols - 2) + '╮')),
-		line(top + 1, edge('│') + ' ' + c.magenta.bold('❯') + ' ' + body + ' ' + edge('│')),
+			line(top + 1, edge('│') + ' ' + (S.autoApprove ? c.red.bold('❯') : c.magenta.bold('❯')) + ' ' + body + ' ' + edge('│')),
 		line(top + 2, edge('╰' + '─'.repeat(cols - 2) + '╯')),
 		line(rows, statusLine(cols - 1)),
 	].join('');
@@ -209,6 +210,11 @@ export function setScreenStatus(info: { model?: string; project?: string; thinki
 	if (info.model !== undefined) S.model = info.model;
 	if (info.project !== undefined) S.project = info.project;
 	if (info.thinking !== undefined) S.thinking = info.thinking;
+	paint();
+}
+
+export function setPermissionMode(autoApprove: boolean): void {
+	S.autoApprove = autoApprove;
 	paint();
 }
 

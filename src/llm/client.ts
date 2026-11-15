@@ -21,6 +21,7 @@ const TOOL_NAME_ALIASES: Record<string, string> = {
 	'git:commit': 'git_commit',
 	'git:push': 'git_push',
 	'git:log': 'git_log',
+	'agent:delegate': 'agent_delegate',
 };
 
 export function toWireToolName(name: string): string {

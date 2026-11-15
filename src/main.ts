@@ -5,10 +5,10 @@
 import { NimClient, fromWireToolName, type ThinkingCapacity } from './llm/client.js';
 import { TOOL_DEFINITIONS } from './llm/tools.js';
 import { executeTool, applyFileChange } from './tools/index.js';
-import { loadMemory, logToTimeline, logAgentTermoTimeline, appendToAgentTermoMemory } from './memory/index.js';
+import { loadMemory, logToTimeline, logAgentTermoTimeline, appendToAgentTermoMemory, appendToTimeline } from './memory/index.js';
 import { loadAllAgents } from './agents/index.js';
 import { buildSystemPrompt } from './agents/index.js';
-import { resolveProjectRoot, saveNimModel, saveNimThinking } from './utils/config.js';
+import { resolveProjectRoot, saveNimModel, saveNimThinking, savePermissionMode } from './utils/config.js';
 import { resolve } from 'node:path';
 import { readdirSync, readFileSync } from 'node:fs';
 import { ensureAgentFolder, loadAgentCommands, type AgentCommand } from './runtime/agent-folder.js';
@@ -40,6 +40,7 @@ import {
 	setCommands,
 	COMMANDS,
 	setContextFiles,
+	setPermissionMode,
 } from './ui/index.js';
 import type { ConversationMessage, ToolCall, ToolResult, ProposedFileChange } from './types/index.js';
 
@@ -231,47 +232,19 @@ function extractProposedChange(toolName: string, resultOutput: string): Proposed
 	return undefined;
 }
 
+function describeToolActivity(toolName: string, args: Record<string, unknown>, output: string | undefined, change: ProposedFileChange | undefined, applied: boolean, success: boolean): { actions: string[]; notes: string[] } {
+	const target = typeof args.path === 'string' ? `File: ${args.path}` : typeof args.command === 'string' ? `Command: ${args.command}` : typeof args.task === 'string' ? `Task: ${args.task}` : '';
+	const actions = [`Requested tool: ${toolName}`, ...(target ? [target] : [])];
+	const notes = [`Result: ${success ? 'succeeded' : 'failed'}`];
+	if (change) notes.push(`File change: ${applied ? 'applied to project' : 'rejected by user'}`);
+	const resultText = (output ?? '').replace(/\s+/g, ' ').slice(0, 500);
+	if (resultText) notes.push('Details: ' + resultText);
+	return { actions, notes };
+}
+
 interface InputController {
 	close(): void;
 	showPrompt(): void;
-}
-
-/**
- * Open a VS Code diff window for the proposed change.
- * Writes original + proposed content to temp files and launches `code --diff`.
- */
-async function openVsCodeDiff(change: ProposedFileChange): Promise<void> {
-	try {
-		const { exec } = await import('node:child_process');
-		const { promisify } = await import('node:util');
-		const { mkdtemp, writeFile } = await import('node:fs/promises');
-		const { basename } = await import('node:path');
-		const { tmpdir } = await import('node:os');
-
-		const execAsync = promisify(exec);
-
-		const originalPath = change.path;
-		const tmpDir = await mkdtemp(tmpdir() + '/agent-termo-diff-');
-		const tmpFile = tmpDir + '/' + basename(originalPath);
-
-		await writeFile(tmpFile, change.proposedContent, 'utf-8');
-
-		// Write original content to a temp file for diff display
-		if (!change.isNewFile && change.originalContent.length > 0) {
-			const originalTmp = tmpDir + '/original-' + basename(originalPath);
-			await writeFile(originalTmp, change.originalContent, 'utf-8');
-			execAsync(`code --diff "${originalTmp}" "${tmpFile}" --wait`).catch(() => {
-				// VS Code not available or user closed — continue silently
-			});
-		} else {
-			// New file: just open the proposed file
-			execAsync(`code "${tmpFile}" --wait`).catch(() => {
-				// Silently fall back
-			});
-		}
-	} catch {
-		// Silently fall back to terminal diff view
-	}
 }
 
 async function executeToolWithReview(
@@ -279,6 +252,7 @@ async function executeToolWithReview(
 	args: Record<string, unknown>,
 	projectRoot: string,
 	input: InputController,
+	autoApprove: boolean,
 ): Promise<{ toolResult: { success: boolean; output?: string; error?: string }; change?: ProposedFileChange; applied: boolean }> {
 	printToolCall(toolName, args);
 	startSpinner('Running ' + toolName);
@@ -288,16 +262,19 @@ async function executeToolWithReview(
 	const proposedChange = extractProposedChange(toolName, toolResult.output ?? '');
 
 	if (proposedChange) {
-		// Pause REPL input to prevent stale listeners from interfering with promptAcceptReject
+		if (autoApprove) {
+			const applyResult = await applyFileChange(proposedChange, projectRoot);
+			if (applyResult.success) printSuccess('Auto-applied: ' + (applyResult.output ?? proposedChange.path));
+			else printError(applyResult.error ?? 'Failed to auto-apply change');
+			return { toolResult: applyResult, change: proposedChange, applied: applyResult.success };
+		}
+			// Pause REPL input to prevent stale listeners from interfering with promptAcceptReject
 		input.close();
 
 		// Show terminal diff viewer
 		printToolResult(toolName, { success: toolResult.success, output: toolResult.output, error: toolResult.error }, { needsApproval: true, proposedChange });
 
-		// Also open VS Code diff window (non-blocking, fire-and-forget)
-			void openVsCodeDiff(proposedChange);
-
-		const decision = await promptAcceptReject('Accept this change?');
+			const decision = await promptAcceptReject('Accept this change?');
 
 		// Restore input for next REPL iteration
 		input.showPrompt();
@@ -361,6 +338,7 @@ async function runToolLoop(
 	initialToolCalls: ToolCall[],
 	input: InputController,
 	nimClient: NimClient,
+	autoApprove: boolean,
 ): Promise<string> {
 	let toolCalls = initialToolCalls;
 	let finalText = '';
@@ -382,7 +360,7 @@ async function runToolLoop(
 			for (const tc of toolCalls) {
 				const execution = tc.name === 'agent:delegate'
 					? { toolResult: await runDelegatedAgent(projectRoot, tc, nimClient), applied: false, change: undefined }
-					: await executeToolWithReview(tc.name, tc.arguments, projectRoot, input);
+						: await executeToolWithReview(tc.name, tc.arguments, projectRoot, input, autoApprove);
 
 				const toolResult = execution.toolResult;
 			const statusText = toolResult.success ? 'OK' : ('ERR: ' + (toolResult.error ? toolResult.error.slice(0, 80) : 'unknown error'));
@@ -395,9 +373,10 @@ async function runToolLoop(
 				timestamp: new Date(),
 			});
 
-			void logToTimeline(projectRoot, 'Tool: ' + tc.name + ' -- ' + statusText + changeNote);
-			logAgentTermoTimeline('Tool: ' + tc.name + ' -- ' + statusText + changeNote, projectRoot);
-		}
+				logAgentTermoTimeline('Tool: ' + tc.name + ' -- ' + statusText + changeNote, projectRoot);
+				const activity = describeToolActivity(tc.name, tc.arguments, toolResult.output, execution.change, execution.applied, toolResult.success);
+				void appendToTimeline(projectRoot, 'Agent-Termo', 'Tool execution: ' + tc.name, activity.actions, activity.notes);
+			}
 
 		// Send conversation (including tool results) back to the LLM
 		// The LLM will either produce text or more tool calls
@@ -446,6 +425,9 @@ async function runToolLoop(
 		}
 	}
 
+	if (finalText.trim()) {
+		void appendToTimeline(projectRoot, 'Agent-Termo', 'Completed tool-assisted request', ['Assistant summary: ' + finalText.replace(/\s+/g, ' ').slice(0, 700)], []);
+	}
 	return finalText;
 }
 
@@ -552,6 +534,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 
 	const memory = await loadMemory(projectRoot);
 	const nimClient = new NimClient(projectRoot);
+	let autoApprove = process.env.AGENT_TERMO_AUTO_APPROVE === '1';
 	const agentRoot = resolve(projectRoot, '.agent-termo');
 	const loadProjectAgents = () => {
 		const projectAgents = loadAllAgents(agentRoot);
@@ -591,6 +574,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 	};
 
 	initScreen({ model: nimClient.getModel(), project: projectRoot, thinking: nimClient.getThinkingCapacity() });
+	setPermissionMode(autoApprove);
 	printWelcome(projectRoot, nimClient.getModel());
 	logAgentTermoTimeline('Agent-Termo session started. Model: ' + nimClient.getModel(), projectRoot);
 	void logToTimeline(projectRoot, 'Agent-Termo session started. Model: ' + nimClient.getModel());
@@ -723,8 +707,23 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						await handleModelCommand(userInput.trim().slice('/model'.length).trim(), nimClient, projectRoot);
 						continue mainLoop;
 					}
-					if (cmd === '/thinking' || cmd.startsWith('/thinking ')) {
+						if (cmd === '/thinking' || cmd.startsWith('/thinking ')) {
 						await handleThinkingCommand(userInput.trim().slice('/thinking'.length).trim(), nimClient, projectRoot);
+						continue mainLoop;
+					}
+					if (cmd === '/permissions' || cmd.startsWith('/permissions ')) {
+						const requested = userInput.trim().slice('/permissions'.length).trim().toLowerCase();
+						if (requested === 'auto' || requested === 'yes' || requested === 'on' || requested === 'skip' || requested === 'always') autoApprove = true;
+						else if (requested === 'ask' || requested === 'off' || requested === 'no') autoApprove = false;
+						else autoApprove = !autoApprove;
+						process.env.AGENT_TERMO_AUTO_APPROVE = autoApprove ? '1' : '0';
+						setPermissionMode(autoApprove);
+						try {
+							savePermissionMode(autoApprove);
+						} catch {
+							printInfo('Permission mode changed for this session but could not be saved.');
+						}
+						printSuccess(autoApprove ? 'Permission mode: AUTO-ACCEPT (file changes apply without prompts).' : 'Permission mode: ASK before applying file changes.');
 						continue mainLoop;
 					}
 					if (cmd === '/agents') {
@@ -762,6 +761,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						printInfo(`Project: ${projectRoot}`);
 						printInfo(`Model: ${nimClient.getModel()}`);
 						printInfo(`Thinking: ${nimClient.getThinkingCapacity()}`);
+						printInfo(`Permissions: ${autoApprove ? 'AUTO-ACCEPT' : 'ASK'}`);
 						printInfo(`Agent: ${activeAgentName || '(default)'}`);
 						printInfo(`Goal: ${currentGoal || '(none)'}`);
 						printInfo(`Messages: ${conversation.length - 1}`);
@@ -809,6 +809,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				};
 				conversation.push(userMsg);
 				rememberChat(projectRoot, 'User', userInput);
+				void appendToTimeline(projectRoot, activeAgentName || 'Agent-Termo', 'User request', ['Request: ' + userInput.replace(/\s+/g, ' ').slice(0, 700)], []);
 					if (!displayedInput) printUserMessage(userInput);
 
 			const useTools = mightNeedTools(userInput);
@@ -841,7 +842,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						if (narration) printAssistantMessage(narration);
 
 						// Run the tool-call loop: execute tools, feed results back, repeat
-						const finalText = await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient);
+						const finalText = await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, autoApprove);
 						if (finalText && finalText.trim() && finalText.trim() !== 'null') {
 							printAssistantMessage(finalText.trim());
 						}
@@ -863,7 +864,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						if (toolCalls.length > 0) {
 							const narration = (fallback.content ?? '').trim().replace(/^null$/, '').trim();
 							if (narration && !narration.includes('"tool_calls"')) printAssistantMessage(narration);
-							const finalText = await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient);
+							const finalText = await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, autoApprove);
 							if (finalText && finalText.trim() && finalText.trim() !== 'null') {
 								rememberChat(projectRoot, 'Assistant', finalText);
 								printAssistantMessage(finalText.trim());

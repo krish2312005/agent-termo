@@ -106,6 +106,11 @@ function loadStoredNimThinking(): void {
 	if (typeof nimThinking === 'string' && nimThinking.trim()) process.env.NIM_THINKING = nimThinking;
 }
 
+function loadStoredPermissionMode(): void {
+	const { autoApprove } = readStoredConfig();
+	if (autoApprove === true) process.env.AGENT_TERMO_AUTO_APPROVE = '1';
+}
+
 export function saveNimApiKey(apiKey: string): void {
   updateStoredConfig({ nimApiKey: apiKey });
 }
@@ -118,9 +123,14 @@ export function saveNimThinking(thinking: string): void {
 	updateStoredConfig({ nimThinking: thinking });
 }
 
+export function savePermissionMode(autoApprove: boolean): void {
+	updateStoredConfig({ autoApprove });
+}
+
 loadStoredNimApiKey();
 loadStoredNimModel();
 loadStoredNimThinking();
+loadStoredPermissionMode();
 
 export function getConfig(projectRoot: string): AppConfig {
   loadEnvFile(resolve(projectRoot, '.env'));

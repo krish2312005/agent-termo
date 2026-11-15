@@ -314,6 +314,9 @@ async function toolBash(args: Record<string, unknown>, projectRoot: string): Pro
 	if (!withinProject(fullCwd, projectRoot)) {
 		return { id: '', name: 'bash:execute', success: false, error: 'Access denied: shell cwd must be inside the project root', durationMs: 0 };
 	}
+	if (/\/tmp(?:\/|\s|$)|\/var\/tmp(?:\/|\s|$)|\$TMPDIR|%TEMP%|\bmktemp\b/i.test(command)) {
+		return { id: '', name: 'bash:execute', success: false, error: 'Project files must be created in the active project directory, not an OS temporary directory', durationMs: 0 };
+	}
 
 	for (const pattern of DANGEROUS_PATTERNS) {
 		if (pattern.test(command)) {
@@ -337,6 +340,7 @@ async function toolBash(args: Record<string, unknown>, projectRoot: string): Pro
 async function toolGitStatus(args: Record<string, unknown>, projectRoot: string): Promise<ToolResult> {
 	const cwd = args.cwd ? String(args.cwd) : projectRoot;
 	const fullCwd = toProjectPath(cwd, projectRoot);
+	if (!withinProject(fullCwd, projectRoot)) return { id: '', name: 'git:status', success: false, error: 'Access denied: Git cwd must be inside the project root', durationMs: 0 };
 	try {
 		const git = simpleGit(fullCwd);
 		const status = await git.status();
@@ -364,6 +368,7 @@ async function toolGitCommit(args: Record<string, unknown>, projectRoot: string)
 	const cwd = args.cwd ? String(args.cwd) : projectRoot;
 	const fullCwd = toProjectPath(cwd, projectRoot);
 	if (!message) return { id: '', name: 'git:commit', success: false, error: 'message is required', durationMs: 0 };
+	if (!withinProject(fullCwd, projectRoot)) return { id: '', name: 'git:commit', success: false, error: 'Access denied: Git cwd must be inside the project root', durationMs: 0 };
 	try {
 		const git = simpleGit(fullCwd);
 		await git.add('.');
@@ -377,6 +382,7 @@ async function toolGitCommit(args: Record<string, unknown>, projectRoot: string)
 async function toolGitPush(args: Record<string, unknown>, projectRoot: string): Promise<ToolResult> {
 	const cwd = args.cwd ? String(args.cwd) : projectRoot;
 	const fullCwd = toProjectPath(cwd, projectRoot);
+	if (!withinProject(fullCwd, projectRoot)) return { id: '', name: 'git:push', success: false, error: 'Access denied: Git cwd must be inside the project root', durationMs: 0 };
 	try {
 		const git = simpleGit(fullCwd);
 		await git.push();
@@ -390,6 +396,7 @@ async function toolGitLog(args: Record<string, unknown>, projectRoot: string): P
 	const cwd = args.cwd ? String(args.cwd) : projectRoot;
 	const fullCwd = toProjectPath(cwd, projectRoot);
 	const limit = Number(args.limit ?? 20);
+	if (!withinProject(fullCwd, projectRoot)) return { id: '', name: 'git:log', success: false, error: 'Access denied: Git cwd must be inside the project root', durationMs: 0 };
 	try {
 		const git = simpleGit(fullCwd);
 		const log = await git.log({ maxCount: limit });
