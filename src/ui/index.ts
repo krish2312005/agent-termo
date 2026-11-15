@@ -93,7 +93,10 @@ function inline(text: string): string {
 					.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, label: string, url: string) => c.cyan(label) + c.dim(' (' + url + ')'))
 					.replace(/\*\*(.+?)\*\*|__(.+?)__/g, (_m, boldA: string, boldB: string) => c.bold(boldA ?? boldB))
 					.replace(/~~(.+?)~~/g, (_m, g: string) => c.strikethrough(g))
-					.replace(/(?<!\w)\*([^*\n]+)\*|(?<!\w)_([^_\n]+)_/g, (_m, italicA: string, italicB: string) => c.italic(italicA ?? italicB)),
+					.replace(/(?<!\w)\*([^*\n]+)\*|(?<!\w)_([^_\n]+)_/g, (_m, italicA: string, italicB: string) => c.italic(italicA ?? italicB))
+					// Chalk can disable styling in redirected or Windows terminals; delimiters
+					// must still be removed even when no ANSI styling is emitted.
+					.replace(/\*\*|__|~~/g, ''),
 		)
 		.join('');
 }

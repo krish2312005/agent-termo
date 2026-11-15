@@ -27,15 +27,27 @@ describe('MarkdownPrinter', () => {
     expect(lines).toEqual(['● Hello', '  World']);
   });
 
-  it('renders headings, bullets, numbered lists and inline code without raw markers', () => {
+	it('renders headings, bullets, numbered lists and inline code without raw markers', () => {
     const lines = capture(() => {
       const md = new MarkdownPrinter();
       md.push('# Title\n- item with `code` and **bold**\n1. first\n');
       md.end();
     }).filter(Boolean);
 
-    expect(lines).toEqual(['● Title', '  • item with code and bold', '  1. first']);
-  });
+		expect(lines).toEqual(['● Title', '  • item with code and bold', '  1. first']);
+	});
+
+	it('renders report-style emphasis and tables without leaking Markdown syntax', () => {
+		const lines = capture(() => {
+			const md = new MarkdownPrinter();
+			md.push('1. **Critical: streaming is broken**\n\n| Severity | Count |\n|----------|-------|\n| Critical | 2 |\n');
+			md.end();
+		}).filter(Boolean);
+
+		expect(lines.join('\n')).not.toContain('**');
+		expect(lines.join('\n')).not.toContain('|----------|');
+		expect(lines).toContain('● 1. Critical: streaming is broken');
+	});
 
   it('draws fenced code blocks and keeps their contents verbatim', () => {
     const lines = capture(() => {
