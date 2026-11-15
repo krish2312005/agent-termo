@@ -36,7 +36,8 @@ const S = {
 	rows: 0,
 	model: '',
 	thinking: 'auto',
-	autoApprove: false,
+	usage: '0 tokens',
+	permissionMode: 'ask' as 'ask' | 'files' | 'auto',
 	project: '',
 	commands: [] as CommandInfo[],
 	agentNames: [] as string[],
@@ -112,17 +113,18 @@ function statusLine(max: number): string {
 		if (hits.length > 0) return c.cyan(clipText(' ' + hits.join('  '), max));
 	}
 
-	const hint = S.autoApprove ? 'AUTO-ACCEPT · /permissions ask to disable' : '/help · @agent · ctrl+c to interrupt';
+	const hint = S.permissionMode === 'auto' ? 'AUTO-ACCEPT · /permissions ask to disable' : S.permissionMode === 'files' ? 'FILES-AUTO · terminal commands still ask' : '/help · @agent · ctrl+c to interrupt';
 	const modelPart = clipText(' ' + S.model, max);
 	const thinkingPart = clipText(' · think:' + S.thinking, max);
-	const roomWithHint = max - modelPart.length - thinkingPart.length - hint.length - 2;
+	const usagePart = clipText(' · ' + S.usage, max);
+	const roomWithHint = max - modelPart.length - thinkingPart.length - usagePart.length - hint.length - 2;
 	const showHint = roomWithHint >= 15;
 	const projPart = clipText(
 		' · ' + shortPath(S.project),
-		showHint ? roomWithHint : Math.max(0, max - modelPart.length - thinkingPart.length),
+		showHint ? roomWithHint : Math.max(0, max - modelPart.length - thinkingPart.length - usagePart.length),
 	);
-	const gap = Math.max(1, max - modelPart.length - thinkingPart.length - projPart.length - hint.length);
-	return c.cyan(modelPart) + c.yellow(thinkingPart) + (S.autoApprove ? c.red.bold(' AUTO') : '') + c.dim(projPart + (showHint ? ' '.repeat(gap) + hint : ''));
+	const gap = Math.max(1, max - modelPart.length - thinkingPart.length - usagePart.length - projPart.length - hint.length);
+	return c.cyan(modelPart) + c.yellow(thinkingPart) + c.blue(usagePart) + (S.permissionMode === 'auto' ? c.red.bold(' AUTO') : S.permissionMode === 'files' ? c.yellow.bold(' FILES') : '') + c.dim(projPart + (showHint ? ' '.repeat(gap) + hint : ''));
 }
 
 function chromeString(): string {
@@ -134,7 +136,7 @@ function chromeString(): string {
 	if (S.cursor < S.offset) S.offset = S.cursor;
 	if (S.cursor > S.offset + width - 1) S.offset = S.cursor - width + 1;
 
-	const edge = S.autoApprove ? c.red : (S.editing ? c.magenta : c.dim);
+	const edge = S.permissionMode === 'auto' ? c.red : S.permissionMode === 'files' ? c.yellow : (S.editing ? c.magenta : c.dim);
 	const body = S.buffer
 		? S.buffer.slice(S.offset, S.offset + width).padEnd(width)
 		: c.dim(clipText(PLACEHOLDER, width).padEnd(width));
@@ -143,7 +145,7 @@ function chromeString(): string {
 	const line = (row: number, text: string): string => `${CSI}${row};1H${CSI}2K${text}`;
 	return [
 		line(top, edge('╭' + '─'.repeat(cols - 2) + '╮')),
-			line(top + 1, edge('│') + ' ' + (S.autoApprove ? c.red.bold('❯') : c.magenta.bold('❯')) + ' ' + body + ' ' + edge('│')),
+			line(top + 1, edge('│') + ' ' + (S.permissionMode === 'auto' ? c.red.bold('❯') : S.permissionMode === 'files' ? c.yellow.bold('❯') : c.magenta.bold('❯')) + ' ' + body + ' ' + edge('│')),
 		line(top + 2, edge('╰' + '─'.repeat(cols - 2) + '╯')),
 		line(rows, statusLine(cols - 1)),
 	].join('');
@@ -206,15 +208,16 @@ export function initScreen(info: { model: string; project: string; thinking?: st
 	process.on('exit', teardownScreen);
 }
 
-export function setScreenStatus(info: { model?: string; project?: string; thinking?: string }): void {
+export function setScreenStatus(info: { model?: string; project?: string; thinking?: string; usage?: string }): void {
 	if (info.model !== undefined) S.model = info.model;
 	if (info.project !== undefined) S.project = info.project;
 	if (info.thinking !== undefined) S.thinking = info.thinking;
+	if (info.usage !== undefined) S.usage = info.usage;
 	paint();
 }
 
-export function setPermissionMode(autoApprove: boolean): void {
-	S.autoApprove = autoApprove;
+export function setPermissionMode(permissionMode: 'ask' | 'files' | 'auto'): void {
+	S.permissionMode = permissionMode;
 	paint();
 }
 

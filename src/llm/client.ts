@@ -3,7 +3,7 @@
 // =============================================================================
 
 import OpenAI from 'openai';
-import type { ToolCall, ConversationMessage, ToolDef } from '../types/index.js';
+import type { ToolCall, ConversationMessage, ToolDef, TokenUsage } from '../types/index.js';
 import { mergeModels, type ModelInfo } from './models.js';
 
 type NIMTool = OpenAI.Chat.ChatCompletionTool;
@@ -37,6 +37,7 @@ export class NimClient {
 	private model: string;
 	private thinkingCapacity: ThinkingCapacity;
 	private activeController: AbortController | null = null;
+	private usage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
   constructor(_projectRoot?: string) {
     const apiKey = process.env.NIM_API_KEY ?? '';
@@ -71,6 +72,24 @@ export class NimClient {
 
 	getThinkingCapacity(): ThinkingCapacity {
 		return this.thinkingCapacity;
+	}
+
+	getUsage(): TokenUsage {
+		return { ...this.usage };
+	}
+
+	formatUsage(): string {
+		return `${this.usage.totalTokens.toLocaleString()} tokens`;
+	}
+
+	private recordUsage(promptTokens: number, completionTokens: number): void {
+		this.usage.promptTokens += Math.max(0, Math.round(promptTokens));
+		this.usage.completionTokens += Math.max(0, Math.round(completionTokens));
+		this.usage.totalTokens = this.usage.promptTokens + this.usage.completionTokens;
+	}
+
+	private estimatePromptTokens(messages: ConversationMessage[]): number {
+		return Math.ceil(messages.reduce((total, message) => total + message.content.length, 0) / 4);
 	}
 
 	setThinkingCapacity(capacity: ThinkingCapacity): void {
@@ -125,12 +144,14 @@ export class NimClient {
    * Yields { content, toolCalls } at the end with clean text.
    */
 	async *streamComplete(
-    messages: ConversationMessage[],
-    tools?: NIMTool[],
-    onChunk?: (text: string) => void,
+		messages: ConversationMessage[],
+		tools?: NIMTool[],
+		onChunk?: (text: string) => void,
+		onReasoning?: (stage: string) => void,
 	): AsyncGenerator<{ content: string; toolCalls: ToolCall[] }, void, unknown> {
-		const rawChunks: string[] = [];
-		const toolCallMap: Map<number, { id: string; name: string; arguments: string }> = new Map();
+			const rawChunks: string[] = [];
+			const toolCallMap: Map<number, { id: string; name: string; arguments: string }> = new Map();
+			let reasoningAnnounced = false;
 		const controller = new AbortController();
 		this.activeController = controller;
 
@@ -166,10 +187,14 @@ export class NimClient {
 			stream: true,
 		}, { signal: controller.signal });
 
-    for await (const chunk of stream) {
-      const delta = chunk.choices[0]?.delta;
+	    for await (const chunk of stream) {
+	      const delta = chunk.choices[0]?.delta;
 
-      if (!delta) continue;
+	      if (!delta) continue;
+			if (!reasoningAnnounced && ('reasoning_content' in delta || 'reasoning' in delta)) {
+				reasoningAnnounced = true;
+				onReasoning?.('Model is reasoning through the request…');
+			}
 
       // Text delta — filter out "null" chunks (Stepfun's reasoning output)
       const rawContent = delta.content ?? '';
@@ -201,7 +226,8 @@ export class NimClient {
 
     // For streaming: content is accumulated in rawChunks (null chunks already filtered)
     // For non-streaming (complete() method): reasoning stripping happens in that method
-    const finalContent = rawChunks.join('');
+	    const finalContent = rawChunks.join('');
+		this.recordUsage(this.estimatePromptTokens(messages), Math.ceil(finalContent.length / 4));
 
     // Extract tool calls
     const toolCalls: ToolCall[] = Array.from(toolCallMap.values()).map((tc) => {
@@ -214,16 +240,17 @@ export class NimClient {
 			return { id: tc.id, name: fromWireToolName(tc.name), arguments: args };
     });
 
-		yield { content: finalContent, toolCalls };
 		if (this.activeController === controller) this.activeController = null;
+		yield { content: finalContent, toolCalls };
   }
 
   /**
    * Non-streaming completion — for when streaming fails or for retries.
    */
-  async complete(
-    messages: ConversationMessage[],
-    tools?: NIMTool[],
+	async complete(
+		messages: ConversationMessage[],
+		tools?: NIMTool[],
+		onReasoning?: (stage: string) => void,
 	): Promise<{ content: string; toolCalls: ToolCall[] }> {
 		const controller = new AbortController();
 		this.activeController = controller;
@@ -252,7 +279,12 @@ export class NimClient {
 			stream: false,
 		}, { signal: controller.signal });
 
-    const msg = response.choices[0]?.message;
+		const msg = response.choices[0]?.message;
+		const rawMessage = msg as (typeof msg & { reasoning_content?: string; reasoning?: string }) | undefined;
+		if (rawMessage?.reasoning_content || rawMessage?.reasoning) onReasoning?.('Model completed a reasoning pass…');
+		const responseUsage = response.usage;
+		if (responseUsage) this.recordUsage(responseUsage.prompt_tokens ?? 0, responseUsage.completion_tokens ?? 0);
+		else this.recordUsage(this.estimatePromptTokens(messages), Math.ceil((msg?.content?.length ?? 0) / 4));
     // Strip reasoning noise
     let content =
       msg?.content?.replace(

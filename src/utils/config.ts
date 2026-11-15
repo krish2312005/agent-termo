@@ -107,8 +107,9 @@ function loadStoredNimThinking(): void {
 }
 
 function loadStoredPermissionMode(): void {
-	const { autoApprove } = readStoredConfig();
-	if (autoApprove === true) process.env.AGENT_TERMO_AUTO_APPROVE = '1';
+	const { permissionMode, autoApprove } = readStoredConfig();
+	if (permissionMode === 'ask' || permissionMode === 'files' || permissionMode === 'auto') process.env.AGENT_TERMO_PERMISSION_MODE = permissionMode;
+	else if (autoApprove === true) process.env.AGENT_TERMO_PERMISSION_MODE = 'auto';
 }
 
 export function saveNimApiKey(apiKey: string): void {
@@ -123,8 +124,8 @@ export function saveNimThinking(thinking: string): void {
 	updateStoredConfig({ nimThinking: thinking });
 }
 
-export function savePermissionMode(autoApprove: boolean): void {
-	updateStoredConfig({ autoApprove });
+export function savePermissionMode(permissionMode: 'ask' | 'files' | 'auto'): void {
+	updateStoredConfig({ permissionMode, autoApprove: permissionMode === 'auto' });
 }
 
 loadStoredNimApiKey();

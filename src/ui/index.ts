@@ -40,7 +40,7 @@ export const COMMANDS: CommandInfo[] = [
 	{ name: '/timeline', description: 'view recent activity' },
 		{ name: '/model', description: 'switch NVIDIA NIM model (or /model <id>)' },
 			{ name: '/thinking', description: 'select NVIDIA reasoning capacity' },
-			{ name: '/permissions', description: 'toggle ask or auto-accept file changes' },
+			{ name: '/permissions', description: 'ask, files, or auto; terminal approvals can be remembered with A' },
 		{ name: '/agents', description: 'list all agents' },
 		{ name: '/agent', description: 'select a custom agent' },
 		{ name: '/agent-folder', description: 'create or refresh .agent-termo agents and commands' },
@@ -244,6 +244,29 @@ export function printToolResult(
 // DIFF VIEWER
 // =============================================================================
 
+function highlightCode(text: string, filePath: string): string {
+	const language = filePath.split('.').pop()?.toLowerCase() ?? '';
+	const keywords = new Set(['const', 'let', 'var', 'function', 'return', 'if', 'else', 'for', 'while', 'class', 'interface', 'type', 'import', 'from', 'export', 'async', 'await', 'new', 'public', 'private', 'def', 'in', 'try', 'catch', 'finally', 'throw', 'extends', 'implements', 'package', 'fun', 'fn', 'struct']);
+	const types = new Set(['string', 'number', 'boolean', 'void', 'unknown', 'any', 'true', 'false', 'null', 'undefined', 'None', 'True', 'False']);
+	const token = /("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|\/\/.*|#.*|\b\d+(?:\.\d+)?\b|\b[A-Za-z_$][\w$]*\b)/g;
+	let last = 0;
+	let result = '';
+	for (const match of text.matchAll(token)) {
+		const index = match.index ?? 0;
+		result += text.slice(last, index);
+		const value = match[0];
+		if (value.startsWith('//') || value.startsWith('#')) result += c.dim.green(value);
+		else if (value.startsWith('"') || value.startsWith("'") || value.startsWith('`')) result += c.green(value);
+		else if (/^\d/.test(value)) result += c.yellow(value);
+		else if (keywords.has(value)) result += c.magenta.bold(value);
+		else if (types.has(value)) result += c.cyan(value);
+		else if (language === 'json' && /^[A-Za-z_$]/.test(value)) result += c.blue(value);
+		else result += value;
+		last = index + value.length;
+	}
+	return result + text.slice(last);
+}
+
 export function printDiffViewer(change: ProposedFileChange): void {
 	const diff = change.diff;
 	const room = Math.max(20, terminalWidth() - 14);
@@ -259,10 +282,11 @@ export function printDiffViewer(change: ProposedFileChange): void {
 
 	for (const line of diff.lines) {
 		const prefix = line.type === 'add' ? '+' : line.type === 'remove' ? '-' : ' ';
-		const color = line.type === 'add' ? c.green : line.type === 'remove' ? c.red : c.dim;
-		const num = line.lineNumber > 0 ? String(line.lineNumber).padStart(4) : '    ';
-		const text = clipText(line.content.replace(/\t/g, '  '), room);
-		out.write('  ' + color(prefix + num + ' │ ' + text) + '\n');
+			const color = line.type === 'add' ? c.green : line.type === 'remove' ? c.red : c.dim;
+			const num = line.lineNumber > 0 ? String(line.lineNumber).padStart(4) : '    ';
+			const text = clipText(line.content.replace(/\t/g, '  '), room);
+			const coloredNumber = line.type === 'add' ? c.green(num) : line.type === 'remove' ? c.red(num) : c.dim(num);
+			out.write('  ' + color(prefix) + coloredNumber + c.dim(' │ ') + highlightCode(text, diff.file) + '\n');
 	}
 	out.write('\n');
 }
@@ -292,10 +316,32 @@ export function promptAcceptReject(message: string = 'Accept this change?'): Pro
 		stop = listenKeys((key) => {
 			if (done) return;
 			const first = key.text?.[0]?.toLowerCase();
-			if (key.name === 'enter' || first === 'y') answer(true);
-			else if (key.name === 'escape' || first === 'n') answer(false);
-			else if (key.name === 'ctrl+c') answer('cancelled');
+				if (key.name === 'enter' || first === 'y') answer(true);
+				else if (key.name === 'escape' || first === 'n') answer(false);
+				else if (key.name === 'ctrl+c') answer('cancelled');
+				}, () => answer('cancelled'));
 		});
+	}
+
+export function promptCommandApproval(command: string): Promise<'once' | 'always' | 'reject'> {
+	out.write('\n' + c.yellow('? ') + c.bold('Allow terminal command? ') + c.cyan(clipText(command, terminalWidth() - 24)) + '\n');
+	out.write(c.dim('  [Y] once  [A] always for this exact command  [N] reject '));
+	return new Promise((resolve) => {
+		let done = false;
+		let stop: () => void = () => undefined;
+		const answer = (value: 'once' | 'always' | 'reject'): void => {
+			if (done) return;
+			done = true;
+			stop();
+			out.write(value === 'reject' ? c.red('no\n') : value === 'always' ? c.green('always\n') : c.green('yes\n'));
+			resolve(value);
+		};
+		stop = listenKeys((key) => {
+			const first = key.text?.[0]?.toLowerCase();
+			if (key.name === 'enter' || first === 'y') answer('once');
+			else if (first === 'a') answer('always');
+			else if (key.name === 'escape' || key.name === 'ctrl+c' || first === 'n') answer('reject');
+		}, () => answer('reject'));
 	});
 }
 

@@ -84,6 +84,12 @@ export interface LLMResponse {
 	};
 }
 
+export interface TokenUsage {
+	promptTokens: number;
+	completionTokens: number;
+	totalTokens: number;
+}
+
 // Tool Schema Types (OpenAI function calling format)
 export interface ToolParameterProperty {
 	type: string;

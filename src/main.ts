@@ -12,6 +12,7 @@ import { resolveProjectRoot, saveNimModel, saveNimThinking, savePermissionMode }
 import { resolve } from 'node:path';
 import { readdirSync, readFileSync } from 'node:fs';
 import { ensureAgentFolder, loadAgentCommands, type AgentCommand } from './runtime/agent-folder.js';
+import { commandApprovalKey, isCommandApprovalRequired, loadAllowedCommands, saveAllowedCommands } from './runtime/permissions.js';
 import {
 	MarkdownPrinter,
 	printWelcome,
@@ -41,6 +42,7 @@ import {
 	COMMANDS,
 	setContextFiles,
 	setPermissionMode,
+	promptCommandApproval,
 } from './ui/index.js';
 import type { ConversationMessage, ToolCall, ToolResult, ProposedFileChange } from './types/index.js';
 
@@ -105,22 +107,39 @@ class RequestCancelledError extends Error {
 	}
 }
 
+type PermissionMode = 'ask' | 'files' | 'auto';
+
 function isRequestCancelled(err: unknown): boolean {
 	return err instanceof RequestCancelledError || (err instanceof Error && /abort|cancel/i.test(err.name + ' ' + err.message));
+}
+
+function providerError(err: unknown): string {
+	if (err && typeof err === 'object') {
+		const details = err as { status?: number; code?: string; message?: string; error?: { message?: string } };
+		const prefix = [details.status, details.code].filter(Boolean).join(' ');
+		return `${prefix ? prefix + ': ' : ''}${details.error?.message ?? details.message ?? String(err)}`;
+	}
+	return err instanceof Error ? err.message : String(err);
 }
 
 async function withEscapeCancellation<T>(nimClient: NimClient, operation: () => Promise<T>): Promise<T> {
 	if (!process.stdin.isTTY) return operation();
 	let cancelled = false;
+	let rejectCancellation: ((error: Error) => void) | undefined;
+	const cancellation = new Promise<T>((_, reject) => {
+		rejectCancellation = reject;
+	});
 	const stop = listenKeys((key) => {
 		if (key.name === 'escape' || key.name === 'ctrl+c') {
+			if (cancelled) return;
 			cancelled = true;
 			nimClient.cancelCurrentRequest();
 			printInfo(key.name === 'ctrl+c' ? 'Response interrupted.' : 'Response cancelled.');
+			rejectCancellation?.(new RequestCancelledError());
 		}
-	});
+	}, () => rejectCancellation?.(new RequestCancelledError()));
 	try {
-		const result = await operation();
+		const result = await Promise.race([operation(), cancellation]);
 		if (cancelled) throw new RequestCancelledError();
 		return result;
 	} catch (err) {
@@ -145,10 +164,11 @@ async function replyWithText(
 	startSpinner('Thinking');
 	const md = new MarkdownPrinter(() => stopSpinner());
 	try {
-		const gen = nimClient.streamComplete(conversation, undefined, (text: string) => md.push(text));
+			const gen = nimClient.streamComplete(conversation, undefined, (text: string) => md.push(text), (stage: string) => printInfo(stage));
 		// The generator streams everything, then yields once at the end; the
 		// chunks have already been rendered through the callback.
-			const streamed = await withEscapeCancellation(nimClient, () => gen.next());
+				const streamed = await withEscapeCancellation(nimClient, () => gen.next());
+				setScreenStatus({ usage: nimClient.formatUsage() });
 			md.end();
 			stopSpinner();
 			const streamedText = streamed.value?.content?.trim() ?? '';
@@ -157,15 +177,17 @@ async function replyWithText(
 				rememberChat(projectRoot, 'Assistant', streamedText);
 			}
 			return;
-		} catch (err) {
-			md.end();
-			stopSpinner();
-			if (isRequestCancelled(err)) return;
-		}
+			} catch (err) {
+				md.end();
+				stopSpinner();
+				if (isRequestCancelled(err)) return;
+				printInfo('NVIDIA NIM streaming request failed: ' + providerError(err) + ' — trying a non-streaming retry.');
+			}
 
 	startSpinner('Retrying');
 	try {
-			const result = await withEscapeCancellation(nimClient, () => nimClient.complete(conversation, undefined));
+			const result = await withEscapeCancellation(nimClient, () => nimClient.complete(conversation, undefined, (stage) => printInfo(stage)));
+			setScreenStatus({ usage: nimClient.formatUsage() });
 		stopSpinner();
 		const cleanText = (result.content ?? '').trim();
 		if (cleanText) {
@@ -178,10 +200,10 @@ async function replyWithText(
 				rememberChat(projectRoot, 'Assistant', cleanText);
 				printAssistantMessage(cleanText);
 		}
-	} catch (err) {
-		stopSpinner();
-		printError('LLM error: ' + (err instanceof Error ? err.message : String(err)));
-	}
+		} catch (err) {
+			stopSpinner();
+			printError('NVIDIA NIM provider error: ' + providerError(err));
+		}
 }
 
 /**
@@ -252,9 +274,21 @@ async function executeToolWithReview(
 	args: Record<string, unknown>,
 	projectRoot: string,
 	input: InputController,
-	autoApprove: boolean,
+	permissionMode: PermissionMode,
+	allowedCommands: Set<string>,
 ): Promise<{ toolResult: { success: boolean; output?: string; error?: string }; change?: ProposedFileChange; applied: boolean }> {
 	printToolCall(toolName, args);
+	const approvalKey = commandApprovalKey(toolName, args);
+	if (permissionMode !== 'auto' && isCommandApprovalRequired(toolName) && !allowedCommands.has(approvalKey)) {
+		input.close();
+		const decision = await promptCommandApproval(typeof args.command === 'string' ? args.command : approvalKey);
+		input.showPrompt();
+		if (decision === 'reject') return { toolResult: { success: false, error: 'Command rejected by user' }, applied: false };
+		if (decision === 'always') {
+			allowedCommands.add(approvalKey);
+			try { saveAllowedCommands(projectRoot, allowedCommands); } catch { printInfo('Command allowed for this session but could not be saved.'); }
+		}
+	}
 	startSpinner('Running ' + toolName);
 	const toolResult = await executeTool(toolName, args, projectRoot);
 	stopSpinner(toolResult.success);
@@ -262,7 +296,7 @@ async function executeToolWithReview(
 	const proposedChange = extractProposedChange(toolName, toolResult.output ?? '');
 
 	if (proposedChange) {
-		if (autoApprove) {
+		if (permissionMode === 'auto' || permissionMode === 'files') {
 			const applyResult = await applyFileChange(proposedChange, projectRoot);
 			if (applyResult.success) printSuccess('Auto-applied: ' + (applyResult.output ?? proposedChange.path));
 			else printError(applyResult.error ?? 'Failed to auto-apply change');
@@ -319,7 +353,7 @@ async function runDelegatedAgent(projectRoot: string, toolCall: ToolCall, nimCli
 	];
 
 	try {
-		const result = await withEscapeCancellation(nimClient, () => nimClient.complete(delegatedMessages, undefined));
+			const result = await withEscapeCancellation(nimClient, () => nimClient.complete(delegatedMessages, undefined, (stage) => printInfo(stage)));
 		const output = result.content.trim() || '(sub-agent returned no text)';
 		logAgentTermoTimeline(`Sub-agent ${agent.name} completed delegated task: ${task.slice(0, 120)}`, projectRoot);
 		return { id: toolCall.id, name: toolCall.name, success: true, output: `[${agent.name}]\n${output}`, durationMs: Date.now() - started };
@@ -338,7 +372,8 @@ async function runToolLoop(
 	initialToolCalls: ToolCall[],
 	input: InputController,
 	nimClient: NimClient,
-	autoApprove: boolean,
+	permissionMode: PermissionMode,
+	allowedCommands: Set<string>,
 ): Promise<string> {
 	let toolCalls = initialToolCalls;
 	let finalText = '';
@@ -360,7 +395,7 @@ async function runToolLoop(
 			for (const tc of toolCalls) {
 				const execution = tc.name === 'agent:delegate'
 					? { toolResult: await runDelegatedAgent(projectRoot, tc, nimClient), applied: false, change: undefined }
-						: await executeToolWithReview(tc.name, tc.arguments, projectRoot, input, autoApprove);
+							: await executeToolWithReview(tc.name, tc.arguments, projectRoot, input, permissionMode, allowedCommands);
 
 				const toolResult = execution.toolResult;
 			const statusText = toolResult.success ? 'OK' : ('ERR: ' + (toolResult.error ? toolResult.error.slice(0, 80) : 'unknown error'));
@@ -378,30 +413,32 @@ async function runToolLoop(
 				void appendToTimeline(projectRoot, 'Agent-Termo', 'Tool execution: ' + tc.name, activity.actions, activity.notes);
 			}
 
-		// Send conversation (including tool results) back to the LLM
-		// The LLM will either produce text or more tool calls
-		startSpinner('Working');
+			// Send conversation (including tool results) back to the LLM
+			// The LLM will either produce text or more tool calls
+			startSpinner('Working');
 		let result: { content: string; toolCalls: ToolCall[] };
 		try {
 			const tools = nimClient.buildToolDefs(TOOL_DEFINITIONS);
-				result = await withEscapeCancellation(nimClient, () => nimClient.complete(conversation, tools));
+					result = await withEscapeCancellation(nimClient, () => nimClient.complete(conversation, tools, (stage) => printInfo(stage)));
+				setScreenStatus({ usage: nimClient.formatUsage() });
 			} catch (err) {
 				if (isRequestCancelled(err)) {
 					stopSpinner();
 					return '';
 				}
-			// Model doesn't support native tool calling — fall back to plain text
-			// and parse any JSON tool calls emitted in the content.
-			try {
-				const fallback = await withEscapeCancellation(nimClient, () => nimClient.complete(conversation, undefined));
+				// Model doesn't support native tool calling — fall back to plain text
+				// and parse any JSON tool calls emitted in the content.
+				try {
+					const fallback = await withEscapeCancellation(nimClient, () => nimClient.complete(conversation, undefined, (stage) => printInfo(stage)));
+				setScreenStatus({ usage: nimClient.formatUsage() });
 				result = {
 					content: fallback.content,
 					toolCalls: parseToolCallsFromText(fallback.content),
 				};
-			} catch (err2) {
-				stopSpinner();
-				printError('LLM error: ' + (err2 instanceof Error ? err2.message : String(err2)));
-				break;
+				} catch (err2) {
+					stopSpinner();
+					printError('NVIDIA NIM provider error: ' + providerError(err2));
+					break;
 			}
 		}
 		stopSpinner();
@@ -534,7 +571,12 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 
 	const memory = await loadMemory(projectRoot);
 	const nimClient = new NimClient(projectRoot);
-	let autoApprove = process.env.AGENT_TERMO_AUTO_APPROVE === '1';
+	let permissionMode: PermissionMode = process.env.AGENT_TERMO_PERMISSION_MODE === 'files'
+		? 'files'
+		: process.env.AGENT_TERMO_PERMISSION_MODE === 'auto' || process.env.AGENT_TERMO_AUTO_APPROVE === '1'
+			? 'auto'
+			: 'ask';
+	const allowedCommands = loadAllowedCommands(projectRoot);
 	const agentRoot = resolve(projectRoot, '.agent-termo');
 	const loadProjectAgents = () => {
 		const projectAgents = loadAllAgents(agentRoot);
@@ -574,7 +616,8 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 	};
 
 	initScreen({ model: nimClient.getModel(), project: projectRoot, thinking: nimClient.getThinkingCapacity() });
-	setPermissionMode(autoApprove);
+	setScreenStatus({ usage: nimClient.formatUsage() });
+	setPermissionMode(permissionMode);
 	printWelcome(projectRoot, nimClient.getModel());
 	logAgentTermoTimeline('Agent-Termo session started. Model: ' + nimClient.getModel(), projectRoot);
 	void logToTimeline(projectRoot, 'Agent-Termo session started. Model: ' + nimClient.getModel());
@@ -711,21 +754,23 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						await handleThinkingCommand(userInput.trim().slice('/thinking'.length).trim(), nimClient, projectRoot);
 						continue mainLoop;
 					}
-					if (cmd === '/permissions' || cmd.startsWith('/permissions ')) {
-						const requested = userInput.trim().slice('/permissions'.length).trim().toLowerCase();
-						if (requested === 'auto' || requested === 'yes' || requested === 'on' || requested === 'skip' || requested === 'always') autoApprove = true;
-						else if (requested === 'ask' || requested === 'off' || requested === 'no') autoApprove = false;
-						else autoApprove = !autoApprove;
-						process.env.AGENT_TERMO_AUTO_APPROVE = autoApprove ? '1' : '0';
-						setPermissionMode(autoApprove);
-						try {
-							savePermissionMode(autoApprove);
-						} catch {
-							printInfo('Permission mode changed for this session but could not be saved.');
+						if (cmd === '/permissions' || cmd.startsWith('/permissions ')) {
+							const requested = userInput.trim().slice('/permissions'.length).trim().toLowerCase();
+							if (requested === 'auto' || requested === 'yes' || requested === 'on' || requested === 'skip' || requested === 'always') permissionMode = 'auto';
+							else if (requested === 'files' || requested === 'file' || requested === 'safe') permissionMode = 'files';
+							else if (requested === 'ask' || requested === 'off' || requested === 'no') permissionMode = 'ask';
+							else permissionMode = permissionMode === 'ask' ? 'files' : permissionMode === 'files' ? 'auto' : 'ask';
+							process.env.AGENT_TERMO_PERMISSION_MODE = permissionMode;
+							process.env.AGENT_TERMO_AUTO_APPROVE = permissionMode === 'auto' ? '1' : '0';
+							setPermissionMode(permissionMode);
+							try {
+								savePermissionMode(permissionMode);
+							} catch {
+								printInfo('Permission mode changed for this session but could not be saved.');
+							}
+							printSuccess(permissionMode === 'auto' ? 'Permission mode: AUTO-ACCEPT (files and terminal commands run without prompts).' : permissionMode === 'files' ? 'Permission mode: FILES-AUTO (file changes apply; terminal commands still ask).' : 'Permission mode: ASK before applying changes.');
+							continue mainLoop;
 						}
-						printSuccess(autoApprove ? 'Permission mode: AUTO-ACCEPT (file changes apply without prompts).' : 'Permission mode: ASK before applying file changes.');
-						continue mainLoop;
-					}
 					if (cmd === '/agents') {
 						printAgentsList(customAgents);
 						printInfo('Custom agents directory: ' + agentRoot + '/agents');
@@ -761,7 +806,8 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						printInfo(`Project: ${projectRoot}`);
 						printInfo(`Model: ${nimClient.getModel()}`);
 						printInfo(`Thinking: ${nimClient.getThinkingCapacity()}`);
-						printInfo(`Permissions: ${autoApprove ? 'AUTO-ACCEPT' : 'ASK'}`);
+						printInfo(`Permissions: ${permissionMode.toUpperCase()}`);
+						printInfo(`Token usage: ${nimClient.formatUsage()}`);
 						printInfo(`Agent: ${activeAgentName || '(default)'}`);
 						printInfo(`Goal: ${currentGoal || '(none)'}`);
 						printInfo(`Messages: ${conversation.length - 1}`);
@@ -815,10 +861,11 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 			const useTools = mightNeedTools(userInput);
 			const tools = useTools ? nimClient.buildToolDefs(TOOL_DEFINITIONS) : undefined;
 
-			if (useTools) {
-				startSpinner('Working');
-				try {
-						const result = await withEscapeCancellation(nimClient, () => nimClient.complete(conversation, tools));
+				if (useTools) {
+					startSpinner('Working');
+					try {
+							const result = await withEscapeCancellation(nimClient, () => nimClient.complete(conversation, tools, (stage) => printInfo(stage)));
+						setScreenStatus({ usage: nimClient.formatUsage() });
 					const fullText = result.content;
 						const toolCalls = dedup(result.toolCalls);
 					stopSpinner();
@@ -842,7 +889,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						if (narration) printAssistantMessage(narration);
 
 						// Run the tool-call loop: execute tools, feed results back, repeat
-						const finalText = await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, autoApprove);
+						const finalText = await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, permissionMode, allowedCommands);
 						if (finalText && finalText.trim() && finalText.trim() !== 'null') {
 							printAssistantMessage(finalText.trim());
 						}
@@ -855,16 +902,17 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						// Tool calling failed (e.g. HTTP 400 because the model does not
 					// support the `tools` parameter). Retry without tools and parse
 					// any JSON tool calls the model may have emitted as plain text.
-					printInfo('Tool calls not supported by this model — retrying without tools.');
-					try {
-							const fallback = await withEscapeCancellation(nimClient, () => nimClient.complete(conversation, undefined));
+						printInfo('NVIDIA NIM tool request failed: ' + providerError(err) + ' — retrying without tools.');
+						try {
+								const fallback = await withEscapeCancellation(nimClient, () => nimClient.complete(conversation, undefined, (stage) => printInfo(stage)));
+							setScreenStatus({ usage: nimClient.formatUsage() });
 						const toolCalls = dedup(
 							fallback.toolCalls.length > 0 ? fallback.toolCalls : parseToolCallsFromText(fallback.content),
 						);
 						if (toolCalls.length > 0) {
 							const narration = (fallback.content ?? '').trim().replace(/^null$/, '').trim();
 							if (narration && !narration.includes('"tool_calls"')) printAssistantMessage(narration);
-							const finalText = await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, autoApprove);
+							const finalText = await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, permissionMode, allowedCommands);
 							if (finalText && finalText.trim() && finalText.trim() !== 'null') {
 								rememberChat(projectRoot, 'Assistant', finalText);
 								printAssistantMessage(finalText.trim());
@@ -877,7 +925,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 							}
 							}
 					} catch (err2) {
-						printError('LLM error: ' + (err2 instanceof Error ? err2.message : String(err2)));
+						printError('NVIDIA NIM provider error: ' + providerError(err2));
 						conversation.pop();
 						continue mainLoop;
 					}

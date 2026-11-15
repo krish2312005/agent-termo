@@ -82,7 +82,10 @@ async function startAgent(
   if (options.apiKey) process.env.NIM_API_KEY = options.apiKey;
   if (options.model) process.env.NIM_MODEL = options.model;
 	if (options.debug) process.env.LOG_LEVEL = 'debug';
-	if (options.autoApprove) process.env.AGENT_TERMO_AUTO_APPROVE = '1';
+	if (options.autoApprove) {
+		process.env.AGENT_TERMO_PERMISSION_MODE = 'auto';
+		process.env.AGENT_TERMO_AUTO_APPROVE = '1';
+	}
 
   if (!process.env.NIM_API_KEY?.trim()) {
     const apiKey = await promptForApiKey();
