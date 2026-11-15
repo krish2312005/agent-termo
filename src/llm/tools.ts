@@ -67,12 +67,26 @@ export const TOOL_DEFINITIONS: ToolDef[] = [
           type: 'string',
           description: 'Replacement text',
         },
-      },
-      required: ['path', 'old_string', 'new_string'],
-    },
-  },
-  {
-    name: 'file:glob',
+			},
+			required: ['path', 'old_string', 'new_string'],
+		},
+	},
+	{
+		name: 'file:delete',
+		description: 'Delete a file from the project. Use only when the user explicitly asks to remove it.',
+		parameters: {
+			type: 'object',
+			properties: {
+				path: {
+					type: 'string',
+					description: 'File path to delete (relative to project root)',
+				},
+			},
+			required: ['path'],
+		},
+	},
+	{
+		name: 'file:glob',
     description: 'Find all files matching a glob pattern. Use to discover project structure.',
     parameters: {
       type: 'object',

@@ -13,6 +13,8 @@ export interface ConversationMessage extends Message {
 	id: string;
 	timestamp: Date;
 	agent?: string; // which agent produced this (for display badge)
+	/** Native tool calls attached to an assistant message. Required before tool results. */
+	toolCalls?: ToolCall[];
 }
 
 export interface ToolCall {

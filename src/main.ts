@@ -2,7 +2,7 @@
 // Agent-Termo — Main REPL entry point
 // =============================================================================
 
-import { NimClient } from './llm/client.js';
+import { NimClient, fromWireToolName } from './llm/client.js';
 import { TOOL_DEFINITIONS } from './llm/tools.js';
 import { executeTool, applyFileChange } from './tools/index.js';
 import { loadMemory, logToTimeline, logAgentTermoTimeline } from './memory/index.js';
@@ -127,7 +127,7 @@ function parseToolCallsFromText(text: string): ToolCall[] {
 	const rawCalls = Array.isArray(obj.tool_calls) ? obj.tool_calls : [];
 	return rawCalls.map((tc: { id?: string; name?: string; function?: { name?: string; arguments?: unknown } }) => ({
 		id: tc.id ?? crypto.randomUUID(),
-		name: tc.name ?? (tc.function?.name ?? ''),
+		name: fromWireToolName(tc.name ?? (tc.function?.name ?? '')),
 		arguments:
 			typeof tc.function?.arguments === 'string'
 				? (() => { try { return JSON.parse(tc.function.arguments as string); } catch { return { _raw: tc.function.arguments }; } })()
@@ -136,7 +136,7 @@ function parseToolCallsFromText(text: string): ToolCall[] {
 }
 
 function extractProposedChange(toolName: string, resultOutput: string): ProposedFileChange | undefined {
-	const isFileTool = toolName === 'file:write' || toolName === 'file:edit';
+	const isFileTool = toolName === 'file:write' || toolName === 'file:edit' || toolName === 'file:delete';
 	if (!isFileTool) return undefined;
 	try {
 		const parsed = JSON.parse(resultOutput);
@@ -257,6 +257,17 @@ async function runToolLoop(
 
 	// Continue looping while the LLM keeps issuing tool calls
 	while (toolCalls.length > 0) {
+		// OpenAI-compatible APIs require the assistant tool-call message directly
+		// before the corresponding tool results. Without this message, the next
+		// request is rejected and file operations appear not to work.
+		conversation.push({
+			id: crypto.randomUUID(),
+			role: 'assistant',
+			content: finalText || '',
+			toolCalls,
+			timestamp: new Date(),
+		});
+
 		// Execute all tool calls from this turn
 		for (const tc of toolCalls) {
 			const execution = await executeToolWithReview(tc.name, tc.arguments, projectRoot, input);
@@ -265,9 +276,9 @@ async function runToolLoop(
 			const statusText = toolResult.success ? 'OK' : ('ERR: ' + (toolResult.error ? toolResult.error.slice(0, 80) : 'unknown error'));
 			const changeNote = execution.change ? (execution.applied ? ' (applied)' : ' (rejected)') : '';
 
-			conversation.push({
-				id: crypto.randomUUID(),
-				role: 'tool',
+				conversation.push({
+					id: tc.id,
+					role: 'tool',
 				content: (toolResult.success ? 'Result: ' : 'Error: ') + (toolResult.success ? (toolResult.output ?? '') : toolResult.error) + changeNote,
 				timestamp: new Date(),
 			});
@@ -305,12 +316,14 @@ async function runToolLoop(
 
 		// If the LLM produced text alongside tool calls, save it
 		if (finalText && finalText.trim() && finalText.trim() !== 'null') {
-			conversation.push({
-				id: crypto.randomUUID(),
-				role: 'assistant',
-				content: finalText.trim(),
-				timestamp: new Date(),
-			});
+				if (toolCalls.length === 0) {
+					conversation.push({
+						id: crypto.randomUUID(),
+						role: 'assistant',
+						content: finalText.trim(),
+						timestamp: new Date(),
+					});
+				}
 			// Narration that comes with more tool calls is shown now; the
 			// final answer (no tool calls) is printed by the caller.
 			if (toolCalls.length > 0) printAssistantMessage(finalText.trim());
@@ -511,27 +524,23 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					printInfo('Tool calls not supported by this model — retrying without tools.');
 					try {
 						const fallback = await nimClient.complete(conversation, undefined);
-						const text = (fallback.content ?? '').trim();
-						// Strip any leading/trailing "null" reasoning noise
-						const cleanText = text.replace(/^null$/, '').trim();
-						if (cleanText) {
-							conversation.push({
-								id: crypto.randomUUID(),
-								role: 'assistant',
-								content: cleanText,
-								timestamp: new Date(),
-							});
-						}
-						const narration = cleanText.replace(/^null$/, '').trim();
-						if (narration) printAssistantMessage(narration);
-
-						const toolCalls = dedup(parseToolCallsFromText(fallback.content));
+						const toolCalls = dedup(
+							fallback.toolCalls.length > 0 ? fallback.toolCalls : parseToolCallsFromText(fallback.content),
+						);
 						if (toolCalls.length > 0) {
+							const narration = (fallback.content ?? '').trim().replace(/^null$/, '').trim();
+							if (narration && !narration.includes('"tool_calls"')) printAssistantMessage(narration);
 							const finalText = await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient);
 							if (finalText && finalText.trim() && finalText.trim() !== 'null') {
 								printAssistantMessage(finalText.trim());
 							}
-						}
+						} else {
+							const cleanText = (fallback.content ?? '').trim().replace(/^null$/, '').trim();
+							if (cleanText) {
+								conversation.push({ id: crypto.randomUUID(), role: 'assistant', content: cleanText, timestamp: new Date() });
+								printAssistantMessage(cleanText);
+							}
+							}
 					} catch (err2) {
 						printError('LLM error: ' + (err2 instanceof Error ? err2.message : String(err2)));
 						conversation.pop();

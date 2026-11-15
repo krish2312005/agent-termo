@@ -8,6 +8,27 @@ import { mergeModels, type ModelInfo } from './models.js';
 
 type NIMTool = OpenAI.Chat.ChatCompletionTool;
 
+const TOOL_NAME_ALIASES: Record<string, string> = {
+	'file:read': 'file_read',
+	'file:write': 'file_write',
+	'file:edit': 'file_edit',
+	'file:delete': 'file_delete',
+	'file:glob': 'file_glob',
+	'bash:execute': 'bash_execute',
+	'git:status': 'git_status',
+	'git:commit': 'git_commit',
+	'git:push': 'git_push',
+	'git:log': 'git_log',
+};
+
+export function toWireToolName(name: string): string {
+	return TOOL_NAME_ALIASES[name] ?? name.replace(/:/g, '_');
+}
+
+export function fromWireToolName(name: string): string {
+	return Object.entries(TOOL_NAME_ALIASES).find(([, wireName]) => wireName === name)?.[0] ?? name;
+}
+
 export class NimClient {
   private client: OpenAI;
   private model: string;
@@ -30,7 +51,7 @@ export class NimClient {
     return toolSchemas.map((t) => ({
       type: 'function' as const,
       function: {
-        name: t.name,
+			name: toWireToolName(t.name),
         description: t.description,
         parameters: t.parameters as unknown as NIMTool['function']['parameters'],
       },
@@ -69,7 +90,7 @@ export class NimClient {
    * Handles Stepfun's quirks: filters "null" reasoning chunks, strips reasoning field.
    * Yields { content, toolCalls } at the end with clean text.
    */
-  async *streamComplete(
+	async *streamComplete(
     messages: ConversationMessage[],
     tools?: NIMTool[],
     onChunk?: (text: string) => void,
@@ -79,15 +100,26 @@ export class NimClient {
 
     const stream = await this.client.chat.completions.create({
       model: this.model,
-      messages: messages.map((m) => {
-        if (m.role === 'tool') {
-          return {
-            role: 'tool' as const,
-            content: m.content,
-            tool_call_id: m.id,
-          };
-        }
-        return {
+		messages: messages.map((m) => {
+			if (m.role === 'tool') {
+				return {
+					role: 'tool' as const,
+					content: m.content,
+					tool_call_id: m.id,
+				};
+			}
+			if (m.role === 'assistant' && m.toolCalls?.length) {
+				return {
+					role: 'assistant' as const,
+					content: m.content || null,
+					tool_calls: m.toolCalls.map((tc) => ({
+						id: tc.id,
+						type: 'function' as const,
+						function: { name: toWireToolName(tc.name), arguments: JSON.stringify(tc.arguments) },
+					})),
+				};
+			}
+			return {
           role: m.role as 'system' | 'user' | 'assistant',
           content: m.content,
         };
@@ -143,7 +175,7 @@ export class NimClient {
       } catch {
         args = { _raw: tc.arguments };
       }
-      return { id: tc.id, name: tc.name, arguments: args };
+			return { id: tc.id, name: fromWireToolName(tc.name), arguments: args };
     });
 
     yield { content: finalContent, toolCalls };
@@ -158,11 +190,22 @@ export class NimClient {
   ): Promise<{ content: string; toolCalls: ToolCall[] }> {
     const response = await this.client.chat.completions.create({
       model: this.model,
-      messages: messages.map((m) => {
-        if (m.role === 'tool') {
-          return { role: 'tool' as const, content: m.content, tool_call_id: m.id };
-        }
-        return { role: m.role as 'system' | 'user' | 'assistant', content: m.content };
+		messages: messages.map((m) => {
+			if (m.role === 'tool') {
+				return { role: 'tool' as const, content: m.content, tool_call_id: m.id };
+			}
+			if (m.role === 'assistant' && m.toolCalls?.length) {
+				return {
+					role: 'assistant' as const,
+					content: m.content || null,
+					tool_calls: m.toolCalls.map((tc) => ({
+						id: tc.id,
+						type: 'function' as const,
+						function: { name: toWireToolName(tc.name), arguments: JSON.stringify(tc.arguments) },
+					})),
+				};
+			}
+			return { role: m.role as 'system' | 'user' | 'assistant', content: m.content };
       }),
       tools: tools,
       temperature: 0.3,
@@ -185,7 +228,7 @@ export class NimClient {
       } catch {
         args = { _raw: tc.function.arguments };
       }
-      return { id: tc.id, name: tc.function.name, arguments: args };
+			return { id: tc.id, name: fromWireToolName(tc.function.name), arguments: args };
     });
 
     // If no tool calls but content looks like a tool call request, parse it
@@ -195,7 +238,7 @@ export class NimClient {
         if (parsed.tool_calls?.length) {
           toolCalls.push(...parsed.tool_calls.map((tc: { id?: string; name?: string; function?: { name?: string; arguments?: unknown } }) => ({
             id: tc.id ?? crypto.randomUUID(),
-            name: tc.function?.name ?? tc.name ?? '',
+				name: fromWireToolName(tc.function?.name ?? tc.name ?? ''),
             arguments: typeof tc.function?.arguments === 'string'
               ? JSON.parse(tc.function.arguments)
               : tc.function?.arguments ?? {},

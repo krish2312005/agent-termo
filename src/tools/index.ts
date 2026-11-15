@@ -2,7 +2,7 @@
 // Agent-Termo Tool Executor — routes tool calls to implementations
 // =============================================================================
 
-import { readFile as readFileAsync, writeFile as writeFileAsync } from 'node:fs/promises';
+import { readFile as readFileAsync, writeFile as writeFileAsync, unlink as unlinkAsync } from 'node:fs/promises';
 import { resolve, isAbsolute, relative } from 'node:path';
 import { exec as execAsync } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -22,6 +22,7 @@ const TOOL_MAP: Record<string, (...args: any[]) => Promise<ToolResult>> = {
 	'file:read': toolFileRead,
 	'file:write': toolFileWrite,
 	'file:edit': toolFileEdit,
+	'file:delete': toolFileDelete,
 	'file:glob': toolFileGlob,
 	'grep': toolGrep,
 	'bash:execute': toolBash,
@@ -135,7 +136,7 @@ export async function applyFileChange(change: ProposedFileChange, projectRoot: s
 	try {
 		if (change.isDeletion) {
 			if (existsSync(fullPath)) {
-				await writeFileAsync(fullPath, '');
+					await unlinkAsync(fullPath);
 			}
 		} else {
 			const dir = resolve(fullPath, '..');
@@ -224,6 +225,25 @@ async function toolFileEdit(args: Record<string, unknown>, projectRoot: string):
 		return result;
 	} catch (err) {
 		return { id: '', name: 'file:edit', success: false, error: 'Cannot edit ' + path + ': ' + (err instanceof Error ? err.message : String(err)), durationMs: 0 };
+	}
+}
+
+async function toolFileDelete(args: Record<string, unknown>, projectRoot: string): Promise<ToolResult> {
+	const path = String(args.path ?? '');
+	if (!path) return { id: '', name: 'file:delete', success: false, error: 'path is required', durationMs: 0 };
+	if (!withinProject(path, projectRoot)) {
+		return { id: '', name: 'file:delete', success: false, error: 'Access denied: ' + path, durationMs: 0 };
+	}
+
+	const fullPath = toProjectPath(path, projectRoot);
+	try {
+		if (!existsSync(fullPath)) {
+			return { id: '', name: 'file:delete', success: false, error: 'File not found: ' + path, durationMs: 0 };
+		}
+		const existingContent = await readFileAsync(fullPath, 'utf-8');
+		return proposeFileChange(path, '', projectRoot, 'write', existingContent).result;
+	} catch (err) {
+		return { id: '', name: 'file:delete', success: false, error: 'Cannot delete ' + path + ': ' + (err instanceof Error ? err.message : String(err)), durationMs: 0 };
 	}
 }
 
