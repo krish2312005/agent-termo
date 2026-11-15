@@ -7,10 +7,14 @@ import { resolve } from 'node:path';
 
 // ── Agent-Termo Home Memory ──────────────────────────────────────────────────
 
-function ensureAgentTermoDir(): string {
- const dir = resolve(process.env.HOME || process.env.USERPROFILE || '.', '.agent-termo');
+function ensureAgentTermoDir(projectRoot?: string): string {
+ const dir = projectRoot
+   ? resolve(projectRoot, '.agent-termo')
+   : resolve(process.env.HOME || process.env.USERPROFILE || '.', '.agent-termo');
  try {
-   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+   mkdirSync(resolve(dir, 'agents'), { recursive: true });
+   mkdirSync(resolve(dir, 'logs'), { recursive: true });
+   mkdirSync(resolve(dir, 'docs'), { recursive: true });
  } catch {
    // non-fatal; callers will handle missing file
  }
@@ -19,20 +23,22 @@ function ensureAgentTermoDir(): string {
 
 const AGENT_TERMO_MEMORY_PATH = resolve(ensureAgentTermoDir(), 'memory.md');
 
-export function loadAgentTermoMemory(): string {
- if (!existsSync(AGENT_TERMO_MEMORY_PATH)) return '';
+export function loadAgentTermoMemory(projectRoot?: string): string {
+ const path = projectRoot ? resolve(ensureAgentTermoDir(projectRoot), 'memory.md') : AGENT_TERMO_MEMORY_PATH;
+ if (!existsSync(path)) return '';
  try {
-   return readFile(AGENT_TERMO_MEMORY_PATH, 'utf-8');
+   return readFile(path, 'utf-8');
  } catch {
    return '';
  }
 }
 
-export function appendToAgentTermoMemory(entry: string): void {
+export function appendToAgentTermoMemory(entry: string, projectRoot?: string): void {
+ const path = projectRoot ? resolve(ensureAgentTermoDir(projectRoot), 'memory.md') : AGENT_TERMO_MEMORY_PATH;
  const timestamp = new Date().toISOString().split('T')[0];
  const content = '\n\n## ' + timestamp + '\n\n' + entry;
  try {
-   appendFile(AGENT_TERMO_MEMORY_PATH, content, 'utf-8');
+   appendFile(path, content, 'utf-8');
  } catch {
    // ignore persistence failure
  }
@@ -40,20 +46,22 @@ export function appendToAgentTermoMemory(entry: string): void {
 
 const AGENT_TERMO_TIMELINE_PATH = resolve(ensureAgentTermoDir(), 'timeline.md');
 
-export function loadAgentTermoTimeline(): string {
- if (!existsSync(AGENT_TERMO_TIMELINE_PATH)) return '';
+export function loadAgentTermoTimeline(projectRoot?: string): string {
+ const path = projectRoot ? resolve(ensureAgentTermoDir(projectRoot), 'timeline.md') : AGENT_TERMO_TIMELINE_PATH;
+ if (!existsSync(path)) return '';
  try {
-   return readFile(AGENT_TERMO_TIMELINE_PATH, 'utf-8');
+   return readFile(path, 'utf-8');
  } catch {
    return '';
  }
 }
 
-export function logAgentTermoTimeline(message: string): void {
+export function logAgentTermoTimeline(message: string, projectRoot?: string): void {
+ const path = projectRoot ? resolve(ensureAgentTermoDir(projectRoot), 'timeline.md') : AGENT_TERMO_TIMELINE_PATH;
  const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 16);
  const entry = '\n- [' + timestamp + '] ' + message;
  try {
-   appendFile(AGENT_TERMO_TIMELINE_PATH, entry, 'utf-8');
+   appendFile(path, entry, 'utf-8');
  } catch {
    // ignore persistence failure
  }

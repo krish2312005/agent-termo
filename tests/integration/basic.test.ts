@@ -7,6 +7,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { executeTool, applyFileChange } from '../../src/tools/index.js';
+import { fromWireToolName } from '../../src/llm/client.js';
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -75,14 +76,24 @@ describe('executeTool', () => {
     expect(result.error).toContain('Access denied');
   });
 
-  it('file:glob — finds TypeScript files', async () => {
+	it('file:glob — finds TypeScript files', async () => {
     const result = await executeTool('file:glob', { pattern: 'src/**/*.ts' }, PROJECT_ROOT);
 
     expect(result.success).toBe(true);
     expect(result.name).toBe('file:glob');
     expect(result.output).toBeDefined();
-    expect(result.output).toContain('src/cli.ts');
-  });
+		expect(result.output).toContain('src/cli.ts');
+	});
+
+	it('file:glob and bash:execute resolve relative cwd from the project root', async () => {
+		const glob = await executeTool('file:glob', { pattern: '*.json', cwd: '.' }, PROJECT_ROOT);
+		expect(glob.success).toBe(true);
+		expect(glob.output).toContain('package.json');
+
+		const bash = await executeTool('bash:execute', { command: 'pwd', cwd: '.' }, PROJECT_ROOT);
+		expect(bash.success).toBe(true);
+		expect(bash.output).toContain(PROJECT_ROOT);
+	});
 
   it('file:glob — returns error when pattern is missing', async () => {
     const result = await executeTool('file:glob', {}, PROJECT_ROOT);
@@ -103,7 +114,7 @@ describe('executeTool', () => {
     expect(result.output).toContain('hello');
   });
 
-  it('bash:execute — blocks dangerous commands', async () => {
+	it('bash:execute — blocks dangerous commands', async () => {
     const result = await executeTool(
       'bash:execute',
       { command: 'rm -rf /' },
@@ -111,8 +122,15 @@ describe('executeTool', () => {
     );
 
     expect(result.success).toBe(false);
-    expect(result.error).toContain('Dangerous command blocked');
-  });
+		expect(result.error).toContain('Dangerous command blocked');
+	});
+
+	it('normalizes delegated-agent wire names and blocks temp project writes', async () => {
+		expect(fromWireToolName('agent_delegate')).toBe('agent:delegate');
+		const result = await executeTool('bash:execute', { command: 'touch /tmp/agent-termo-should-not-exist' }, PROJECT_ROOT);
+		expect(result.success).toBe(false);
+		expect(result.error).toContain('active project directory');
+	});
 
   it('git:status — returns repository status without errors', async () => {
     const result = await executeTool('git:status', {}, PROJECT_ROOT);

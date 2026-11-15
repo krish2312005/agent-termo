@@ -132,6 +132,9 @@ function proposeFileChange(
 export async function applyFileChange(change: ProposedFileChange, projectRoot: string): Promise<ToolResult> {
 	const start = Date.now();
 	const fullPath = toProjectPath(change.path, projectRoot);
+	if (!withinProject(fullPath, projectRoot)) {
+		return { id: '', name: 'file:write', success: false, error: 'Access denied: ' + change.path, durationMs: Date.now() - start };
+	}
 
 	try {
 		if (change.isDeletion) {
@@ -252,12 +255,13 @@ async function toolFileGlob(args: Record<string, unknown>, projectRoot: string):
 	if (!globPattern) return { id: '', name: 'file:glob', success: false, error: 'pattern is required', durationMs: 0 };
 
 	const cwd = args.cwd ? String(args.cwd) : projectRoot;
-	if (!withinProject(cwd, projectRoot)) {
+	const fullCwd = toProjectPath(cwd, projectRoot);
+	if (!withinProject(fullCwd, projectRoot)) {
 		return { id: '', name: 'file:glob', success: false, error: 'Access denied', durationMs: 0 };
 	}
 
 	try {
-		const files = await globPromise(globPattern, { cwd, absolute: false });
+		const files = await globPromise(globPattern, { cwd: fullCwd, absolute: false });
 		return { id: '', name: 'file:glob', success: true, output: files.length > 0 ? files.join('\n') : '(no files matched)', durationMs: 0 };
 	} catch (err) {
 		return { id: '', name: 'file:glob', success: false, error: 'glob error: ' + (err instanceof Error ? err.message : String(err)), durationMs: 0 };
@@ -303,9 +307,16 @@ const DANGEROUS_PATTERNS = [
 async function toolBash(args: Record<string, unknown>, projectRoot: string): Promise<ToolResult> {
 	const command = String(args.command ?? '');
 	const cwd = args.cwd ? String(args.cwd) : projectRoot;
+	const fullCwd = toProjectPath(cwd, projectRoot);
 	const timeout = Number(args.timeout ?? getConfig(projectRoot).bashTimeout);
 
 	if (!command) return { id: '', name: 'bash:execute', success: false, error: 'command is required', durationMs: 0 };
+	if (!withinProject(fullCwd, projectRoot)) {
+		return { id: '', name: 'bash:execute', success: false, error: 'Access denied: shell cwd must be inside the project root', durationMs: 0 };
+	}
+	if (/\/tmp(?:\/|\s|$)|\/var\/tmp(?:\/|\s|$)|\$TMPDIR|%TEMP%|\bmktemp\b/i.test(command)) {
+		return { id: '', name: 'bash:execute', success: false, error: 'Project files must be created in the active project directory, not an OS temporary directory', durationMs: 0 };
+	}
 
 	for (const pattern of DANGEROUS_PATTERNS) {
 		if (pattern.test(command)) {
@@ -314,7 +325,7 @@ async function toolBash(args: Record<string, unknown>, projectRoot: string): Pro
 	}
 
 	try {
-		const { stdout, stderr } = await exec(command, { cwd, timeout } as { cwd: string; timeout: number });
+		const { stdout, stderr } = await exec(command, { cwd: fullCwd, timeout } as { cwd: string; timeout: number });
 		const output = [stdout, stderr].filter(Boolean).join('\n');
 		return { id: '', name: 'bash:execute', success: true, output: output || '(no output)', durationMs: 0 };
 	} catch (err: unknown) {
@@ -328,8 +339,10 @@ async function toolBash(args: Record<string, unknown>, projectRoot: string): Pro
 
 async function toolGitStatus(args: Record<string, unknown>, projectRoot: string): Promise<ToolResult> {
 	const cwd = args.cwd ? String(args.cwd) : projectRoot;
+	const fullCwd = toProjectPath(cwd, projectRoot);
+	if (!withinProject(fullCwd, projectRoot)) return { id: '', name: 'git:status', success: false, error: 'Access denied: Git cwd must be inside the project root', durationMs: 0 };
 	try {
-		const git = simpleGit(cwd);
+		const git = simpleGit(fullCwd);
 		const status = await git.status();
 		const tracking = status.tracking;
 		const lines = [
@@ -353,9 +366,11 @@ async function toolGitStatus(args: Record<string, unknown>, projectRoot: string)
 async function toolGitCommit(args: Record<string, unknown>, projectRoot: string): Promise<ToolResult> {
 	const message = String(args.message ?? '');
 	const cwd = args.cwd ? String(args.cwd) : projectRoot;
+	const fullCwd = toProjectPath(cwd, projectRoot);
 	if (!message) return { id: '', name: 'git:commit', success: false, error: 'message is required', durationMs: 0 };
+	if (!withinProject(fullCwd, projectRoot)) return { id: '', name: 'git:commit', success: false, error: 'Access denied: Git cwd must be inside the project root', durationMs: 0 };
 	try {
-		const git = simpleGit(cwd);
+		const git = simpleGit(fullCwd);
 		await git.add('.');
 		const result = await git.commit(message);
 		return { id: '', name: 'git:commit', success: true, output: 'Committed ' + result.commit + ' — ' + message, durationMs: 0 };
@@ -366,8 +381,10 @@ async function toolGitCommit(args: Record<string, unknown>, projectRoot: string)
 
 async function toolGitPush(args: Record<string, unknown>, projectRoot: string): Promise<ToolResult> {
 	const cwd = args.cwd ? String(args.cwd) : projectRoot;
+	const fullCwd = toProjectPath(cwd, projectRoot);
+	if (!withinProject(fullCwd, projectRoot)) return { id: '', name: 'git:push', success: false, error: 'Access denied: Git cwd must be inside the project root', durationMs: 0 };
 	try {
-		const git = simpleGit(cwd);
+		const git = simpleGit(fullCwd);
 		await git.push();
 		return { id: '', name: 'git:push', success: true, output: 'Pushed to remote.', durationMs: 0 };
 	} catch (err) {
@@ -377,9 +394,11 @@ async function toolGitPush(args: Record<string, unknown>, projectRoot: string): 
 
 async function toolGitLog(args: Record<string, unknown>, projectRoot: string): Promise<ToolResult> {
 	const cwd = args.cwd ? String(args.cwd) : projectRoot;
+	const fullCwd = toProjectPath(cwd, projectRoot);
 	const limit = Number(args.limit ?? 20);
+	if (!withinProject(fullCwd, projectRoot)) return { id: '', name: 'git:log', success: false, error: 'Access denied: Git cwd must be inside the project root', durationMs: 0 };
 	try {
-		const git = simpleGit(cwd);
+		const git = simpleGit(fullCwd);
 		const log = await git.log({ maxCount: limit });
 		const lines = log.all
 			.map((c: { hash: string; date: string; message: string; author_name: string }) => c.hash.slice(0, 7) + ' | ' + c.date.slice(0, 10) + ' | ' + c.message + ' (' + c.author_name + ')')

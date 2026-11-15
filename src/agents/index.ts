@@ -55,7 +55,7 @@ RESPONSE RULES (follow these strictly):
 - Never output verbose chain-of-thought or reasoning — just the answer.
 - For coding tasks: briefly explain what you did, show key code.
 - Never write "null" or placeholders in your response.
-- When using function calls, respond with the function only — no preamble.
+- When using function calls, use the provided tools directly and respond with the function only — no preamble.
 
 CONVERSATION MODE (default):
 Just chat. Say things like "I'm doing well!" or "2+2 is 4." — no tools needed.
@@ -73,23 +73,30 @@ Available functions:
 - grep(pattern, path, glob?) → search for text in files
 - bash:execute(command) → run a shell command
 - git:status() / git:commit(message) / git:push() → version control
+- agent:delegate(agent, task, context?) → spawn a specialist sub-agent and receive its result
 
-When done, say "Done: <brief summary>."
+When done, say "Done: <brief summary>." Preserve relevant findings from earlier messages. If the user asks for a report, create the requested Markdown file with file:write instead of only describing it. For complex work, delegate independent tasks to specialist agents, compare their results, and coordinate the final implementation yourself. Delegated agents must return concise findings and must not claim work they did not perform.
 
 AVAILABLE FILES:
 - docs/MEMORY.md — project context
 - docs/TIMELINE.md — recent activity log`;
 
-export function buildSystemPrompt(memory: string, timeline: string, _agentDir: string): string {
-  let prompt = SYSTEM_BASE;
+export function buildSystemPrompt(memory: string, timeline: string, agentDir: string, activeAgentPrompt = ''): string {
+	let prompt = SYSTEM_BASE;
+	prompt += `\n\n## Project Working Directory\n${agentDir}\nAll relative file paths and shell commands must operate inside this directory. Create and modify the user's files here. Never use /tmp, an OS temp directory, the npm package directory, or another workspace for project files.`;
+
+	if (activeAgentPrompt) {
+		prompt += '\n\n## Active Custom Agent Instructions\n' + activeAgentPrompt;
+	}
 
   if (memory) {
     prompt += '\n\n## Project Memory\n' + memory;
   }
 
-  if (timeline) {
-    prompt += '\n\n## Recent Timeline (last entries)\n' + timeline.slice(-1500);
-  }
+	if (timeline) {
+		prompt += '\n\n## Recent Timeline (last entries)\n' + timeline.slice(-1500);
+	}
+	prompt += `\n\nFINAL PATH RULE: The only valid project workspace is ${agentDir}. All created or modified project files must be written there. Do not create project files in /tmp or any temporary workspace.`;
 
-  return prompt;
+	return prompt;
 }

@@ -98,7 +98,18 @@ function loadStoredNimModel(): void {
   const { nimModel } = readStoredConfig();
   if (typeof nimModel === 'string' && nimModel.trim()) {
     process.env.NIM_MODEL = nimModel;
-  }
+	}
+}
+
+function loadStoredNimThinking(): void {
+	const { nimThinking } = readStoredConfig();
+	if (typeof nimThinking === 'string' && nimThinking.trim()) process.env.NIM_THINKING = nimThinking;
+}
+
+function loadStoredPermissionMode(): void {
+	const { permissionMode, autoApprove } = readStoredConfig();
+	if (permissionMode === 'ask' || permissionMode === 'files' || permissionMode === 'auto') process.env.AGENT_TERMO_PERMISSION_MODE = permissionMode;
+	else if (autoApprove === true) process.env.AGENT_TERMO_PERMISSION_MODE = 'auto';
 }
 
 export function saveNimApiKey(apiKey: string): void {
@@ -106,11 +117,21 @@ export function saveNimApiKey(apiKey: string): void {
 }
 
 export function saveNimModel(model: string): void {
-  updateStoredConfig({ nimModel: model });
+	updateStoredConfig({ nimModel: model });
+}
+
+export function saveNimThinking(thinking: string): void {
+	updateStoredConfig({ nimThinking: thinking });
+}
+
+export function savePermissionMode(permissionMode: 'ask' | 'files' | 'auto'): void {
+	updateStoredConfig({ permissionMode, autoApprove: permissionMode === 'auto' });
 }
 
 loadStoredNimApiKey();
 loadStoredNimModel();
+loadStoredNimThinking();
+loadStoredPermissionMode();
 
 export function getConfig(projectRoot: string): AppConfig {
   loadEnvFile(resolve(projectRoot, '.env'));

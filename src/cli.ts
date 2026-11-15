@@ -6,6 +6,7 @@
 import { Command } from 'commander';
 import { runRepl } from './main.js';
 import { saveNimApiKey } from './utils/config.js';
+import { ensureAgentFolder } from './runtime/agent-folder.js';
 
 const program = new Command();
 
@@ -74,13 +75,17 @@ async function promptForApiKey(): Promise<string> {
 }
 
 async function startAgent(
-  project: string,
-  options: { apiKey?: string; model?: string; debug?: boolean },
+	project: string,
+	options: { apiKey?: string; model?: string; debug?: boolean; autoApprove?: boolean },
 ): Promise<void> {
   // Apply CLI overrides to env before main initializes.
   if (options.apiKey) process.env.NIM_API_KEY = options.apiKey;
   if (options.model) process.env.NIM_MODEL = options.model;
-  if (options.debug) process.env.LOG_LEVEL = 'debug';
+	if (options.debug) process.env.LOG_LEVEL = 'debug';
+	if (options.autoApprove) {
+		process.env.AGENT_TERMO_PERMISSION_MODE = 'auto';
+		process.env.AGENT_TERMO_AUTO_APPROVE = '1';
+	}
 
   if (!process.env.NIM_API_KEY?.trim()) {
     const apiKey = await promptForApiKey();
@@ -96,12 +101,13 @@ async function startAgent(
 program
   .name('agent-termo')
   .description('Terminal AI coding agent with Nvidia NIM APIs')
-  .version('1.0.3')
+	.version('1.0.7')
   .argument('[project]', 'Project directory to operate in', process.cwd())
   .option('-k, --api-key <key>', 'Nvidia NIM API key')
   .option('-m, --model <model>', 'Model name to use')
-  .option('--debug', 'Enable debug logging')
-  .action(async (project: string, options: { apiKey?: string; model?: string; debug?: boolean }) => {
+	.option('--debug', 'Enable debug logging')
+	.option('-y, --yes, --auto-approve', 'Automatically apply file changes without asking')
+	.action(async (project: string, options: { apiKey?: string; model?: string; debug?: boolean; autoApprove?: boolean }) => {
     await startAgent(project, options);
   });
 
@@ -117,6 +123,7 @@ program
     for (const d of dirsToCreate) {
       mkdirSync(d, { recursive: true });
     }
+		const agentFolder = ensureAgentFolder(resolve(dir));
 
     // Create stub docs
     const memoryPath = resolve(dir, 'docs', 'MEMORY.md');
@@ -134,7 +141,7 @@ program
     }
 
     console.log(`\n✓ Initialized Agent-Termo in ${resolve(dir)}`);
-    console.log('  Created: docs/MEMORY.md, docs/TIMELINE.md');
+		console.log(`  Created: docs/, .agent-termo/ (agents: ${agentFolder.copiedAgents}, commands: ${agentFolder.copiedCommands})`);
     console.log('  Agent-Termo will ask for your NVIDIA NIM API key the first time you launch it.');
   });
 

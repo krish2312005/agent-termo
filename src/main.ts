@@ -2,13 +2,17 @@
 // Agent-Termo — Main REPL entry point
 // =============================================================================
 
-import { NimClient, fromWireToolName } from './llm/client.js';
+import { NimClient, fromWireToolName, type ThinkingCapacity } from './llm/client.js';
 import { TOOL_DEFINITIONS } from './llm/tools.js';
 import { executeTool, applyFileChange } from './tools/index.js';
-import { loadMemory, logToTimeline, logAgentTermoTimeline } from './memory/index.js';
+import { loadMemory, logToTimeline, logAgentTermoTimeline, appendToAgentTermoMemory, appendToTimeline } from './memory/index.js';
 import { loadAllAgents } from './agents/index.js';
 import { buildSystemPrompt } from './agents/index.js';
-import { resolveProjectRoot, saveNimModel } from './utils/config.js';
+import { resolveProjectRoot, saveNimModel, saveNimThinking, savePermissionMode } from './utils/config.js';
+import { resolve } from 'node:path';
+import { readdirSync, readFileSync } from 'node:fs';
+import { ensureAgentFolder, loadAgentCommands, type AgentCommand } from './runtime/agent-folder.js';
+import { commandApprovalKey, isCommandApprovalRequired, loadAllowedCommands, saveAllowedCommands } from './runtime/permissions.js';
 import {
 	MarkdownPrinter,
 	printWelcome,
@@ -31,16 +35,56 @@ import {
 	pick,
 	setScreenStatus,
 	promptAcceptReject,
+	listenKeys,
+	setAgentNames,
+	setNextInput,
+	setCommands,
+	COMMANDS,
+	setContextFiles,
+	setPermissionMode,
+	promptCommandApproval,
 } from './ui/index.js';
-import type { ConversationMessage, ToolCall, ProposedFileChange } from './types/index.js';
+import type { ConversationMessage, ToolCall, ToolResult, ProposedFileChange } from './types/index.js';
 
 const TOOL_KEYWORDS = [
 	'build', 'create', 'write', 'edit', 'modify', 'file', 'code', 'function', 'class',
 	'component', 'debug', 'fix', 'git', 'commit', 'push', 'install', 'npm', 'run',
 	'bash', 'shell', 'command', 'read', 'grep', 'check', 'show', 'implement',
 	'configure', 'setup', 'src', 'package', 'app', 'project', 'api', 'deploy',
-	'test', 'compile', 'typescript', 'javascript', 'python', 'node', 'add', 'delete',
+	'test', 'compile', 'typescript', 'javascript', 'python', 'node', 'add', 'delete', 'report', 'analyze', 'analysis', 'bug', 'issue', 'sub-agent', 'subagent', 'delegate',
 ];
+
+function discoverProjectFiles(projectRoot: string): string[] {
+	const files: string[] = [];
+	const ignored = new Set(['.git', 'node_modules', '.agent-termo', 'dist', 'build', 'coverage']);
+	const walk = (directory: string, depth: number): void => {
+		if (depth > 4 || files.length >= 500) return;
+		for (const entry of readdirSync(directory, { withFileTypes: true })) {
+			if (ignored.has(entry.name) || entry.name.startsWith('.')) continue;
+			const full = resolve(directory, entry.name);
+			if (entry.isDirectory()) walk(full, depth + 1);
+			else files.push(full.slice(projectRoot.length + 1));
+			if (files.length >= 500) return;
+		}
+	};
+	try { walk(projectRoot, 0); } catch { /* inaccessible directories are omitted */ }
+	return files;
+}
+
+function expandContextMentions(input: string, projectRoot: string, contextFiles: string[]): { text: string; attached: string[] } {
+	const attached: string[] = [];
+	const text = input.replace(/(^|\s)@([^\s]+)/g, (whole, prefix: string, name: string) => {
+		if (!contextFiles.includes(name)) return whole;
+		try {
+			const content = readFileSync(resolve(projectRoot, name), 'utf-8').slice(0, 30_000);
+				attached.push(`## Attached file: ${name}\n\n\`\`\`\n${content}\n\`\`\``);
+			return prefix;
+		} catch {
+			return whole;
+		}
+	});
+	return { text: text.trim() || (attached.length > 0 ? 'Inspect the attached project files and summarize the relevant context.' : input), attached };
+}
 
 function mightNeedTools(message: string): boolean {
 	const lower = message.toLowerCase();
@@ -56,6 +100,56 @@ function dedup(arr: ToolCall[]): ToolCall[] {
 	});
 }
 
+class RequestCancelledError extends Error {
+	constructor() {
+		super('Request cancelled');
+		this.name = 'RequestCancelledError';
+	}
+}
+
+type PermissionMode = 'ask' | 'files' | 'auto';
+
+function isRequestCancelled(err: unknown): boolean {
+	return err instanceof RequestCancelledError || (err instanceof Error && /abort|cancel/i.test(err.name + ' ' + err.message));
+}
+
+function providerError(err: unknown): string {
+	if (err && typeof err === 'object') {
+		const details = err as { status?: number; code?: string; message?: string; error?: { message?: string } };
+		const prefix = [details.status, details.code].filter(Boolean).join(' ');
+		return `${prefix ? prefix + ': ' : ''}${details.error?.message ?? details.message ?? String(err)}`;
+	}
+	return err instanceof Error ? err.message : String(err);
+}
+
+async function withEscapeCancellation<T>(nimClient: NimClient, operation: () => Promise<T>): Promise<T> {
+	if (!process.stdin.isTTY) return operation();
+	let cancelled = false;
+	let rejectCancellation: ((error: Error) => void) | undefined;
+	const cancellation = new Promise<T>((_, reject) => {
+		rejectCancellation = reject;
+	});
+	const stop = listenKeys((key) => {
+		if (key.name === 'escape' || key.name === 'ctrl+c') {
+			if (cancelled) return;
+			cancelled = true;
+			nimClient.cancelCurrentRequest();
+			printInfo(key.name === 'ctrl+c' ? 'Response interrupted.' : 'Response cancelled.');
+			rejectCancellation?.(new RequestCancelledError());
+		}
+	}, () => rejectCancellation?.(new RequestCancelledError()));
+	try {
+		const result = await Promise.race([operation(), cancellation]);
+		if (cancelled) throw new RequestCancelledError();
+		return result;
+	} catch (err) {
+		if (cancelled || isRequestCancelled(err)) throw new RequestCancelledError();
+		throw err;
+	} finally {
+		stop();
+	}
+}
+
 /**
  * Get a plain-text assistant response without tool calling: stream first, fall
  * back to a single non-streaming completion. Appends the assistant message to
@@ -65,40 +159,51 @@ function dedup(arr: ToolCall[]): ToolCall[] {
 async function replyWithText(
 	conversation: ConversationMessage[],
 	nimClient: NimClient,
+	projectRoot: string,
 ): Promise<void> {
 	startSpinner('Thinking');
 	const md = new MarkdownPrinter(() => stopSpinner());
 	try {
-		const gen = nimClient.streamComplete(conversation, undefined, (text: string) => md.push(text));
+			const gen = nimClient.streamComplete(conversation, undefined, (text: string) => md.push(text), (stage: string) => printInfo(stage));
 		// The generator streams everything, then yields once at the end; the
 		// chunks have already been rendered through the callback.
-		await gen.next();
-		md.end();
-		stopSpinner();
-		return;
-	} catch {
-		md.end();
-		stopSpinner();
-	}
+				const streamed = await withEscapeCancellation(nimClient, () => gen.next());
+				setScreenStatus({ usage: nimClient.formatUsage() });
+			md.end();
+			stopSpinner();
+			const streamedText = streamed.value?.content?.trim() ?? '';
+			if (streamedText) {
+				conversation.push({ id: crypto.randomUUID(), role: 'assistant', content: streamedText, timestamp: new Date() });
+				rememberChat(projectRoot, 'Assistant', streamedText);
+			}
+			return;
+			} catch (err) {
+				md.end();
+				stopSpinner();
+				if (isRequestCancelled(err)) return;
+				printInfo('NVIDIA NIM streaming request failed: ' + providerError(err) + ' — trying a non-streaming retry.');
+			}
 
 	startSpinner('Retrying');
 	try {
-		const result = await nimClient.complete(conversation, undefined);
+			const result = await withEscapeCancellation(nimClient, () => nimClient.complete(conversation, undefined, (stage) => printInfo(stage)));
+			setScreenStatus({ usage: nimClient.formatUsage() });
 		stopSpinner();
 		const cleanText = (result.content ?? '').trim();
 		if (cleanText) {
 			conversation.push({
 				id: crypto.randomUUID(),
 				role: 'assistant',
-				content: cleanText,
-				timestamp: new Date(),
-			});
-			printAssistantMessage(cleanText);
+					content: cleanText,
+					timestamp: new Date(),
+				});
+				rememberChat(projectRoot, 'Assistant', cleanText);
+				printAssistantMessage(cleanText);
 		}
-	} catch (err) {
-		stopSpinner();
-		printError('LLM error: ' + (err instanceof Error ? err.message : String(err)));
-	}
+		} catch (err) {
+			stopSpinner();
+			printError('NVIDIA NIM provider error: ' + providerError(err));
+		}
 }
 
 /**
@@ -149,47 +254,19 @@ function extractProposedChange(toolName: string, resultOutput: string): Proposed
 	return undefined;
 }
 
+function describeToolActivity(toolName: string, args: Record<string, unknown>, output: string | undefined, change: ProposedFileChange | undefined, applied: boolean, success: boolean): { actions: string[]; notes: string[] } {
+	const target = typeof args.path === 'string' ? `File: ${args.path}` : typeof args.command === 'string' ? `Command: ${args.command}` : typeof args.task === 'string' ? `Task: ${args.task}` : '';
+	const actions = [`Requested tool: ${toolName}`, ...(target ? [target] : [])];
+	const notes = [`Result: ${success ? 'succeeded' : 'failed'}`];
+	if (change) notes.push(`File change: ${applied ? 'applied to project' : 'rejected by user'}`);
+	const resultText = (output ?? '').replace(/\s+/g, ' ').slice(0, 500);
+	if (resultText) notes.push('Details: ' + resultText);
+	return { actions, notes };
+}
+
 interface InputController {
 	close(): void;
 	showPrompt(): void;
-}
-
-/**
- * Open a VS Code diff window for the proposed change.
- * Writes original + proposed content to temp files and launches `code --diff`.
- */
-async function openVsCodeDiff(change: ProposedFileChange): Promise<void> {
-	try {
-		const { exec } = await import('node:child_process');
-		const { promisify } = await import('node:util');
-		const { mkdtemp, writeFile } = await import('node:fs/promises');
-		const { basename } = await import('node:path');
-		const { tmpdir } = await import('node:os');
-
-		const execAsync = promisify(exec);
-
-		const originalPath = change.path;
-		const tmpDir = await mkdtemp(tmpdir() + '/agent-termo-diff-');
-		const tmpFile = tmpDir + '/' + basename(originalPath);
-
-		await writeFile(tmpFile, change.proposedContent, 'utf-8');
-
-		// Write original content to a temp file for diff display
-		if (!change.isNewFile && change.originalContent.length > 0) {
-			const originalTmp = tmpDir + '/original-' + basename(originalPath);
-			await writeFile(originalTmp, change.originalContent, 'utf-8');
-			execAsync(`code --diff "${originalTmp}" "${tmpFile}" --wait`).catch(() => {
-				// VS Code not available or user closed — continue silently
-			});
-		} else {
-			// New file: just open the proposed file
-			execAsync(`code "${tmpFile}" --wait`).catch(() => {
-				// Silently fall back
-			});
-		}
-	} catch {
-		// Silently fall back to terminal diff view
-	}
 }
 
 async function executeToolWithReview(
@@ -197,8 +274,21 @@ async function executeToolWithReview(
 	args: Record<string, unknown>,
 	projectRoot: string,
 	input: InputController,
+	permissionMode: PermissionMode,
+	allowedCommands: Set<string>,
 ): Promise<{ toolResult: { success: boolean; output?: string; error?: string }; change?: ProposedFileChange; applied: boolean }> {
 	printToolCall(toolName, args);
+	const approvalKey = commandApprovalKey(toolName, args);
+	if (permissionMode !== 'auto' && isCommandApprovalRequired(toolName) && !allowedCommands.has(approvalKey)) {
+		input.close();
+		const decision = await promptCommandApproval(typeof args.command === 'string' ? args.command : approvalKey);
+		input.showPrompt();
+		if (decision === 'reject') return { toolResult: { success: false, error: 'Command rejected by user' }, applied: false };
+		if (decision === 'always') {
+			allowedCommands.add(approvalKey);
+			try { saveAllowedCommands(projectRoot, allowedCommands); } catch { printInfo('Command allowed for this session but could not be saved.'); }
+		}
+	}
 	startSpinner('Running ' + toolName);
 	const toolResult = await executeTool(toolName, args, projectRoot);
 	stopSpinner(toolResult.success);
@@ -206,16 +296,19 @@ async function executeToolWithReview(
 	const proposedChange = extractProposedChange(toolName, toolResult.output ?? '');
 
 	if (proposedChange) {
-		// Pause REPL input to prevent stale listeners from interfering with promptAcceptReject
+		if (permissionMode === 'auto' || permissionMode === 'files') {
+			const applyResult = await applyFileChange(proposedChange, projectRoot);
+			if (applyResult.success) printSuccess('Auto-applied: ' + (applyResult.output ?? proposedChange.path));
+			else printError(applyResult.error ?? 'Failed to auto-apply change');
+			return { toolResult: applyResult, change: proposedChange, applied: applyResult.success };
+		}
+			// Pause REPL input to prevent stale listeners from interfering with promptAcceptReject
 		input.close();
 
 		// Show terminal diff viewer
 		printToolResult(toolName, { success: toolResult.success, output: toolResult.output, error: toolResult.error }, { needsApproval: true, proposedChange });
 
-		// Also open VS Code diff window (non-blocking, fire-and-forget)
-		openVsCodeDiff(proposedChange);
-
-		const decision = await promptAcceptReject('Accept this change?');
+			const decision = await promptAcceptReject('Accept this change?');
 
 		// Restore input for next REPL iteration
 		input.showPrompt();
@@ -241,6 +334,34 @@ async function executeToolWithReview(
 	return { toolResult, applied: false };
 }
 
+async function runDelegatedAgent(projectRoot: string, toolCall: ToolCall, nimClient: NimClient): Promise<ToolResult> {
+	const started = Date.now();
+	const agentName = String(toolCall.arguments.agent ?? '').trim();
+	const task = String(toolCall.arguments.task ?? '').trim();
+	const context = String(toolCall.arguments.context ?? '').trim();
+	const projectAgentRoot = resolve(projectRoot, '.agent-termo');
+	const projectAgents = loadAllAgents(projectAgentRoot);
+	const agents = projectAgents.length > 0 ? projectAgents : loadAllAgents(resolve(projectRoot, '.claude'));
+	const agent = agents.find((candidate) => candidate.name === agentName);
+	if (!agent || !task) {
+		return { id: toolCall.id, name: toolCall.name, success: false, error: `Unknown agent or empty task: ${agentName}`, durationMs: Date.now() - started };
+	}
+
+	const delegatedMessages: ConversationMessage[] = [
+		{ id: crypto.randomUUID(), role: 'system', content: buildSystemPrompt('', '', projectRoot, agent.systemPrompt), timestamp: new Date(), agent: agent.name },
+		{ id: crypto.randomUUID(), role: 'user', content: `You are a delegated sub-agent named ${agent.name}. Complete only this focused task and return concise findings for the parent agent. Do not claim to modify files unless the parent explicitly asks and you have evidence.\n\nTask:\n${task}\n\nParent context:\n${context || '(none)'}`, timestamp: new Date() },
+	];
+
+	try {
+			const result = await withEscapeCancellation(nimClient, () => nimClient.complete(delegatedMessages, undefined, (stage) => printInfo(stage)));
+		const output = result.content.trim() || '(sub-agent returned no text)';
+		logAgentTermoTimeline(`Sub-agent ${agent.name} completed delegated task: ${task.slice(0, 120)}`, projectRoot);
+		return { id: toolCall.id, name: toolCall.name, success: true, output: `[${agent.name}]\n${output}`, durationMs: Date.now() - started };
+	} catch (error) {
+		return { id: toolCall.id, name: toolCall.name, success: false, error: error instanceof Error ? error.message : String(error), durationMs: Date.now() - started };
+	}
+}
+
 /**
  * Run the tool-call loop: execute tools, feed results back to the LLM,
  * and repeat until the LLM stops issuing tool calls.
@@ -251,6 +372,8 @@ async function runToolLoop(
 	initialToolCalls: ToolCall[],
 	input: InputController,
 	nimClient: NimClient,
+	permissionMode: PermissionMode,
+	allowedCommands: Set<string>,
 ): Promise<string> {
 	let toolCalls = initialToolCalls;
 	let finalText = '';
@@ -268,11 +391,13 @@ async function runToolLoop(
 			timestamp: new Date(),
 		});
 
-		// Execute all tool calls from this turn
-		for (const tc of toolCalls) {
-			const execution = await executeToolWithReview(tc.name, tc.arguments, projectRoot, input);
+			// Execute all tool calls from this turn
+			for (const tc of toolCalls) {
+				const execution = tc.name === 'agent:delegate'
+					? { toolResult: await runDelegatedAgent(projectRoot, tc, nimClient), applied: false, change: undefined }
+							: await executeToolWithReview(tc.name, tc.arguments, projectRoot, input, permissionMode, allowedCommands);
 
-			const toolResult = execution.toolResult;
+				const toolResult = execution.toolResult;
 			const statusText = toolResult.success ? 'OK' : ('ERR: ' + (toolResult.error ? toolResult.error.slice(0, 80) : 'unknown error'));
 			const changeNote = execution.change ? (execution.applied ? ' (applied)' : ' (rejected)') : '';
 
@@ -283,30 +408,37 @@ async function runToolLoop(
 				timestamp: new Date(),
 			});
 
-			logToTimeline(projectRoot, 'Tool: ' + tc.name + ' -- ' + statusText + changeNote);
-			logAgentTermoTimeline('Tool: ' + tc.name + ' -- ' + statusText + changeNote);
-		}
+				logAgentTermoTimeline('Tool: ' + tc.name + ' -- ' + statusText + changeNote, projectRoot);
+				const activity = describeToolActivity(tc.name, tc.arguments, toolResult.output, execution.change, execution.applied, toolResult.success);
+				void appendToTimeline(projectRoot, 'Agent-Termo', 'Tool execution: ' + tc.name, activity.actions, activity.notes);
+			}
 
-		// Send conversation (including tool results) back to the LLM
-		// The LLM will either produce text or more tool calls
-		startSpinner('Working');
+			// Send conversation (including tool results) back to the LLM
+			// The LLM will either produce text or more tool calls
+			startSpinner('Working');
 		let result: { content: string; toolCalls: ToolCall[] };
 		try {
 			const tools = nimClient.buildToolDefs(TOOL_DEFINITIONS);
-			result = await nimClient.complete(conversation, tools);
-		} catch {
-			// Model doesn't support native tool calling — fall back to plain text
-			// and parse any JSON tool calls emitted in the content.
-			try {
-				const fallback = await nimClient.complete(conversation, undefined);
+					result = await withEscapeCancellation(nimClient, () => nimClient.complete(conversation, tools, (stage) => printInfo(stage)));
+				setScreenStatus({ usage: nimClient.formatUsage() });
+			} catch (err) {
+				if (isRequestCancelled(err)) {
+					stopSpinner();
+					return '';
+				}
+				// Model doesn't support native tool calling — fall back to plain text
+				// and parse any JSON tool calls emitted in the content.
+				try {
+					const fallback = await withEscapeCancellation(nimClient, () => nimClient.complete(conversation, undefined, (stage) => printInfo(stage)));
+				setScreenStatus({ usage: nimClient.formatUsage() });
 				result = {
 					content: fallback.content,
 					toolCalls: parseToolCallsFromText(fallback.content),
 				};
-			} catch (err2) {
-				stopSpinner();
-				printError('LLM error: ' + (err2 instanceof Error ? err2.message : String(err2)));
-				break;
+				} catch (err2) {
+					stopSpinner();
+					printError('NVIDIA NIM provider error: ' + providerError(err2));
+					break;
 			}
 		}
 		stopSpinner();
@@ -330,7 +462,28 @@ async function runToolLoop(
 		}
 	}
 
+	if (finalText.trim()) {
+		void appendToTimeline(projectRoot, 'Agent-Termo', 'Completed tool-assisted request', ['Assistant summary: ' + finalText.replace(/\s+/g, ' ').slice(0, 700)], []);
+	}
 	return finalText;
+}
+
+function compactConversation(conversation: ConversationMessage[]): string {
+	const keep = 12;
+	const prior = conversation.slice(1, -keep);
+	if (prior.length === 0) return 'Nothing to compact yet.';
+	const summary = prior
+		.filter((message) => message.role === 'user' || message.role === 'assistant')
+		.map((message) => `${message.role}: ${message.content.replace(/\s+/g, ' ').slice(0, 500)}`)
+		.join('\n');
+	const base = conversation[0];
+	if (base) {
+		base.content = base.content.replace(/\n\n## Compacted Conversation Context[\s\S]*$/, '') + '\n\n## Compacted Conversation Context\n' + summary.slice(0, 6000);
+	}
+	const recent = conversation.slice(-keep).filter((message) => message.role !== 'tool' && !message.toolCalls);
+	conversation.splice(1);
+	conversation.push(...recent);
+	return `Compacted ${prior.length} earlier messages; preserved the latest ${recent.length} messages.`;
 }
 
 /**
@@ -342,7 +495,15 @@ async function handleModelCommand(arg: string, nimClient: NimClient, projectRoot
 
 	if (!selected) {
 		startSpinner('Fetching NVIDIA NIM models');
-		const { models, live, error } = await nimClient.listModels();
+			let modelList: Awaited<ReturnType<NimClient['listModels']>>;
+			try {
+				modelList = await withEscapeCancellation(nimClient, () => nimClient.listModels());
+			} catch (error) {
+				stopSpinner();
+				if (isRequestCancelled(error)) return;
+				throw error;
+			}
+			const { models, live, error } = modelList;
 		stopSpinner();
 		if (!live) {
 			printInfo('Could not fetch the live model list (' + (error ?? 'unknown error') + '). Showing built-in suggestions; you can type any model ID.');
@@ -367,8 +528,8 @@ async function handleModelCommand(arg: string, nimClient: NimClient, projectRoot
 
 	nimClient.setModel(selected);
 	setScreenStatus({ model: selected });
-	logAgentTermoTimeline('Model switched to ' + selected);
-	logToTimeline(projectRoot, 'Model switched to ' + selected);
+	logAgentTermoTimeline('Model switched to ' + selected, projectRoot);
+	void logToTimeline(projectRoot, 'Model switched to ' + selected);
 
 	try {
 		saveNimModel(selected);
@@ -379,12 +540,65 @@ async function handleModelCommand(arg: string, nimClient: NimClient, projectRoot
 	}
 }
 
+async function handleThinkingCommand(arg: string, nimClient: NimClient, projectRoot: string): Promise<void> {
+	const capacities: Array<{ value: ThinkingCapacity; label: string; hint: string }> = [
+		{ value: 'off', label: 'off', hint: 'NVIDIA /no_think concise mode' },
+		{ value: 'auto', label: 'auto', hint: 'let the selected model decide' },
+		{ value: 'low', label: 'low', hint: 'short focused reasoning' },
+		{ value: 'medium', label: 'medium', hint: 'moderate reasoning' },
+		{ value: 'high', label: 'high', hint: 'thorough reasoning' },
+	];
+	const requested = arg.trim().toLowerCase() as ThinkingCapacity;
+	const valid = capacities.some((item) => item.value === requested);
+	const selectedValue = valid ? requested : await pick({ title: 'Select thinking capacity', items: capacities, current: nimClient.getThinkingCapacity() });
+	if (!selectedValue || !capacities.some((item) => item.value === selectedValue)) return;
+	const selected = selectedValue as ThinkingCapacity;
+	nimClient.setThinkingCapacity(selected);
+	process.env.NIM_THINKING = selected;
+	setScreenStatus({ thinking: selected });
+	try {
+		saveNimThinking(selected);
+	} catch {
+		printInfo('Thinking capacity set for this session; could not save the preference.');
+	}
+	logAgentTermoTimeline('Thinking capacity set to ' + selected, projectRoot);
+	void logToTimeline(projectRoot, 'Thinking capacity set to ' + selected);
+	printSuccess('Thinking capacity: ' + selected);
+}
+
 export async function runRepl(projectRoot?: string): Promise<void> {
-	projectRoot = resolveProjectRoot(projectRoot);
+	projectRoot = resolve(resolveProjectRoot(projectRoot ?? process.cwd()));
 
 	const memory = await loadMemory(projectRoot);
 	const nimClient = new NimClient(projectRoot);
-	const systemPrompt = buildSystemPrompt(memory, '', projectRoot);
+	let permissionMode: PermissionMode = process.env.AGENT_TERMO_PERMISSION_MODE === 'files'
+		? 'files'
+		: process.env.AGENT_TERMO_PERMISSION_MODE === 'auto' || process.env.AGENT_TERMO_AUTO_APPROVE === '1'
+			? 'auto'
+			: 'ask';
+	const allowedCommands = loadAllowedCommands(projectRoot);
+	const agentRoot = resolve(projectRoot, '.agent-termo');
+	const loadProjectAgents = () => {
+		const projectAgents = loadAllAgents(agentRoot);
+		return projectAgents.length > 0 ? projectAgents : loadAllAgents(resolve(projectRoot, '.claude'));
+	};
+	let customAgents = loadProjectAgents();
+	setAgentNames(customAgents.map((agent) => agent.name));
+	const contextFiles = discoverProjectFiles(projectRoot);
+	setContextFiles(contextFiles);
+	let customCommands: AgentCommand[] = loadAgentCommands(projectRoot);
+	const refreshCommandCompletion = (): void => {
+		setCommands([...COMMANDS, ...customCommands.map((command) => ({ name: '/' + command.name, description: command.description || 'project command' }))]);
+	};
+	refreshCommandCompletion();
+	let activeAgentName = '';
+	let activeAgentPrompt = '';
+	let currentGoal = '';
+	const buildSessionPrompt = (): string => {
+		let prompt = buildSystemPrompt(memory, '', projectRoot, activeAgentPrompt);
+		if (currentGoal) prompt += '\n\n## Current Goal\n' + currentGoal;
+		return prompt;
+	};
 
 	const session = { id: crypto.randomUUID(), projectRoot, startedAt: new Date() };
 
@@ -392,19 +606,50 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 		{
 			id: crypto.randomUUID(),
 			role: 'system',
-			content: systemPrompt,
+			content: buildSessionPrompt(),
 			timestamp: new Date(),
 		},
 	];
+	const refreshSystemPrompt = (): void => {
+		const compacted = conversation[0]?.content.match(/\n\n## Compacted Conversation Context[\s\S]*$/)?.[0] ?? '';
+		conversation[0]!.content = buildSessionPrompt() + compacted;
+	};
 
-	initScreen({ model: nimClient.getModel(), project: projectRoot });
+	initScreen({ model: nimClient.getModel(), project: projectRoot, thinking: nimClient.getThinkingCapacity() });
+	setScreenStatus({ usage: nimClient.formatUsage() });
+	setPermissionMode(permissionMode);
 	printWelcome(projectRoot, nimClient.getModel());
-	logAgentTermoTimeline('Agent-Termo session started. Model: ' + nimClient.getModel());
-	logToTimeline(projectRoot, 'Agent-Termo session started. Model: ' + nimClient.getModel());
-	logAgentTermoTimeline('Commands: /help /clear /memory /timeline /model /agents /history');
-	logToTimeline(projectRoot, 'Commands: /help /clear /memory /timeline /model /agents /history');
+	logAgentTermoTimeline('Agent-Termo session started. Model: ' + nimClient.getModel(), projectRoot);
+	void logToTimeline(projectRoot, 'Agent-Termo session started. Model: ' + nimClient.getModel());
+	logAgentTermoTimeline('Commands: /help /clear /memory /timeline /model /thinking /agents /history', projectRoot);
+	void logToTimeline(projectRoot, 'Commands: /help /clear /memory /timeline /model /thinking /agents /history');
 
 	const input = createInput();
+
+	const activateAgent = (name: string, seedInput = true): boolean => {
+		const selected = customAgents.find((agent) => agent.name === name);
+		if (!selected) return false;
+		activeAgentName = selected.name;
+		activeAgentPrompt = selected.systemPrompt;
+		refreshSystemPrompt();
+		if (seedInput) setNextInput('@' + selected.name + ' ');
+		logAgentTermoTimeline('Active custom agent: ' + selected.name, projectRoot);
+		printSuccess('Active agent: ' + selected.name);
+		return true;
+	};
+
+	const chooseAgent = async (): Promise<void> => {
+		if (customAgents.length === 0) {
+			printInfo('No custom agents found. Add Markdown agents to ' + agentRoot + '/agents');
+			return;
+		}
+		const selected = await pick({
+			title: 'Select an agent',
+			items: customAgents.map((agent) => ({ value: agent.name, label: agent.name, hint: agent.description })),
+			current: activeAgentName,
+		});
+		if (selected) activateAgent(selected, true);
+	};
 
 	const cleanup = () => {
 		input.close();
@@ -420,14 +665,64 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 
 	mainLoop: while (true) {
 		try {
-			const userInput = await input.question('');
-			if (!userInput) continue;
+				const rawInput = await input.question('');
+				let userInput = rawInput;
+				if (!userInput) continue;
 			if (userInput === 'exit' || userInput === 'quit') {
 				cleanup();
 				break;
 			}
 
-			if (userInput.startsWith('/')) {
+				let displayedInput = false;
+					const lowerInput = userInput.toLowerCase().trim();
+					const customCommandMatch = /^\/([A-Za-z0-9_-]+)(?:\s+([\s\S]*))?$/.exec(userInput);
+					const customCommand = customCommandMatch
+						? customCommands.find((command) => command.name.toLowerCase() === customCommandMatch[1]!.toLowerCase())
+						: undefined;
+					if (customCommand) {
+						printUserMessage(rawInput);
+						displayedInput = true;
+						const args = customCommandMatch?.[2]?.trim() ?? '';
+						userInput = customCommand.prompt.replace(/\$ARGUMENTS|\$ARGS/g, args) + (args && !customCommand.prompt.includes('$ARGUMENTS') && !customCommand.prompt.includes('$ARGS') ? `\n\nUser arguments:\n${args}` : '');
+					}
+					const contextExpansion = expandContextMentions(userInput, projectRoot, contextFiles);
+					if (contextExpansion.attached.length > 0) {
+						if (!displayedInput) printUserMessage(rawInput);
+						displayedInput = true;
+						userInput = contextExpansion.text + '\n\n' + contextExpansion.attached.join('\n\n');
+					}
+					if (lowerInput === '/report' || lowerInput.startsWith('/report ')) {
+					const requestedPath = userInput.trim().slice('/report'.length).trim() || 'report.md';
+					printUserMessage(rawInput);
+					displayedInput = true;
+						userInput = `Review the current project and our entire conversation context. Identify bugs, risks, and actionable improvements. Create a detailed Markdown report at ${requestedPath} using file:write. Include evidence with file paths and line references, severity, reproduction steps, and recommended fixes. Do not only describe the report: write it to disk, then summarize what was written.`;
+					}
+					const agentTask = /^\/agent\s+(\S+)\s+(.+)$/i.exec(userInput);
+					if (agentTask) {
+						if (!activateAgent(agentTask[1]!, false)) {
+							printError('Unknown agent: ' + agentTask[1], 'Use /agents to list available agents.');
+							continue mainLoop;
+						}
+						printUserMessage(rawInput);
+						displayedInput = true;
+						userInput = agentTask[2]!;
+					}
+					const atAgent = /^@([A-Za-z0-9._-]+)(?:\s+(.+))?$/.exec(userInput);
+					if (atAgent) {
+						if (!activateAgent(atAgent[1]!, Boolean(!atAgent[2]))) {
+							printError('Unknown agent: ' + atAgent[1], 'Use /agents to list available agents.');
+							continue mainLoop;
+						}
+						if (atAgent[2]) {
+							printUserMessage(rawInput);
+							displayedInput = true;
+							userInput = atAgent[2];
+						} else {
+							continue mainLoop;
+						}
+					}
+
+					if (userInput.startsWith('/') && !displayedInput) {
 				const cmd = userInput.toLowerCase().trim();
 				printUserMessage(userInput);
 
@@ -443,26 +738,105 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					continue mainLoop;
 				}
 				if (cmd === '/memory') {
-					await printMemoryFile();
+					await printMemoryFile(projectRoot);
 					continue mainLoop;
 				}
 				if (cmd === '/timeline' || cmd === '/tl') {
-					await printTimelineFile();
+					await printTimelineFile(projectRoot);
 					continue mainLoop;
 				}
-				if (cmd === '/model' || cmd.startsWith('/model ')) {
-					// Take the argument from the original text: model IDs are case-sensitive.
-					await handleModelCommand(userInput.trim().slice('/model'.length).trim(), nimClient, projectRoot);
-					continue mainLoop;
-				}
-				if (cmd === '/agents') {
-					const agents = loadAllAgents(process.env.AGENT_TERMO_DIR || '.claude');
-					printAgentsList(agents);
-					continue mainLoop;
-				}
-				if (cmd === '/history' || cmd === '/hist') {
-					printInfo('Conversation (excluding system): ' + (conversation.length - 1) + ' messages');
-					continue mainLoop;
+					if (cmd === '/model' || cmd.startsWith('/model ')) {
+						// Take the argument from the original text: model IDs are case-sensitive.
+						await handleModelCommand(userInput.trim().slice('/model'.length).trim(), nimClient, projectRoot);
+						continue mainLoop;
+					}
+						if (cmd === '/thinking' || cmd.startsWith('/thinking ')) {
+						await handleThinkingCommand(userInput.trim().slice('/thinking'.length).trim(), nimClient, projectRoot);
+						continue mainLoop;
+					}
+						if (cmd === '/permissions' || cmd.startsWith('/permissions ')) {
+							const requested = userInput.trim().slice('/permissions'.length).trim().toLowerCase();
+							if (requested === 'auto' || requested === 'yes' || requested === 'on' || requested === 'skip' || requested === 'always') permissionMode = 'auto';
+							else if (requested === 'files' || requested === 'file' || requested === 'safe') permissionMode = 'files';
+							else if (requested === 'ask' || requested === 'off' || requested === 'no') permissionMode = 'ask';
+							else permissionMode = permissionMode === 'ask' ? 'files' : permissionMode === 'files' ? 'auto' : 'ask';
+							process.env.AGENT_TERMO_PERMISSION_MODE = permissionMode;
+							process.env.AGENT_TERMO_AUTO_APPROVE = permissionMode === 'auto' ? '1' : '0';
+							setPermissionMode(permissionMode);
+							try {
+								savePermissionMode(permissionMode);
+							} catch {
+								printInfo('Permission mode changed for this session but could not be saved.');
+							}
+							printSuccess(permissionMode === 'auto' ? 'Permission mode: AUTO-ACCEPT (files and terminal commands run without prompts).' : permissionMode === 'files' ? 'Permission mode: FILES-AUTO (file changes apply; terminal commands still ask).' : 'Permission mode: ASK before applying changes.');
+							continue mainLoop;
+						}
+					if (cmd === '/agents') {
+						printAgentsList(customAgents);
+						printInfo('Custom agents directory: ' + agentRoot + '/agents');
+						await chooseAgent();
+						continue mainLoop;
+					}
+					if (cmd === '/agent-folder') {
+						const result = ensureAgentFolder(projectRoot);
+						customAgents = loadProjectAgents();
+						customCommands = loadAgentCommands(projectRoot);
+						setAgentNames(customAgents.map((agent) => agent.name));
+						refreshCommandCompletion();
+						printSuccess('Agent folder ready: ' + result.root);
+						printInfo(`Agents copied: ${result.copiedAgents}; commands copied: ${result.copiedCommands}`);
+						continue mainLoop;
+					}
+					if (cmd === '/agent' || cmd.startsWith('/agent ')) {
+						const requested = userInput.trim().slice('/agent'.length).trim();
+							if (!requested) await chooseAgent();
+							else if (!activateAgent(requested, true)) printError('Unknown agent: ' + requested, 'Use /agents to list available agents.');
+						continue mainLoop;
+					}
+					if (cmd === '/goal' || cmd.startsWith('/goal ')) {
+						const requested = userInput.trim().slice('/goal'.length).trim();
+						if (requested) {
+							currentGoal = requested;
+								refreshSystemPrompt();
+							printSuccess('Goal set: ' + currentGoal);
+						} else printInfo(currentGoal ? 'Current goal: ' + currentGoal : 'No goal set. Use /goal <description>.');
+						continue mainLoop;
+					}
+					if (cmd === '/status') {
+						printInfo(`Project: ${projectRoot}`);
+						printInfo(`Model: ${nimClient.getModel()}`);
+						printInfo(`Thinking: ${nimClient.getThinkingCapacity()}`);
+						printInfo(`Permissions: ${permissionMode.toUpperCase()}`);
+						printInfo(`Token usage: ${nimClient.formatUsage()}`);
+						printInfo(`Agent: ${activeAgentName || '(default)'}`);
+						printInfo(`Goal: ${currentGoal || '(none)'}`);
+						printInfo(`Messages: ${conversation.length - 1}`);
+						continue mainLoop;
+					}
+					if (cmd === '/context') {
+						printInfo('Context messages: ' + (conversation.length - 1));
+						printInfo('Approximate context characters: ' + conversation.reduce((total, message) => total + message.content.length, 0));
+						printInfo('Active agent: ' + (activeAgentName || '(default)'));
+						printInfo('Current goal: ' + (currentGoal || '(none)'));
+						printInfo('Use @agent or @path/to/file to add context.');
+						printInfo('Runtime directory: ' + agentRoot);
+						printInfo('Project docs: ' + resolve(projectRoot, 'docs'));
+						printInfo('Use /compact when the conversation becomes large.');
+						continue mainLoop;
+					}
+					if (cmd === '/compact') {
+						printSuccess(compactConversation(conversation));
+						continue mainLoop;
+					}
+					if (cmd === '/history' || cmd === '/hist' || cmd.startsWith('/history ')) {
+						const requested = Number.parseInt(userInput.trim().slice('/history'.length).trim() || '12', 10);
+						const count = Number.isFinite(requested) && requested > 0 ? Math.min(requested, 50) : 12;
+						const messages = conversation.filter((message) => message.role !== 'system').slice(-count);
+						printInfo(`Conversation history (${messages.length} messages):`);
+						for (const message of messages) {
+							printInfo(`${message.role}: ${message.content.replace(/\s+/g, ' ').slice(0, 500)}`);
+						}
+						continue mainLoop;
 				}
 				if (cmd === '/exit' || cmd === '/quit') {
 					cleanup();
@@ -478,19 +852,22 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				role: 'user',
 				content: userInput,
 				timestamp: new Date(),
-			};
-			conversation.push(userMsg);
-			printUserMessage(userInput);
+				};
+				conversation.push(userMsg);
+				rememberChat(projectRoot, 'User', userInput);
+				void appendToTimeline(projectRoot, activeAgentName || 'Agent-Termo', 'User request', ['Request: ' + userInput.replace(/\s+/g, ' ').slice(0, 700)], []);
+					if (!displayedInput) printUserMessage(userInput);
 
 			const useTools = mightNeedTools(userInput);
 			const tools = useTools ? nimClient.buildToolDefs(TOOL_DEFINITIONS) : undefined;
 
-			if (useTools) {
-				startSpinner('Working');
-				try {
-					const result = await nimClient.complete(conversation, tools);
+				if (useTools) {
+					startSpinner('Working');
+					try {
+							const result = await withEscapeCancellation(nimClient, () => nimClient.complete(conversation, tools, (stage) => printInfo(stage)));
+						setScreenStatus({ usage: nimClient.formatUsage() });
 					const fullText = result.content;
-					let toolCalls = dedup(result.toolCalls);
+						const toolCalls = dedup(result.toolCalls);
 					stopSpinner();
 
 					if (toolCalls.length === 0) {
@@ -502,8 +879,9 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 								role: 'assistant',
 								content: cleanText,
 								timestamp: new Date(),
-							});
-							printAssistantMessage(cleanText);
+				});
+				rememberChat(projectRoot, 'Assistant', cleanText);
+				printAssistantMessage(cleanText);
 						}
 					} else {
 						// Show any narration that came with the first tool calls
@@ -511,27 +889,32 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						if (narration) printAssistantMessage(narration);
 
 						// Run the tool-call loop: execute tools, feed results back, repeat
-						const finalText = await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient);
+						const finalText = await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, permissionMode, allowedCommands);
 						if (finalText && finalText.trim() && finalText.trim() !== 'null') {
 							printAssistantMessage(finalText.trim());
 						}
 					}
-				} catch (err) {
-					stopSpinner();
-					// Tool calling failed (e.g. HTTP 400 because the model does not
+					} catch (err) {
+						stopSpinner();
+						if (isRequestCancelled(err)) {
+							continue mainLoop;
+						}
+						// Tool calling failed (e.g. HTTP 400 because the model does not
 					// support the `tools` parameter). Retry without tools and parse
 					// any JSON tool calls the model may have emitted as plain text.
-					printInfo('Tool calls not supported by this model — retrying without tools.');
-					try {
-						const fallback = await nimClient.complete(conversation, undefined);
+						printInfo('NVIDIA NIM tool request failed: ' + providerError(err) + ' — retrying without tools.');
+						try {
+								const fallback = await withEscapeCancellation(nimClient, () => nimClient.complete(conversation, undefined, (stage) => printInfo(stage)));
+							setScreenStatus({ usage: nimClient.formatUsage() });
 						const toolCalls = dedup(
 							fallback.toolCalls.length > 0 ? fallback.toolCalls : parseToolCallsFromText(fallback.content),
 						);
 						if (toolCalls.length > 0) {
 							const narration = (fallback.content ?? '').trim().replace(/^null$/, '').trim();
 							if (narration && !narration.includes('"tool_calls"')) printAssistantMessage(narration);
-							const finalText = await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient);
+							const finalText = await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, permissionMode, allowedCommands);
 							if (finalText && finalText.trim() && finalText.trim() !== 'null') {
+								rememberChat(projectRoot, 'Assistant', finalText);
 								printAssistantMessage(finalText.trim());
 							}
 						} else {
@@ -542,21 +925,27 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 							}
 							}
 					} catch (err2) {
-						printError('LLM error: ' + (err2 instanceof Error ? err2.message : String(err2)));
+						printError('NVIDIA NIM provider error: ' + providerError(err2));
 						conversation.pop();
 						continue mainLoop;
 					}
 				}
 			} else {
-				await replyWithText(conversation, nimClient);
+				await replyWithText(conversation, nimClient, projectRoot);
 			}
 
 			if (conversation.length > 42) {
-				conversation.splice(1, conversation.length - 42);
+				compactConversation(conversation);
 			}
 		} catch (err) {
+			input.close();
 			stopSpinner();
 			printError('Session error: ' + (err instanceof Error ? err.message : String(err)));
 		}
 	}
+}
+
+function rememberChat(projectRoot: string, role: 'User' | 'Assistant', content: string): void {
+	const trimmed = content.trim();
+	if (trimmed) appendToAgentTermoMemory('### ' + role + '\n\n' + trimmed.slice(0, 12000), projectRoot);
 }

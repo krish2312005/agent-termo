@@ -217,4 +217,17 @@ export const TOOL_DEFINITIONS: ToolDef[] = [
       },
     },
   },
+  {
+    name: 'agent:delegate',
+    description: 'Spawn a specialist sub-agent for a focused task. The parent agent receives the result and coordinates it with other delegated agents. Use an agent name from /agents.',
+    parameters: {
+      type: 'object',
+      properties: {
+        agent: { type: 'string', description: 'Custom agent name to run' },
+        task: { type: 'string', description: 'Focused task and expected deliverable for the sub-agent' },
+        context: { type: 'string', description: 'Relevant findings or constraints from the parent agent' },
+      },
+      required: ['agent', 'task'],
+    },
+  },
 ];

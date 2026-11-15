@@ -35,8 +35,14 @@ const S = {
 	savedValid: true,
 	rows: 0,
 	model: '',
+	thinking: 'auto',
+	usage: '0 tokens',
+	permissionMode: 'ask' as 'ask' | 'files' | 'auto',
 	project: '',
 	commands: [] as CommandInfo[],
+	agentNames: [] as string[],
+	contextFiles: [] as string[],
+	nextInput: '',
 	buffer: '',
 	cursor: 0,
 	offset: 0,
@@ -44,6 +50,18 @@ const S = {
 
 export function setCommands(commands: CommandInfo[]): void {
 	S.commands = commands;
+}
+
+export function setAgentNames(names: string[]): void {
+	S.agentNames = [...names].sort();
+}
+
+export function setContextFiles(files: string[]): void {
+	S.contextFiles = [...files].sort();
+}
+
+export function setNextInput(text: string): void {
+	S.nextInput = text;
 }
 
 function dims(): { rows: number; cols: number } {
@@ -87,17 +105,26 @@ function statusLine(max: number): string {
 			return c.cyan(clipText(' ' + hits.map((h) => h.name).join('  '), max));
 		}
 	}
+	if (S.editing && /^@[^\s]*$/.test(S.buffer)) {
+		const typed = S.buffer.slice(1).toLowerCase();
+		const agents = S.agentNames.filter((name) => name.toLowerCase().startsWith(typed)).map((name) => '@' + name);
+		const files = S.contextFiles.filter((file) => file.toLowerCase().startsWith(typed)).map((file) => '@' + file);
+		const hits = [...agents, ...files].slice(0, 8);
+		if (hits.length > 0) return c.cyan(clipText(' ' + hits.join('  '), max));
+	}
 
-	const hint = '/help · /model · ctrl+c to exit';
+	const hint = S.permissionMode === 'auto' ? 'AUTO-ACCEPT · /permissions ask to disable' : S.permissionMode === 'files' ? 'FILES-AUTO · terminal commands still ask' : '/help · @agent · ctrl+c to interrupt';
 	const modelPart = clipText(' ' + S.model, max);
-	const roomWithHint = max - modelPart.length - hint.length - 2;
+	const thinkingPart = clipText(' · think:' + S.thinking, max);
+	const usagePart = clipText(' · ' + S.usage, max);
+	const roomWithHint = max - modelPart.length - thinkingPart.length - usagePart.length - hint.length - 2;
 	const showHint = roomWithHint >= 15;
 	const projPart = clipText(
 		' · ' + shortPath(S.project),
-		showHint ? roomWithHint : Math.max(0, max - modelPart.length),
+		showHint ? roomWithHint : Math.max(0, max - modelPart.length - thinkingPart.length - usagePart.length),
 	);
-	const gap = Math.max(1, max - modelPart.length - projPart.length - hint.length);
-	return c.cyan(modelPart) + c.dim(projPart + (showHint ? ' '.repeat(gap) + hint : ''));
+	const gap = Math.max(1, max - modelPart.length - thinkingPart.length - usagePart.length - projPart.length - hint.length);
+	return c.cyan(modelPart) + c.yellow(thinkingPart) + c.blue(usagePart) + (S.permissionMode === 'auto' ? c.red.bold(' AUTO') : S.permissionMode === 'files' ? c.yellow.bold(' FILES') : '') + c.dim(projPart + (showHint ? ' '.repeat(gap) + hint : ''));
 }
 
 function chromeString(): string {
@@ -109,7 +136,7 @@ function chromeString(): string {
 	if (S.cursor < S.offset) S.offset = S.cursor;
 	if (S.cursor > S.offset + width - 1) S.offset = S.cursor - width + 1;
 
-	const edge = S.editing ? c.magenta : c.dim;
+	const edge = S.permissionMode === 'auto' ? c.red : S.permissionMode === 'files' ? c.yellow : (S.editing ? c.magenta : c.dim);
 	const body = S.buffer
 		? S.buffer.slice(S.offset, S.offset + width).padEnd(width)
 		: c.dim(clipText(PLACEHOLDER, width).padEnd(width));
@@ -118,7 +145,7 @@ function chromeString(): string {
 	const line = (row: number, text: string): string => `${CSI}${row};1H${CSI}2K${text}`;
 	return [
 		line(top, edge('╭' + '─'.repeat(cols - 2) + '╮')),
-		line(top + 1, edge('│') + ' ' + c.magenta.bold('❯') + ' ' + body + ' ' + edge('│')),
+			line(top + 1, edge('│') + ' ' + (S.permissionMode === 'auto' ? c.red.bold('❯') : S.permissionMode === 'files' ? c.yellow.bold('❯') : c.magenta.bold('❯')) + ' ' + body + ' ' + edge('│')),
 		line(top + 2, edge('╰' + '─'.repeat(cols - 2) + '╯')),
 		line(rows, statusLine(cols - 1)),
 	].join('');
@@ -166,9 +193,10 @@ function onResize(): void {
 // Screen lifecycle
 // =============================================================================
 
-export function initScreen(info: { model: string; project: string }): void {
+export function initScreen(info: { model: string; project: string; thinking?: string }): void {
 	S.model = info.model;
 	S.project = info.project;
+	S.thinking = info.thinking ?? S.thinking;
 	if (S.active || !layoutSupported()) return;
 
 	S.active = true;
@@ -180,9 +208,16 @@ export function initScreen(info: { model: string; project: string }): void {
 	process.on('exit', teardownScreen);
 }
 
-export function setScreenStatus(info: { model?: string; project?: string }): void {
+export function setScreenStatus(info: { model?: string; project?: string; thinking?: string; usage?: string }): void {
 	if (info.model !== undefined) S.model = info.model;
 	if (info.project !== undefined) S.project = info.project;
+	if (info.thinking !== undefined) S.thinking = info.thinking;
+	if (info.usage !== undefined) S.usage = info.usage;
+	paint();
+}
+
+export function setPermissionMode(permissionMode: 'ask' | 'files' | 'auto'): void {
+	S.permissionMode = permissionMode;
 	paint();
 }
 
@@ -311,11 +346,27 @@ export function parseKeys(chunk: string, state: { paste: string | null }): Key[]
  * Put stdin in raw mode and call `handler` for every key until the returned
  * function is called, which restores the terminal.
  */
-export function listenKeys(handler: (key: Key) => void): () => void {
+export function listenKeys(handler: (key: Key) => void, onError?: () => void): () => void {
 	const stdin = process.stdin;
 	const state = { paste: null as string | null };
+	let stopped = false;
+	const stop = (): void => {
+		if (stopped) return;
+		stopped = true;
+		stdin.off('data', onData);
+		if (out.isTTY) out.write(`${CSI}?2004l`);
+		stdin.setRawMode?.(false);
+		stdin.pause();
+	};
 	const onData = (chunk: string | Buffer): void => {
-		for (const key of parseKeys(chunk.toString(), state)) handler(key);
+		try {
+			for (const key of parseKeys(chunk.toString(), state)) handler(key);
+		} catch {
+			// Always release raw mode if a UI handler throws. The REPL can recover
+			// on its next prompt instead of leaving the terminal permanently stuck.
+			stop();
+			onError?.();
+		}
 	};
 
 	stdin.setRawMode?.(true);
@@ -324,12 +375,7 @@ export function listenKeys(handler: (key: Key) => void): () => void {
 	if (out.isTTY) out.write(`${CSI}?2004h`); // bracketed paste
 	stdin.on('data', onData);
 
-	return () => {
-		stdin.off('data', onData);
-		if (out.isTTY) out.write(`${CSI}?2004l`);
-		stdin.setRawMode?.(false);
-		stdin.pause();
-	};
+	return stop;
 }
 
 // =============================================================================
@@ -358,6 +404,25 @@ function sanitizePaste(text: string): string {
 }
 
 function completeCommand(): void {
+	if (S.buffer.startsWith('@') && !S.buffer.includes(' ')) {
+		const prefix = S.buffer.slice(1).toLowerCase();
+		const agents = S.agentNames.filter((name) => name.toLowerCase().startsWith(prefix)).map((name) => '@' + name);
+		const files = S.contextFiles.filter((file) => file.toLowerCase().startsWith(prefix)).map((file) => '@' + file);
+		const first = [...agents, ...files][0];
+		if (first) {
+			S.buffer = first + ' ';
+			S.cursor = S.buffer.length;
+		}
+		return;
+	}
+	if (S.buffer.toLowerCase().startsWith('/agent ')) {
+		const prefix = S.buffer.slice('/agent '.length);
+		const names = S.agentNames.filter((name) => name.toLowerCase().startsWith(prefix.toLowerCase()));
+		if (names.length === 0) return;
+		S.buffer = '/agent ' + names[0];
+		S.cursor = S.buffer.length;
+		return;
+	}
 	if (!S.buffer.startsWith('/') || S.buffer.includes(' ')) return;
 	const typed = S.buffer.toLowerCase();
 	const names = S.commands.map((cmd) => cmd.name).filter((n) => n.startsWith(typed));
@@ -398,26 +463,27 @@ export function createInput(): InputController {
 			if (!S.active) return plainQuestion();
 
 			return new Promise<string>((resolve) => {
-				let histIdx = -1;
-				let draft = '';
-				let done = false;
+					let histIdx = -1;
+					let draft = S.nextInput;
+					S.nextInput = '';
+					let done = false;
 
-				S.editing = true;
-				S.savedValid = true;
-				S.buffer = '';
-				S.cursor = 0;
+					S.editing = true;
+					S.savedValid = true;
+					S.buffer = draft;
+					S.cursor = draft.length;
 				S.offset = 0;
 				out.write(SAVE); // remember where output continues
 				paint();
 
 				// Return the cursor to the scrolling region and go idle.
-				const leave = (): void => {
-					done = true;
-					stop?.();
-					stop = null;
-					S.editing = false;
-					S.buffer = '';
-					S.cursor = 0;
+					const leave = (): void => {
+						done = true;
+						stop?.();
+						stop = null;
+						S.editing = false;
+						S.buffer = '';
+						S.cursor = 0;
 					S.offset = 0;
 					out.write(S.savedValid ? RESTORE : `${CSI}${regionBottom()};1H`);
 					paint();
@@ -526,14 +592,21 @@ export function createInput(): InputController {
 						default:
 							return;
 					}
-				});
+					}, () => {
+						leave();
+						resolve('');
+					});
 			});
 		},
 
-		close(): void {
-			stop?.();
-			stop = null;
-		},
+			close(): void {
+				stop?.();
+				stop = null;
+				S.editing = false;
+				S.buffer = '';
+				S.cursor = 0;
+				S.offset = 0;
+			},
 
 		showPrompt(): void {
 			paint();
@@ -693,6 +766,6 @@ export function pick(opts: {
 					return;
 			}
 			draw(false);
-		});
+		}, () => end(null));
 	});
 }
