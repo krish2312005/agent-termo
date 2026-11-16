@@ -26,6 +26,11 @@ export {
 	setPermissionMode,
 	setNextInput,
 	setCommands,
+	startTerminalPanel,
+	appendTerminalOutput,
+	finishTerminalPanel,
+	clearTerminalPanel,
+	toggleTerminalPanel,
 	type InputController,
 	type PickItem,
 } from './screen.js';
@@ -407,6 +412,7 @@ export function printHelp(): void {
 	const keys: Array<[string, string]> = [
 		['Enter', 'send the message'],
 		['Shift+Enter', 'insert a new line (multi-line input)'],
+		['Ctrl+O / Ctrl+T', 'close or reopen the terminal output panel'],
 		['↑ / ↓', 'move between lines, or input history'],
 		['Tab', 'complete a /command or @mention'],
 		['Ctrl+A / Ctrl+E', 'start / end of line'],

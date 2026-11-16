@@ -4,7 +4,7 @@
 
 import { NimClient, fromWireToolName, type ThinkingCapacity } from './llm/client.js';
 import { TOOL_DEFINITIONS } from './llm/tools.js';
-import { executeTool, applyFileChange } from './tools/index.js';
+import { executeTool, applyFileChange, setTerminalHooks } from './tools/index.js';
 import { loadMemory, logToTimeline, logAgentTermoTimeline, appendToAgentTermoMemory, appendToTimeline, loadAgentTermoMemory } from './memory/index.js';
 import { loadAllAgents } from './agents/index.js';
 import { buildSystemPrompt } from './agents/index.js';
@@ -42,6 +42,9 @@ import {
 	setContextFiles,
 	setPermissionMode,
 	promptCommandApproval,
+	startTerminalPanel,
+	appendTerminalOutput,
+	finishTerminalPanel,
 } from './ui/index.js';
 import type { ConversationMessage, ToolCall, ToolResult, ProposedFileChange } from './types/index.js';
 
@@ -680,6 +683,12 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 	setAgentNames(customAgents.map((agent) => agent.name));
 	const contextFiles = discoverProjectFiles(projectRoot);
 	setContextFiles(contextFiles);
+	// Stream live bash output into the terminal panel below the input box.
+	setTerminalHooks({
+		onStart: startTerminalPanel,
+		onOutput: appendTerminalOutput,
+		onEnd: finishTerminalPanel,
+	});
 	let customCommands: AgentCommand[] = loadAgentCommands(projectRoot);
 	const refreshCommandCompletion = (): void => {
 		setCommands([...COMMANDS, ...customCommands.map((command) => ({ name: '/' + command.name, description: command.description || 'project command' }))]);
