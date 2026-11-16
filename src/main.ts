@@ -48,6 +48,7 @@ import {
 	recordSubAgentActivity,
 	finishSubAgentActivity,
 	printSubAgents,
+	startBackgroundCommandListener,
 } from './ui/index.js';
 import type { ConversationMessage, ToolCall, ToolResult, ProposedFileChange } from './types/index.js';
 
@@ -795,6 +796,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 
 	mainLoop: while (true) {
 		try {
+			let stopBackgroundCommands: () => void = () => undefined;
 				const rawInput = await input.question('');
 				let userInput = rawInput;
 				if (!userInput) continue;
@@ -1047,9 +1049,12 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				conversation.push(userMsg);
 				rememberChat(projectRoot, 'User', userInput);
 				void appendToTimeline(projectRoot, activeAgentName || 'Agent-Termo', 'User request', ['Request: ' + userInput.replace(/\s+/g, ' ').slice(0, 700)], []);
-					if (!displayedInput) printUserMessage(userInput);
+				if (!displayedInput) printUserMessage(userInput);
+				stopBackgroundCommands = startBackgroundCommandListener((command) => {
+					printSubAgents(command.slice('/subagents'.length).trim() || undefined);
+				});
 
-			// Tools are always available: gating them by keywords made the agent
+				// Tools are always available: gating them by keywords made the agent
 			// break mid-task whenever a follow-up message lacked a trigger word.
 			const tools = nimClient.buildToolDefs(TOOL_DEFINITIONS);
 
@@ -1093,9 +1098,10 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 							if (taskState.status === 'running') {
 								taskState.status = 'interrupted';
 								taskState.reason = 'cancelled by user';
-								printInfo('Task paused. Type "continue" to resume from where it stopped.');
-							}
-							continue mainLoop;
+									printInfo('Task paused. Type "continue" to resume from where it stopped.');
+								}
+								stopBackgroundCommands();
+								continue mainLoop;
 						}
 						// Tool calling failed (e.g. HTTP 400 because the model does not
 					// support the `tools` parameter). Retry without tools and parse
@@ -1129,22 +1135,25 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 							taskState.status = 'interrupted';
 							taskState.reason = providerError(err2);
 							appendToSessionLog('### Interrupted task\n\nGoal: ' + taskState.goal + '\nReason: ' + taskState.reason + '\nLast actions: ' + taskState.lastActions.join('; '), projectRoot);
-							printInfo('The task was interrupted. Type "continue" to resume from where it stopped.');
-						}
-						continue mainLoop;
+								printInfo('The task was interrupted. Type "continue" to resume from where it stopped.');
+							}
+							stopBackgroundCommands();
+							continue mainLoop;
 					}
 				}
 			}
 
-			// The run reached the end without throwing: the task is complete,
+				stopBackgroundCommands();
+
+				// The run reached the end without throwing: the task is complete,
 			// unless it was interrupted and must remain resumable with "continue".
 			finishTaskState(taskState);
 
 			if (conversation.length > 42) {
 				compactConversation(conversation);
 			}
-		} catch (err) {
-			input.close();
+			} catch (err) {
+				input.close();
 			stopSpinner();
 			printError('Session error: ' + (err instanceof Error ? err.message : String(err)));
 			if (taskState.status === 'running') {

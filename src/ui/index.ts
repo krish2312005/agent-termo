@@ -29,6 +29,7 @@ export {
 	startTerminalPanel,
 	appendTerminalOutput,
 	finishTerminalPanel,
+	startBackgroundCommandListener,
 	clearTerminalPanel,
 	toggleTerminalPanel,
 	terminalPanelVisible,
