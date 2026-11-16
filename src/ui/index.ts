@@ -59,7 +59,8 @@ export const COMMANDS: CommandInfo[] = [
 		{ name: '/continue', description: 'resume an interrupted task from where it stopped' },
 		{ name: '/report', description: 'analyze the project and create a report file' },
 		{ name: '/history', description: 'show message count' },
-	{ name: '/exit', description: 'quit' },
+		{ name: '/subagents', description: 'show running and completed sub-agent work' },
+		{ name: '/exit', description: 'quit' },
 ];
 setCommands(COMMANDS);
 
@@ -210,6 +211,70 @@ export function printAssistantMessage(content: string): void {
 	const md = new MarkdownPrinter();
 	md.push(content);
 	md.end();
+}
+
+type SubAgentStatus = 'running' | 'completed' | 'failed' | 'cancelled';
+
+interface SubAgentActivity {
+	id: string;
+	agent: string;
+	task: string;
+	status: SubAgentStatus;
+	startedAt: number;
+	endedAt?: number;
+	events: string[];
+	output?: string;
+}
+
+const subAgentActivities = new Map<string, SubAgentActivity>();
+
+export function startSubAgentActivity(id: string, agent: string, task: string): void {
+	const activity = { id: id.slice(0, 12), agent, task, status: 'running' as const, startedAt: Date.now(), events: [] };
+	subAgentActivities.set(activity.id, activity);
+	out.write(c.magenta('◆ ') + c.bold(agent) + c.dim(' started in parallel') + '\n');
+}
+
+export function recordSubAgentActivity(id: string, event: string): void {
+	const activity = subAgentActivities.get(id.slice(0, 12));
+	if (activity) activity.events.push(event.slice(0, 180));
+}
+
+export function finishSubAgentActivity(id: string, status: Exclude<SubAgentStatus, 'running'>, output?: string): void {
+	const activity = subAgentActivities.get(id.slice(0, 12));
+	if (!activity) return;
+	activity.status = status;
+	activity.endedAt = Date.now();
+	activity.output = output;
+	const duration = Math.max(0, Math.round((activity.endedAt - activity.startedAt) / 1000));
+	const icon = status === 'completed' ? c.green('✓') : status === 'cancelled' ? c.yellow('!') : c.red('✗');
+	out.write(c.magenta('◆ ') + icon + ' ' + activity.agent + c.dim(` finished in ${duration}s`) + '\n');
+}
+
+export function printSubAgents(selectedId?: string): void {
+	const activities = [...subAgentActivities.values()];
+	if (activities.length === 0) {
+		printInfo('No sub-agent activity in this session.');
+		return;
+	}
+	if (selectedId) {
+		const activity = activities.find((item) => item.id === selectedId || item.agent === selectedId);
+		if (!activity) {
+			printInfo('Unknown sub-agent. Use /subagents to list activity IDs.');
+			return;
+		}
+		out.write('\n' + c.bold('Sub-agent ' + activity.agent) + c.dim(` [${activity.id}]`) + '\n' + rule() + '\n');
+		out.write(c.dim('Task: ') + activity.task + '\n');
+		for (const event of activity.events) out.write('  ' + c.dim('• ') + event + '\n');
+		if (activity.output) out.write('\n' + c.dim('Result: ') + clipText(activity.output.replace(/\s+/g, ' '), terminalWidth() - 12) + '\n');
+		out.write('\n');
+		return;
+	}
+	out.write('\n' + c.bold('Sub-agents') + '\n' + rule() + '\n');
+	for (const activity of activities) {
+		const icon = activity.status === 'running' ? c.yellow('◐') : activity.status === 'completed' ? c.green('✓') : c.red('✗');
+		out.write(`${icon} ${c.cyan(activity.id.padEnd(12))} ${activity.agent.padEnd(28)} ${activity.status} — ${clipText(activity.task.replace(/\s+/g, ' '), Math.max(20, terminalWidth() - 58))}\n`);
+	}
+	out.write(c.dim('Use /subagents <id> to inspect one sub-agent.') + '\n\n');
 }
 
 // =============================================================================

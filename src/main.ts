@@ -44,6 +44,10 @@ import {
 	startTerminalPanel,
 	appendTerminalOutput,
 	finishTerminalPanel,
+	startSubAgentActivity,
+	recordSubAgentActivity,
+	finishSubAgentActivity,
+	printSubAgents,
 } from './ui/index.js';
 import type { ConversationMessage, ToolCall, ToolResult, ProposedFileChange } from './types/index.js';
 
@@ -97,6 +101,10 @@ function dedup(arr: ToolCall[]): ToolCall[] {
 		}
 	}
 	return result;
+}
+
+export function shouldRunDelegationsInParallel(toolCalls: ToolCall[]): boolean {
+	return toolCalls.length > 1 && toolCalls.every((toolCall) => toolCall.name === 'agent:delegate');
 }
 
 class RequestCancelledError extends Error {
@@ -332,10 +340,16 @@ async function runDelegatedAgent(
 	const agents = loadProjectAgents(projectRoot);
 	const agent = agents.find((candidate) => candidate.name === agentName);
 	if (!agent || !task) {
-		return { id: toolCall.id, name: toolCall.name, success: false, error: `Unknown agent or empty task: ${agentName}`, durationMs: Date.now() - started };
+			return { id: toolCall.id, name: toolCall.name, success: false, error: `Unknown agent or empty task: ${agentName}`, durationMs: Date.now() - started };
 	}
 
+	startSubAgentActivity(toolCall.id, agent.name, task);
 	printInfo('Delegating to ' + agent.name + '…');
+	// Each parallel worker gets its own client/controller so cancelling one request
+	// or updating its usage cannot interrupt a sibling worker.
+	const delegatedClient = new NimClient(projectRoot);
+	delegatedClient.setModel(nimClient.getModel());
+	delegatedClient.setThinkingCapacity(nimClient.getThinkingCapacity());
 	const [projectMemory, projectTimeline] = await Promise.all([
 		loadMemory(projectRoot),
 		loadTimeline(projectRoot),
@@ -361,16 +375,17 @@ async function runDelegatedAgent(
 		for (let iteration = 0; iteration < DELEGATED_TOOL_BUDGET; iteration++) {
 			let result: { content: string; toolCalls: ToolCall[] };
 			try {
-				result = await withEscapeCancellation(nimClient, () =>
-					nimClient.complete(delegatedMessages, nimClient.buildToolDefs(delegatedToolDefs)),
-				);
-				setScreenStatus({ usage: nimClient.formatUsage() });
+					result = await withEscapeCancellation(delegatedClient, () =>
+						delegatedClient.complete(delegatedMessages, delegatedClient.buildToolDefs(delegatedToolDefs)),
+					);
+					setScreenStatus({ usage: delegatedClient.formatUsage() });
 			} catch (err) {
 				if (isRequestCancelled(err)) {
-					return { id: toolCall.id, name: toolCall.name, success: false, error: 'Sub-agent run cancelled.', durationMs: Date.now() - started };
+						finishSubAgentActivity(toolCall.id, 'cancelled');
+						return { id: toolCall.id, name: toolCall.name, success: false, error: 'Sub-agent run cancelled.', durationMs: Date.now() - started };
 				}
 				// The model may not support native tool calling — plain text fallback.
-				const fallback = await withEscapeCancellation(nimClient, () => nimClient.complete(delegatedMessages, undefined));
+					const fallback = await withEscapeCancellation(delegatedClient, () => delegatedClient.complete(delegatedMessages, undefined));
 				result = {
 					content: fallback.content,
 					toolCalls: fallback.toolCalls.length > 0 ? fallback.toolCalls : parseToolCallsFromText(fallback.content),
@@ -394,7 +409,8 @@ async function runDelegatedAgent(
 			for (const tc of toolCalls) {
 				const execution = await executeToolWithReview(tc.name, tc.arguments, projectRoot, input, permissionMode, allowedCommands);
 				const toolResult = execution.toolResult;
-				const target = String(tc.arguments.path ?? tc.arguments.command ?? task).slice(0, 80);
+					const target = String(tc.arguments.path ?? tc.arguments.command ?? task).slice(0, 80);
+					recordSubAgentActivity(toolCall.id, `${tc.name} ${target} — ${toolResult.success ? 'ok' : 'failed'}`);
 				recordTaskAction(taskState, `[${agent.name}] ${tc.name} ${target} ${toolResult.success ? 'ok' : 'failed'}`);
 				delegatedMessages.push({
 					id: tc.id,
@@ -406,12 +422,14 @@ async function runDelegatedAgent(
 			}
 		}
 
-		const output = finalText || '(sub-agent returned no text)';
+			const output = finalText || '(sub-agent returned no text)';
+			finishSubAgentActivity(toolCall.id, 'completed', output);
 		logAgentTermoTimeline(`Sub-agent ${agent.name} completed delegated task: ${task.slice(0, 120)}`, projectRoot);
 		void appendToTimeline(projectRoot, agent.name, 'Delegated task completed', [`Task: ${task.slice(0, 300)}`], [`Summary: ${output.replace(/\s+/g, ' ').slice(0, 400)}`]);
 		return { id: toolCall.id, name: toolCall.name, success: true, output: `[${agent.name}]\n${output}`, durationMs: Date.now() - started };
-	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			finishSubAgentActivity(toolCall.id, 'failed', message);
 		logAgentTermoTimeline(`Sub-agent ${agent.name} failed: ${message.slice(0, 120)}`, projectRoot);
 		return { id: toolCall.id, name: toolCall.name, success: false, error: message, durationMs: Date.now() - started };
 	}
@@ -448,11 +466,22 @@ async function runToolLoop(
 			timestamp: new Date(),
 		});
 
-			// Execute all tool calls from this turn
-			for (const tc of toolCalls) {
-				const execution = tc.name === 'agent:delegate'
-					? { toolResult: await runDelegatedAgent(projectRoot, tc, nimClient, input, permissionMode, allowedCommands, taskState), applied: false, change: undefined }
-							: await executeToolWithReview(tc.name, tc.arguments, projectRoot, input, permissionMode, allowedCommands);
+				// Execute all delegation calls in parallel. Ordinary tools stay sequential
+				// because concurrent writes or terminal commands can race with each other.
+				const allDelegations = shouldRunDelegationsInParallel(toolCalls);
+				const executions: Array<{ toolResult: { success: boolean; output?: string; error?: string }; applied: boolean; change?: ProposedFileChange }> = [];
+				if (allDelegations) {
+					executions.push(...await Promise.all(toolCalls.map((tc) => runDelegatedAgent(projectRoot, tc, nimClient, input, permissionMode, allowedCommands, taskState).then((toolResult) => ({ toolResult, applied: false })) )));
+				} else {
+					for (const tc of toolCalls) {
+						executions.push(tc.name === 'agent:delegate'
+							? { toolResult: await runDelegatedAgent(projectRoot, tc, nimClient, input, permissionMode, allowedCommands, taskState), applied: false }
+							: await executeToolWithReview(tc.name, tc.arguments, projectRoot, input, permissionMode, allowedCommands));
+					}
+				}
+
+				for (const [index, tc] of toolCalls.entries()) {
+					const execution = executions[index]!;
 
 				const toolResult = execution.toolResult;
 				// Delegated runs bypass executeToolWithReview, so show their
@@ -955,7 +984,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						printSuccess(compactConversation(conversation));
 						continue mainLoop;
 					}
-					if (cmd === '/history' || cmd === '/hist' || cmd.startsWith('/history ')) {
+						if (cmd === '/history' || cmd === '/hist' || cmd.startsWith('/history ')) {
 						const requested = Number.parseInt(userInput.trim().slice('/history'.length).trim() || '12', 10);
 						const count = Number.isFinite(requested) && requested > 0 ? Math.min(requested, 50) : 12;
 						const messages = conversation.filter((message) => message.role !== 'system').slice(-count);
@@ -963,9 +992,13 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						for (const message of messages) {
 							printInfo(`${message.role}: ${message.content.replace(/\s+/g, ' ').slice(0, 500)}`);
 						}
-						continue mainLoop;
-				}
-				if (cmd === '/exit' || cmd === '/quit') {
+							continue mainLoop;
+					}
+						if (cmd === '/subagents' || cmd.startsWith('/subagents ')) {
+							printSubAgents(userInput.trim().slice('/subagents'.length).trim() || undefined);
+							continue mainLoop;
+						}
+					if (cmd === '/exit' || cmd === '/quit') {
 					cleanup();
 					break;
 				}

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { finishTaskState, isTransientError } from '../../src/main.js';
+import { finishTaskState, isTransientError, shouldRunDelegationsInParallel } from '../../src/main.js';
 
 describe('task resumability', () => {
 	it('keeps an interrupted task resumable instead of marking it idle', () => {
@@ -19,5 +19,17 @@ describe('task resumability', () => {
 	it('treats a bare "Connection error." as transient', () => {
 		expect(isTransientError(new Error('Connection error.'))).toBe(true);
 		expect(isTransientError(new Error('401 invalid api key'))).toBe(false);
+	});
+
+	it('detects independent delegation calls as a parallel fan-out', () => {
+		expect(shouldRunDelegationsInParallel([
+			{ id: 'a', name: 'agent:delegate', arguments: {} },
+			{ id: 'b', name: 'agent:delegate', arguments: {} },
+		])).toBe(true);
+		expect(shouldRunDelegationsInParallel([{ id: 'a', name: 'agent:delegate', arguments: {} }])).toBe(false);
+		expect(shouldRunDelegationsInParallel([
+			{ id: 'a', name: 'agent:delegate', arguments: {} },
+			{ id: 'b', name: 'file:read', arguments: {} },
+		])).toBe(false);
 	});
 });

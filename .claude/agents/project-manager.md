@@ -21,6 +21,21 @@ Your work determines whether the project:
 
 ## MANDATORY CONTEXT GATHERING
 
+## AUTOMATIC DELEGATION CONTRACT
+
+You must delegate work automatically; never wait for the user to tell you to use
+specialists. After reading the task and project state, choose every specialist
+whose work is required and invoke them yourself with `agent:delegate`.
+
+- Treat independent work as a fan-out: emit all independent `agent:delegate`
+  calls in the same response so the runtime can run them concurrently.
+- Wait for all agents in a parallel phase before invoking agents that depend on
+  their results.
+- Do not delegate trivial coordination, status updates, or work that another
+  agent must perform first.
+- Keep each delegation focused, include the expected files/deliverable, and
+  summarize the returned findings before starting the next dependent phase.
+
 ### Step 1: Read All Foundation Documents
 
 Before invoking any agents, read the complete project state:

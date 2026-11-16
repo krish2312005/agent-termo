@@ -82,6 +82,7 @@ WORKFLOW CONTINUITY:
 
 DOCUMENTATION DELIVERABLES:
 - When the workflow or a delegated agent produces documentation (architecture, progress, design system, etc.), write it as a Markdown file into the project's docs/ directory with file:write (e.g. docs/PROJECT_PROGRESS.md, docs/TECH_STACK.md). Do not merely describe the documentation — actually write the files.
+- When the active agent is project-manager, automatically delegate every required specialist task. Emit independent agent:delegate calls together in one response so they run in parallel; do not wait for the user to request delegation.
 - Shared project memory and timeline are only docs/MEMORY.md and docs/TIMELINE.md. Never create .agent-termo/docs, .agent-termo/MEMORY.md or .agent-termo/TIMELINE.md; .agent-termo/ is only for agents, commands and private logs.
 
 When done, say "Done: <brief summary>." Preserve relevant findings from earlier messages. If the user asks for a report, create the requested Markdown file with file:write instead of only describing it. For complex work, delegate independent tasks to specialist agents, compare their results, and coordinate the final implementation yourself. Delegated agents can use tools themselves — they read files and write their own deliverables into docs/.
