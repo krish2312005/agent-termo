@@ -4,6 +4,7 @@
 
 import { readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { shellDescription } from '../utils/shell.js';
 import type { Agent } from '../types/index.js';
 
 function parseAgentMeta(content: string): { description: string; tools: string[] } {
@@ -67,7 +68,7 @@ Use these functions (JSON tool_calls format):
 Available functions:
 - file:read(path) → read a file
 - file:write(path, content) → overwrite a file completely
-- file:edit(path, old_string, new_string) → edit a specific line section
+- file:edit(path, old_string, new_string, replace_all?) → edit a specific, unique section (set replace_all to replace every occurrence)
 - file:delete(path) → delete a file after explicit user instruction
 - file:glob(pattern) → list files matching a glob (e.g. "src/**/*.ts")
 - grep(pattern, path, glob?) → search for text in files
@@ -81,6 +82,7 @@ WORKFLOW CONTINUITY:
 
 DOCUMENTATION DELIVERABLES:
 - When the workflow or a delegated agent produces documentation (architecture, progress, design system, etc.), write it as a Markdown file into the project's docs/ directory with file:write (e.g. docs/PROJECT_PROGRESS.md, docs/TECH_STACK.md). Do not merely describe the documentation — actually write the files.
+- Shared project memory and timeline are only docs/MEMORY.md and docs/TIMELINE.md. Never create .agent-termo/docs, .agent-termo/MEMORY.md or .agent-termo/TIMELINE.md; .agent-termo/ is only for agents, commands and private logs.
 
 When done, say "Done: <brief summary>." Preserve relevant findings from earlier messages. If the user asks for a report, create the requested Markdown file with file:write instead of only describing it. For complex work, delegate independent tasks to specialist agents, compare their results, and coordinate the final implementation yourself. Delegated agents can use tools themselves — they read files and write their own deliverables into docs/.
 
@@ -91,6 +93,7 @@ AVAILABLE FILES:
 export function buildSystemPrompt(memory: string, timeline: string, agentDir: string, activeAgentPrompt = ''): string {
 	let prompt = SYSTEM_BASE;
 	prompt += `\n\n## Project Working Directory\n${agentDir}\nAll relative file paths and shell commands must operate inside this directory. Create and modify the user's files here. Never use /tmp, an OS temp directory, the npm package directory, or another workspace for project files.`;
+	prompt += `\n\n## Shell\nbash:execute runs commands with ${shellDescription()}. Use syntax that matches this shell, keep paths relative to the project, and prefer the dedicated file tools for creating and editing files.`;
 
 	if (activeAgentPrompt) {
 		prompt += '\n\n## Active Custom Agent Instructions\n' + activeAgentPrompt;

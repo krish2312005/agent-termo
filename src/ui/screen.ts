@@ -145,13 +145,13 @@ function termPaint(): void {
 	}, 60);
 }
 
-/** A terminal command started: open the panel and begin streaming its output. */
+/** A terminal command started: track it but keep panel closed by default. */
 export function startTerminalPanel(command: string): void {
 	clearTerminalPanel();
 	S.term = { command, lines: [], pending: '', exitCode: null };
-	S.termOpen = true;
+	S.termOpen = false; // default hidden
 	syncTermKeyListener();
-	paint();
+	// no paint() — panel stays hidden
 }
 
 /** Stream raw stdout/stderr text into the panel. */
@@ -162,10 +162,10 @@ export function appendTerminalOutput(text: string): void {
 	S.term.pending = parts.pop() ?? '';
 	for (const part of parts) S.term.lines.push(termCleanLine(part));
 	if (S.term.lines.length > 500) S.term.lines.splice(0, S.term.lines.length - 500);
-	termPaint();
+	if (S.termOpen) termPaint(); // only repaint if panel is visible
 }
 
-/** The terminal command finished; keep the panel open with the final output. */
+/** The terminal command finished; keep panel closed (Ctrl+O opens it). */
 export function finishTerminalPanel(exitCode: number | null): void {
 	if (!S.term) return;
 	if (S.term.pending) {
@@ -174,7 +174,7 @@ export function finishTerminalPanel(exitCode: number | null): void {
 	}
 	S.term.exitCode = exitCode ?? -1;
 	syncTermKeyListener();
-	paint();
+	// panel stays closed; Ctrl+O opens it
 }
 
 /** Toggle the terminal panel open/closed (Ctrl+O / Ctrl+T). */
@@ -185,16 +185,25 @@ export function toggleTerminalPanel(): void {
 	paint();
 }
 
-/** Close the terminal panel and drop the session (next command reopens it). */
+/** Close the terminal panel but keep the last term so it can be reopened with Ctrl+O. */
 export function clearTerminalPanel(): void {
-	S.term = null;
 	S.termOpen = false;
+	if (S.term) {
+		S.term.lines = [];
+		S.term.pending = '';
+		S.term.exitCode = null;
+	}
 	syncTermKeyListener();
 	paint();
 }
 
 export function terminalPanelVisible(): boolean {
 	return Boolean(S.term && S.termOpen);
+}
+
+export function terminalPanelState(): { command: string; exitCode: number | null; lines: string[] } | null {
+	if (!S.term) return null;
+	return { command: S.term.command, exitCode: S.term.exitCode, lines: S.term.lines };
 }
 
 // A background key listener while the user is NOT editing (during the agent
@@ -736,6 +745,9 @@ const NAMED: Record<string, string> = {
 	'\x1b\x7f': 'ctrl+w',
 	'\x0f': 'ctrl+o',
 	'\x14': 'ctrl+t',
+	// Kitty keyboard protocol encodings
+	'\x1b[18;5u': 'ctrl+o',
+	'\x1b[20;5u': 'ctrl+t',
 	// Kitty keyboard protocol encodings (enabled below) — without them some
 	// terminals cannot distinguish Shift+Enter from Enter at all.
 	'\x1b[27u': 'escape',

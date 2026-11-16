@@ -67,6 +67,11 @@ export const TOOL_DEFINITIONS: ToolDef[] = [
           type: 'string',
           description: 'Replacement text',
         },
+        replace_all: {
+          type: 'boolean',
+          description: 'Replace every occurrence of old_string (default false; otherwise old_string must be unique)',
+          default: false,
+        },
 			},
 			required: ['path', 'old_string', 'new_string'],
 		},

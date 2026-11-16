@@ -5,7 +5,7 @@
 
 import Chalk from 'chalk';
 import type { ProposedFileChange } from '../types/index.js';
-import { loadAgentTermoMemory, loadAgentTermoTimeline } from '../memory/index.js';
+import { loadMemory, loadTimeline } from '../memory/index.js';
 import {
 	clipText,
 	listenKeys,
@@ -31,6 +31,8 @@ export {
 	finishTerminalPanel,
 	clearTerminalPanel,
 	toggleTerminalPanel,
+	terminalPanelVisible,
+	terminalPanelState,
 	type InputController,
 	type PickItem,
 } from './screen.js';
@@ -41,8 +43,8 @@ const out = process.stdout;
 export const COMMANDS: CommandInfo[] = [
 	{ name: '/help', description: 'show all commands' },
 	{ name: '/clear', description: 'clear conversation & screen' },
-	{ name: '/memory', description: 'view Agent-Termo memory' },
-	{ name: '/timeline', description: 'view recent activity' },
+	{ name: '/memory', description: 'view project memory (docs/MEMORY.md)' },
+	{ name: '/timeline', description: 'view project timeline (docs/TIMELINE.md)' },
 		{ name: '/model', description: 'switch NVIDIA NIM model (or /model <id>)' },
 			{ name: '/thinking', description: 'select NVIDIA reasoning capacity' },
 			{ name: '/permissions', description: 'ask, files, or auto; terminal approvals can be remembered with A' },
@@ -51,6 +53,7 @@ export const COMMANDS: CommandInfo[] = [
 		{ name: '/agent-folder', description: 'create or refresh .agent-termo agents and commands' },
 		{ name: '/goal', description: 'set or show the current goal' },
 		{ name: '/status', description: 'show session status' },
+		{ name: '/terminal', description: 'manage agent terminal (list, kill)' },
 		{ name: '/context', description: 'show context and runtime paths' },
 		{ name: '/compact', description: 'summarize and compact conversation context' },
 		{ name: '/continue', description: 'resume an interrupted task from where it stopped' },
@@ -374,24 +377,24 @@ export function printInfo(message: string): void {
 // AGENT-TERMO MEMORY + TIMELINE DISPLAY
 // =============================================================================
 
-export async function printMemoryFile(projectRoot?: string): Promise<void> {
-	const mem = loadAgentTermoMemory(projectRoot);
-	if (!mem) {
-		printInfo('Agent-Termo memory is empty. (Normal for new sessions.)');
+export async function printMemoryFile(projectRoot: string): Promise<void> {
+	const mem = await loadMemory(projectRoot);
+	if (!mem.trim()) {
+		printInfo('Project memory is empty (docs/MEMORY.md).');
 		return;
 	}
-	out.write('\n' + c.bold('Agent-Termo memory') + '\n' + rule() + '\n' + mem + '\n' + rule() + '\n\n');
+	out.write('\n' + c.bold('Project memory') + c.dim(' (docs/MEMORY.md)') + '\n' + rule() + '\n' + mem + '\n' + rule() + '\n\n');
 }
 
-export async function printTimelineFile(projectRoot?: string): Promise<void> {
-	const tl = loadAgentTermoTimeline(projectRoot);
+export async function printTimelineFile(projectRoot: string): Promise<void> {
+	const tl = await loadTimeline(projectRoot);
 	if (!tl || tl.trim().length === 0) {
-		printInfo('Timeline is empty.');
+		printInfo('Project timeline is empty (docs/TIMELINE.md).');
 		return;
 	}
 	const lines = tl.split('\n');
 	const recentCount = Math.min(40, lines.length);
-	out.write('\n' + c.bold('Agent-Termo timeline') + c.dim(' (recent entries)') + '\n' + rule() + '\n');
+	out.write('\n' + c.bold('Project timeline') + c.dim(' (docs/TIMELINE.md, recent entries)') + '\n' + rule() + '\n');
 	out.write(lines.slice(-recentCount).join('\n') + '\n' + rule() + '\n');
 	if (lines.length > recentCount) {
 		out.write(c.dim('… ' + (lines.length - recentCount) + ' earlier entries hidden') + '\n');

@@ -99,14 +99,33 @@ agent-termo/
 │   ├── cli.ts           # Commander entry point
 │   ├── main.ts          # Main application
 │   ├── ui/              # Terminal UI (output rendering, pinned input box, model picker)
-│   ├── agents/          # 12 agent implementations
+│   ├── agents/          # Agent loader and system prompt builder
 │   ├── llm/             # OpenAI/NIM integration, model catalogue
 │   ├── tools/           # File, bash, git tools
-│   └── memory/          # Memory system
-├── .claude/agents/      # Agent prompts
+│   └── memory/          # Project memory, timeline and session log
+├── .claude/agents/      # Bundled agent prompts copied into projects
 ├── tests/               # Test suites
-└── docs/                # Documentation
+└── docs/                # This repository's project documentation
 ```
+
+## Project file layout
+
+Agent-Termo keeps two separate areas in every project it runs in:
+
+```
+<project>/
+├── docs/
+│   ├── MEMORY.md        # Shared project memory (agents read and write this)
+│   └── TIMELINE.md      # Shared project timeline (agents read and write this)
+└── .agent-termo/
+    ├── agents/          # Project agent definitions
+    ├── commands/        # Project slash commands
+    └── logs/            # Private session and runtime logs (not project docs)
+```
+
+`docs/MEMORY.md` and `docs/TIMELINE.md` are the only memory/timeline files the
+project and its agents use. `.agent-termo/` holds configuration and private
+logs; it never contains a second `docs/` folder.
 
 ## Technology Stack
 

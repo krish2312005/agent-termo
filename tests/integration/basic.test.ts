@@ -7,8 +7,8 @@
 
 import { describe, it, expect } from 'vitest';
 import { executeTool, applyFileChange } from '../../src/tools/index.js';
-import { fromWireToolName } from '../../src/llm/client.js';
-import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { fromWireToolName, parseToolCallsFromText } from '../../src/llm/client.js';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const PROJECT_ROOT = process.cwd();
@@ -36,6 +36,125 @@ describe('executeTool', () => {
 		const proposedDeletion = JSON.parse(deletion.output ?? '').proposedChange;
 		expect((await applyFileChange(proposedDeletion, PROJECT_ROOT)).success).toBe(true);
 		expect(existsSync(lifecycleAbsolutePath)).toBe(false);
+	});
+
+	it('file:write with empty content creates an empty file instead of a deletion', async () => {
+		const path = '.test-empty-write.txt';
+		const absolutePath = resolve(PROJECT_ROOT, path);
+		rmSync(absolutePath, { force: true });
+		try {
+			const write = await executeTool('file:write', { path, content: '' }, PROJECT_ROOT);
+			expect(write.success).toBe(true);
+			const change = JSON.parse(write.output ?? '').proposedChange;
+			expect(change.isDeletion).toBe(false);
+			expect((await applyFileChange(change, PROJECT_ROOT)).success).toBe(true);
+			expect(existsSync(absolutePath)).toBe(true);
+			expect(readFileSync(absolutePath, 'utf-8')).toBe('');
+		} finally {
+			rmSync(absolutePath, { force: true });
+		}
+	});
+
+	it('file:edit matches LF old_string in a CRLF file and preserves CRLF', async () => {
+		const path = '.test-crlf-edit.txt';
+		const absolutePath = resolve(PROJECT_ROOT, path);
+		writeFileSync(absolutePath, 'alpha\r\nbeta\r\ngamma\r\n', 'utf-8');
+		try {
+			const edit = await executeTool('file:edit', { path, old_string: 'alpha\nbeta', new_string: 'ALPHA\nBETA' }, PROJECT_ROOT);
+			expect(edit.success).toBe(true);
+			const change = JSON.parse(edit.output ?? '').proposedChange;
+			expect((await applyFileChange(change, PROJECT_ROOT)).success).toBe(true);
+			expect(readFileSync(absolutePath, 'utf-8')).toBe('ALPHA\r\nBETA\r\ngamma\r\n');
+		} finally {
+			rmSync(absolutePath, { force: true });
+		}
+	});
+
+	it('file:edit rejects ambiguous edits and supports replace_all', async () => {
+		const path = '.test-ambiguous-edit.txt';
+		const absolutePath = resolve(PROJECT_ROOT, path);
+		writeFileSync(absolutePath, 'same\nsame\n', 'utf-8');
+		try {
+			const rejected = await executeTool('file:edit', { path, old_string: 'same', new_string: 'other' }, PROJECT_ROOT);
+			expect(rejected.success).toBe(false);
+			expect(rejected.error).toContain('appears 2 times');
+
+			const replaceAll = await executeTool('file:edit', { path, old_string: 'same', new_string: 'other', replace_all: true }, PROJECT_ROOT);
+			expect(replaceAll.success).toBe(true);
+			const change = JSON.parse(replaceAll.output ?? '').proposedChange;
+			expect(change.proposedContent).toBe('other\nother\n');
+		} finally {
+			rmSync(absolutePath, { force: true });
+		}
+	});
+
+	it('file:edit keeps dollar sequences in new_string literal', async () => {
+		const path = '.test-dollar-edit.txt';
+		const absolutePath = resolve(PROJECT_ROOT, path);
+		writeFileSync(absolutePath, 'value\n', 'utf-8');
+		try {
+			const edit = await executeTool('file:edit', { path, old_string: 'value', new_string: 'cost $& $1' }, PROJECT_ROOT);
+			expect(edit.success).toBe(true);
+			const change = JSON.parse(edit.output ?? '').proposedChange;
+			expect(change.proposedContent).toBe('cost $& $1\n');
+		} finally {
+			rmSync(absolutePath, { force: true });
+		}
+	});
+
+	it('accepts common model tool names and Claude-style argument names', async () => {
+		const path = '.test-alias-tool.txt';
+		const absolutePath = resolve(PROJECT_ROOT, path);
+		rmSync(absolutePath, { force: true });
+		try {
+			const write = await executeTool('write_file', { file_path: path, file_text: 'alias works\n' }, PROJECT_ROOT);
+			expect(write.success).toBe(true);
+			const change = JSON.parse(write.output ?? '').proposedChange;
+			expect((await applyFileChange(change, PROJECT_ROOT)).success).toBe(true);
+			expect(readFileSync(absolutePath, 'utf-8')).toBe('alias works\n');
+			expect(fromWireToolName('Read')).toBe('file:read');
+		} finally {
+			rmSync(absolutePath, { force: true });
+		}
+	});
+
+	it('grep searches file contents without relying on an external grep binary', async () => {
+		const path = '.test-grep-target.txt';
+		const absolutePath = resolve(PROJECT_ROOT, path);
+		writeFileSync(absolutePath, 'const needle = 1;\nNEEDLE upper\n', 'utf-8');
+		try {
+			const exact = await executeTool('grep', { pattern: 'needle', path }, PROJECT_ROOT);
+			expect(exact.success).toBe(true);
+			expect(exact.output).toContain(path + ':1');
+
+			const insensitive = await executeTool('grep', { pattern: 'needle', path, case_sensitive: false }, PROJECT_ROOT);
+			expect(insensitive.success).toBe(true);
+			expect(insensitive.output).toContain(path + ':2');
+
+			const recursive = await executeTool('grep', { pattern: 'needle', path: '.', glob: '*.txt' }, PROJECT_ROOT);
+			expect(recursive.success).toBe(true);
+			expect(recursive.output).toContain(path + ':1');
+		} finally {
+			rmSync(absolutePath, { force: true });
+		}
+
+		const traversal = await executeTool('grep', { pattern: 'x', path: '../../..' }, PROJECT_ROOT);
+		expect(traversal.success).toBe(false);
+		expect(traversal.error).toContain('Access denied');
+	});
+
+	it('parses text-emitted tool calls with top-level arguments', () => {
+		const wrapped = parseToolCallsFromText('{"tool_calls":[{"id":"call_1","name":"write_file","arguments":{"path":"a.txt","content":"x"}}]}');
+		expect(wrapped).toHaveLength(1);
+		expect(wrapped[0]?.name).toBe('file:write');
+		expect(wrapped[0]?.arguments).toEqual({ path: 'a.txt', content: 'x' });
+
+		const single = parseToolCallsFromText('{"name":"bash","arguments":"{\\"command\\":\\"echo hi\\"}"}');
+		expect(single[0]?.name).toBe('bash:execute');
+		expect(single[0]?.arguments).toEqual({ command: 'echo hi' });
+
+		const bare = parseToolCallsFromText('[{"name":"Read","arguments":{"file_path":"a.txt"}}]');
+		expect(bare[0]?.name).toBe('file:read');
 	});
 
   it('file:read — reads package.json successfully', async () => {
@@ -90,7 +209,7 @@ describe('executeTool', () => {
 		expect(glob.success).toBe(true);
 		expect(glob.output).toContain('package.json');
 
-		const bash = await executeTool('bash:execute', { command: 'pwd', cwd: '.' }, PROJECT_ROOT);
+		const bash = await executeTool('bash:execute', { command: 'node -e "console.log(process.cwd())"', cwd: '.' }, PROJECT_ROOT);
 		expect(bash.success).toBe(true);
 		expect(bash.output).toContain(PROJECT_ROOT);
 	});
@@ -123,6 +242,19 @@ describe('executeTool', () => {
 
     expect(result.success).toBe(false);
 		expect(result.error).toContain('Dangerous command blocked');
+	});
+
+	it('bash:execute — honors millisecond timeouts', async () => {
+		const started = Date.now();
+		const result = await executeTool(
+			'bash:execute',
+			{ command: 'node -e "setTimeout(() => {}, 10000)"', timeout: 1500 },
+			PROJECT_ROOT,
+		);
+
+		expect(result.success).toBe(false);
+		expect(result.error).toContain('timed out after 1500ms');
+		expect(Date.now() - started).toBeLessThan(10_000);
 	});
 
 	it('normalizes delegated-agent wire names and blocks temp project writes', async () => {
