@@ -4,17 +4,16 @@
 
 import { NimClient, fromWireToolName, type ThinkingCapacity } from './llm/client.js';
 import { TOOL_DEFINITIONS } from './llm/tools.js';
-import { executeTool, applyFileChange } from './tools/index.js';
-import { loadMemory, logToTimeline, logAgentTermoTimeline, appendToAgentTermoMemory, appendToTimeline } from './memory/index.js';
+import { executeTool, applyFileChange, setTerminalHooks } from './tools/index.js';
+import { loadMemory, logToTimeline, logAgentTermoTimeline, appendToAgentTermoMemory, appendToTimeline, loadAgentTermoMemory } from './memory/index.js';
 import { loadAllAgents } from './agents/index.js';
 import { buildSystemPrompt } from './agents/index.js';
 import { resolveProjectRoot, saveNimModel, saveNimThinking, savePermissionMode } from './utils/config.js';
 import { resolve } from 'node:path';
-import { readdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { ensureAgentFolder, loadAgentCommands, type AgentCommand } from './runtime/agent-folder.js';
 import { commandApprovalKey, isCommandApprovalRequired, loadAllowedCommands, saveAllowedCommands } from './runtime/permissions.js';
 import {
-	MarkdownPrinter,
 	printWelcome,
 	printUserMessage,
 	printAssistantMessage,
@@ -43,16 +42,11 @@ import {
 	setContextFiles,
 	setPermissionMode,
 	promptCommandApproval,
+	startTerminalPanel,
+	appendTerminalOutput,
+	finishTerminalPanel,
 } from './ui/index.js';
 import type { ConversationMessage, ToolCall, ToolResult, ProposedFileChange } from './types/index.js';
-
-const TOOL_KEYWORDS = [
-	'build', 'create', 'write', 'edit', 'modify', 'file', 'code', 'function', 'class',
-	'component', 'debug', 'fix', 'git', 'commit', 'push', 'install', 'npm', 'run',
-	'bash', 'shell', 'command', 'read', 'grep', 'check', 'show', 'implement',
-	'configure', 'setup', 'src', 'package', 'app', 'project', 'api', 'deploy',
-	'test', 'compile', 'typescript', 'javascript', 'python', 'node', 'add', 'delete', 'report', 'analyze', 'analysis', 'bug', 'issue', 'sub-agent', 'subagent', 'delegate',
-];
 
 function discoverProjectFiles(projectRoot: string): string[] {
 	const files: string[] = [];
@@ -86,11 +80,6 @@ function expandContextMentions(input: string, projectRoot: string, contextFiles:
 	return { text: text.trim() || (attached.length > 0 ? 'Inspect the attached project files and summarize the relevant context.' : input), attached };
 }
 
-function mightNeedTools(message: string): boolean {
-	const lower = message.toLowerCase();
-	return TOOL_KEYWORDS.some((w) => lower.includes(w));
-}
-
 function dedup(arr: ToolCall[]): ToolCall[] {
 	const seen = new Set<string>();
 	return arr.filter((tc) => {
@@ -122,6 +111,61 @@ function providerError(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);
 }
 
+/** Transient provider failures worth one automatic retry before surfacing. */
+function isTransientError(err: unknown): boolean {
+	return /429|500|502|503|504|timeout|timed out|ECONNRESET|ECONNREFUSED|ETIMEDOUT|socket hang up|fetch failed|network/i.test(
+		providerError(err),
+	);
+}
+
+// =============================================================================
+// Task state — lets an interrupted run be resumed with "continue" instead of
+// restarted. The full conversation (including tool results) is preserved, so
+// the model knows exactly where the work stopped.
+// =============================================================================
+
+type TaskStatus = 'idle' | 'running' | 'interrupted';
+
+interface TaskState {
+	goal: string;
+	status: TaskStatus;
+	reason: string;
+	lastActions: string[];
+}
+
+function newTaskState(): TaskState {
+	return { goal: '', status: 'idle', reason: '', lastActions: [] };
+}
+
+function recordTaskAction(state: TaskState, action: string): void {
+	state.lastActions.push(action);
+	if (state.lastActions.length > 15) state.lastActions.shift();
+}
+
+/** Does this input mean "keep going from where you stopped"? */
+function isContinueRequest(input: string): boolean {
+	return /^(?:\/)?continue\b/i.test(input.trim()) || input.trim().toLowerCase() === 'c';
+}
+
+/** Build the continuation directive injected when the user says "continue". */
+function buildContinueMessage(state: TaskState): string {
+	const lines = [
+		'Continue the previous task from exactly where it stopped. Do NOT restart the task from the beginning and do not redo work that is already done.',
+		'',
+		`Original goal: ${state.goal}`,
+		`Reason the run stopped: ${state.reason || 'the previous run ended before finishing'}`,
+	];
+	if (state.lastActions.length > 0) {
+		lines.push('', 'Last completed actions (oldest first):');
+		for (const action of state.lastActions) lines.push('- ' + action);
+	}
+	lines.push(
+		'',
+		'The full conversation history above (including every tool result) is still valid. Resume from the step that follows the last completed action. If the last action was in flight when the run stopped, re-verify its result before moving on, then continue the task until it is fully complete.',
+	);
+	return lines.join('\n');
+}
+
 async function withEscapeCancellation<T>(nimClient: NimClient, operation: () => Promise<T>): Promise<T> {
 	if (!process.stdin.isTTY) return operation();
 	let cancelled = false;
@@ -148,62 +192,6 @@ async function withEscapeCancellation<T>(nimClient: NimClient, operation: () => 
 	} finally {
 		stop();
 	}
-}
-
-/**
- * Get a plain-text assistant response without tool calling: stream first, fall
- * back to a single non-streaming completion. Appends the assistant message to
- * the conversation and prints it. Never throws: if both the stream and the
- * retry fail, an LLM error is printed and no message is appended.
- */
-async function replyWithText(
-	conversation: ConversationMessage[],
-	nimClient: NimClient,
-	projectRoot: string,
-): Promise<void> {
-	startSpinner('Thinking');
-	const md = new MarkdownPrinter(() => stopSpinner());
-	try {
-			const gen = nimClient.streamComplete(conversation, undefined, (text: string) => md.push(text), (stage: string) => printInfo(stage));
-		// The generator streams everything, then yields once at the end; the
-		// chunks have already been rendered through the callback.
-				const streamed = await withEscapeCancellation(nimClient, () => gen.next());
-				setScreenStatus({ usage: nimClient.formatUsage() });
-			md.end();
-			stopSpinner();
-			const streamedText = streamed.value?.content?.trim() ?? '';
-			if (streamedText) {
-				conversation.push({ id: crypto.randomUUID(), role: 'assistant', content: streamedText, timestamp: new Date() });
-				rememberChat(projectRoot, 'Assistant', streamedText);
-			}
-			return;
-			} catch (err) {
-				md.end();
-				stopSpinner();
-				if (isRequestCancelled(err)) return;
-				printInfo('NVIDIA NIM streaming request failed: ' + providerError(err) + ' — trying a non-streaming retry.');
-			}
-
-	startSpinner('Retrying');
-	try {
-			const result = await withEscapeCancellation(nimClient, () => nimClient.complete(conversation, undefined, (stage) => printInfo(stage)));
-			setScreenStatus({ usage: nimClient.formatUsage() });
-		stopSpinner();
-		const cleanText = (result.content ?? '').trim();
-		if (cleanText) {
-			conversation.push({
-				id: crypto.randomUUID(),
-				role: 'assistant',
-					content: cleanText,
-					timestamp: new Date(),
-				});
-				rememberChat(projectRoot, 'Assistant', cleanText);
-				printAssistantMessage(cleanText);
-		}
-		} catch (err) {
-			stopSpinner();
-			printError('NVIDIA NIM provider error: ' + providerError(err));
-		}
 }
 
 /**
@@ -334,7 +322,23 @@ async function executeToolWithReview(
 	return { toolResult, applied: false };
 }
 
-async function runDelegatedAgent(projectRoot: string, toolCall: ToolCall, nimClient: NimClient): Promise<ToolResult> {
+const DELEGATED_TOOL_BUDGET = 8;
+
+/**
+ * Run a delegated specialist agent. The sub-agent gets real tool access in a
+ * bounded loop, so it can actually read files and write its deliverables (for
+ * example its documentation into the project's docs/ folder) instead of only
+ * describing what it would do. Nested delegation is not allowed.
+ */
+async function runDelegatedAgent(
+	projectRoot: string,
+	toolCall: ToolCall,
+	nimClient: NimClient,
+	input: InputController,
+	permissionMode: PermissionMode,
+	allowedCommands: Set<string>,
+	taskState: TaskState,
+): Promise<ToolResult> {
 	const started = Date.now();
 	const agentName = String(toolCall.arguments.agent ?? '').trim();
 	const task = String(toolCall.arguments.task ?? '').trim();
@@ -347,20 +351,81 @@ async function runDelegatedAgent(projectRoot: string, toolCall: ToolCall, nimCli
 		return { id: toolCall.id, name: toolCall.name, success: false, error: `Unknown agent or empty task: ${agentName}`, durationMs: Date.now() - started };
 	}
 
+	printInfo('Delegating to ' + agent.name + '…');
 	const delegatedMessages: ConversationMessage[] = [
 		{ id: crypto.randomUUID(), role: 'system', content: buildSystemPrompt('', '', projectRoot, agent.systemPrompt), timestamp: new Date(), agent: agent.name },
-		{ id: crypto.randomUUID(), role: 'user', content: `You are a delegated sub-agent named ${agent.name}. Complete only this focused task and return concise findings for the parent agent. Do not claim to modify files unless the parent explicitly asks and you have evidence.\n\nTask:\n${task}\n\nParent context:\n${context || '(none)'}`, timestamp: new Date() },
+		{
+			id: crypto.randomUUID(),
+			role: 'user',
+			content:
+				`You are a delegated sub-agent named ${agent.name}. Complete only this focused task using the available tools, then report concise findings for the parent agent.\n\n` +
+				`When the task produces documentation or deliverable files, write them into the project's docs/ directory with file:write — do not merely describe them.\n\n` +
+				`Task:\n${task}\n\nParent context:\n${context || '(none)'}`,
+			timestamp: new Date(),
+		},
 	];
 
+	// Sub-agents cannot delegate further; they get every other tool.
+	const delegatedToolDefs = TOOL_DEFINITIONS.filter((t) => t.name !== 'agent:delegate');
+	let finalText = '';
+
 	try {
-			const result = await withEscapeCancellation(nimClient, () => nimClient.complete(delegatedMessages, undefined, (stage) => printInfo(stage)));
-		const output = result.content.trim() || '(sub-agent returned no text)';
+		for (let iteration = 0; iteration < DELEGATED_TOOL_BUDGET; iteration++) {
+			let result: { content: string; toolCalls: ToolCall[] };
+			try {
+				result = await withEscapeCancellation(nimClient, () =>
+					nimClient.complete(delegatedMessages, nimClient.buildToolDefs(delegatedToolDefs), (stage) => printInfo(`[${agent.name}] ${stage}`)),
+				);
+				setScreenStatus({ usage: nimClient.formatUsage() });
+			} catch (err) {
+				if (isRequestCancelled(err)) {
+					return { id: toolCall.id, name: toolCall.name, success: false, error: 'Sub-agent run cancelled.', durationMs: Date.now() - started };
+				}
+				// The model may not support native tool calling — plain text fallback.
+				const fallback = await withEscapeCancellation(nimClient, () => nimClient.complete(delegatedMessages, undefined, (stage) => printInfo(`[${agent.name}] ${stage}`)));
+				result = { content: fallback.content, toolCalls: parseToolCallsFromText(fallback.content) };
+			}
+
+			const toolCalls = dedup(result.toolCalls);
+			if (toolCalls.length === 0) {
+				finalText = result.content.trim();
+				break;
+			}
+
+			delegatedMessages.push({
+				id: crypto.randomUUID(),
+				role: 'assistant',
+				content: result.content || '',
+				toolCalls,
+				timestamp: new Date(),
+			});
+
+			for (const tc of toolCalls) {
+				const execution = await executeToolWithReview(tc.name, tc.arguments, projectRoot, input, permissionMode, allowedCommands);
+				const toolResult = execution.toolResult;
+				const target = String(tc.arguments.path ?? tc.arguments.command ?? task).slice(0, 80);
+				recordTaskAction(taskState, `[${agent.name}] ${tc.name} ${target} ${toolResult.success ? 'ok' : 'failed'}`);
+				delegatedMessages.push({
+					id: tc.id,
+					role: 'tool',
+					content: (toolResult.success ? 'Result: ' : 'Error: ') + (toolResult.success ? (toolResult.output ?? '') : toolResult.error),
+					timestamp: new Date(),
+				});
+				logAgentTermoTimeline(`Sub-agent ${agent.name} tool: ${tc.name} -- ${toolResult.success ? 'OK' : 'ERR'}`, projectRoot);
+			}
+		}
+
+		const output = finalText || '(sub-agent returned no text)';
 		logAgentTermoTimeline(`Sub-agent ${agent.name} completed delegated task: ${task.slice(0, 120)}`, projectRoot);
+		void appendToTimeline(projectRoot, agent.name, 'Delegated task completed', [`Task: ${task.slice(0, 300)}`], [`Summary: ${output.replace(/\s+/g, ' ').slice(0, 400)}`]);
 		return { id: toolCall.id, name: toolCall.name, success: true, output: `[${agent.name}]\n${output}`, durationMs: Date.now() - started };
 	} catch (error) {
-		return { id: toolCall.id, name: toolCall.name, success: false, error: error instanceof Error ? error.message : String(error), durationMs: Date.now() - started };
+		const message = error instanceof Error ? error.message : String(error);
+		logAgentTermoTimeline(`Sub-agent ${agent.name} failed: ${message.slice(0, 120)}`, projectRoot);
+		return { id: toolCall.id, name: toolCall.name, success: false, error: message, durationMs: Date.now() - started };
 	}
 }
+
 
 /**
  * Run the tool-call loop: execute tools, feed results back to the LLM,
@@ -374,6 +439,7 @@ async function runToolLoop(
 	nimClient: NimClient,
 	permissionMode: PermissionMode,
 	allowedCommands: Set<string>,
+	taskState: TaskState,
 ): Promise<string> {
 	let toolCalls = initialToolCalls;
 	let finalText = '';
@@ -394,12 +460,14 @@ async function runToolLoop(
 			// Execute all tool calls from this turn
 			for (const tc of toolCalls) {
 				const execution = tc.name === 'agent:delegate'
-					? { toolResult: await runDelegatedAgent(projectRoot, tc, nimClient), applied: false, change: undefined }
+					? { toolResult: await runDelegatedAgent(projectRoot, tc, nimClient, input, permissionMode, allowedCommands, taskState), applied: false, change: undefined }
 							: await executeToolWithReview(tc.name, tc.arguments, projectRoot, input, permissionMode, allowedCommands);
 
 				const toolResult = execution.toolResult;
 			const statusText = toolResult.success ? 'OK' : ('ERR: ' + (toolResult.error ? toolResult.error.slice(0, 80) : 'unknown error'));
 			const changeNote = execution.change ? (execution.applied ? ' (applied)' : ' (rejected)') : '';
+			const target = String(tc.arguments.path ?? tc.arguments.command ?? tc.arguments.task ?? '').slice(0, 80);
+			recordTaskAction(taskState, `${tc.name} ${target} ${execution.applied ? '(applied)' : toolResult.success ? 'ok' : 'failed'}`);
 
 				conversation.push({
 					id: tc.id,
@@ -419,14 +487,26 @@ async function runToolLoop(
 		let result: { content: string; toolCalls: ToolCall[] };
 		try {
 			const tools = nimClient.buildToolDefs(TOOL_DEFINITIONS);
+			try {
 					result = await withEscapeCancellation(nimClient, () => nimClient.complete(conversation, tools, (stage) => printInfo(stage)));
-				setScreenStatus({ usage: nimClient.formatUsage() });
+			} catch (transient) {
+				if (isRequestCancelled(transient) || !isTransientError(transient)) throw transient;
+				// One automatic retry for transient provider failures so a
+				// long task does not die mid-flight on a blip.
+				printInfo('Transient provider error (' + providerError(transient) + ') — retrying…');
+				await new Promise((delay) => setTimeout(delay, 1500));
+					result = await withEscapeCancellation(nimClient, () => nimClient.complete(conversation, tools, (stage) => printInfo(stage)));
+			}
+			setScreenStatus({ usage: nimClient.formatUsage() });
 			} catch (err) {
 				if (isRequestCancelled(err)) {
 					stopSpinner();
+					// The task can be resumed with "continue".
+					taskState.status = 'interrupted';
+					taskState.reason = 'cancelled by user';
+					printInfo('Task paused. Type "continue" to resume from where it stopped.');
 					return '';
 				}
-				// Model doesn't support native tool calling — fall back to plain text
 				// and parse any JSON tool calls emitted in the content.
 				try {
 					const fallback = await withEscapeCancellation(nimClient, () => nimClient.complete(conversation, undefined, (stage) => printInfo(stage)));
@@ -438,8 +518,13 @@ async function runToolLoop(
 				} catch (err2) {
 					stopSpinner();
 					printError('NVIDIA NIM provider error: ' + providerError(err2));
+					// Keep everything done so far and let "continue" resume the task.
+					taskState.status = 'interrupted';
+					taskState.reason = providerError(err2);
+					appendToAgentTermoMemory('### Interrupted task\n\nGoal: ' + taskState.goal + '\nReason: ' + taskState.reason + '\nLast actions: ' + taskState.lastActions.join('; '), projectRoot);
+					printInfo('The task was interrupted. Type "continue" to resume from where it stopped.');
 					break;
-			}
+				}
 		}
 		stopSpinner();
 
@@ -569,7 +654,19 @@ async function handleThinkingCommand(arg: string, nimClient: NimClient, projectR
 export async function runRepl(projectRoot?: string): Promise<void> {
 	projectRoot = resolve(resolveProjectRoot(projectRoot ?? process.cwd()));
 
+	// The project docs/ folder is where the agent workflow writes its
+	// documentation deliverables — make sure it always exists.
+	try {
+		mkdirSync(resolve(projectRoot, 'docs'), { recursive: true });
+	} catch {
+		// Read-only filesystem or similar: tools will surface the error.
+	}
+
 	const memory = await loadMemory(projectRoot);
+	// Recent Agent-Termo memory gives the session (and a later "continue")
+	// context from previous sessions, including interrupted tasks.
+	const recentMemory = loadAgentTermoMemory(projectRoot);
+	const memoryContext = recentMemory ? recentMemory.slice(-4000) : '';
 	const nimClient = new NimClient(projectRoot);
 	let permissionMode: PermissionMode = process.env.AGENT_TERMO_PERMISSION_MODE === 'files'
 		? 'files'
@@ -586,6 +683,12 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 	setAgentNames(customAgents.map((agent) => agent.name));
 	const contextFiles = discoverProjectFiles(projectRoot);
 	setContextFiles(contextFiles);
+	// Stream live bash output into the terminal panel below the input box.
+	setTerminalHooks({
+		onStart: startTerminalPanel,
+		onOutput: appendTerminalOutput,
+		onEnd: finishTerminalPanel,
+	});
 	let customCommands: AgentCommand[] = loadAgentCommands(projectRoot);
 	const refreshCommandCompletion = (): void => {
 		setCommands([...COMMANDS, ...customCommands.map((command) => ({ name: '/' + command.name, description: command.description || 'project command' }))]);
@@ -594,8 +697,13 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 	let activeAgentName = '';
 	let activeAgentPrompt = '';
 	let currentGoal = '';
+	const taskState = newTaskState();
 	const buildSessionPrompt = (): string => {
 		let prompt = buildSystemPrompt(memory, '', projectRoot, activeAgentPrompt);
+		if (memoryContext) prompt += '\n\n## Recent Session Memory (previous sessions, may include interrupted tasks)\n' + memoryContext;
+		if (taskState.goal && taskState.status !== 'idle') {
+			prompt += '\n\n## Active Task\n' + taskState.goal + '\nStatus: ' + taskState.status + (taskState.reason ? ' (' + taskState.reason + ')' : '');
+		}
 		if (currentGoal) prompt += '\n\n## Current Goal\n' + currentGoal;
 		return prompt;
 	};
@@ -843,8 +951,39 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					break;
 				}
 
-				printError('Unknown command: ' + cmd, 'Type /help for available commands.');
+				if (cmd === '/continue') {
+					// Falls through to the shared "continue" handling below the
+					// command block, which resumes an interrupted task in place.
+					printUserMessage(userInput);
+					displayedInput = true;
+				} else {
+					printError('Unknown command: ' + cmd, 'Type /help for available commands.');
+					continue mainLoop;
+				}
+			}
+
+			// "continue" / "/continue" resumes an interrupted task from the exact
+			// point where it stopped instead of restarting from scratch.
+			const wantsContinue = isContinueRequest(rawInput);
+			if (wantsContinue && taskState.status === 'idle') {
+				printInfo('Nothing to continue — no task is in progress or interrupted.');
 				continue mainLoop;
+			}
+			const continuing = wantsContinue && taskState.status !== 'idle';
+			if (continuing) {
+				if (!displayedInput) {
+					printUserMessage(rawInput);
+					displayedInput = true;
+				}
+				printInfo('Resuming interrupted task from where it stopped…');
+				userInput = buildContinueMessage(taskState);
+				taskState.status = 'running';
+				taskState.reason = '';
+			} else {
+				taskState.goal = userInput.replace(/\s+/g, ' ').slice(0, 300);
+				taskState.reason = '';
+				taskState.lastActions = [];
+				taskState.status = 'running';
 			}
 
 			const userMsg: ConversationMessage = {
@@ -858,10 +997,11 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				void appendToTimeline(projectRoot, activeAgentName || 'Agent-Termo', 'User request', ['Request: ' + userInput.replace(/\s+/g, ' ').slice(0, 700)], []);
 					if (!displayedInput) printUserMessage(userInput);
 
-			const useTools = mightNeedTools(userInput);
-			const tools = useTools ? nimClient.buildToolDefs(TOOL_DEFINITIONS) : undefined;
+			// Tools are always available: gating them by keywords made the agent
+			// break mid-task whenever a follow-up message lacked a trigger word.
+			const tools = nimClient.buildToolDefs(TOOL_DEFINITIONS);
 
-				if (useTools) {
+				{
 					startSpinner('Working');
 					try {
 							const result = await withEscapeCancellation(nimClient, () => nimClient.complete(conversation, tools, (stage) => printInfo(stage)));
@@ -889,7 +1029,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						if (narration) printAssistantMessage(narration);
 
 						// Run the tool-call loop: execute tools, feed results back, repeat
-						const finalText = await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, permissionMode, allowedCommands);
+						const finalText = await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, permissionMode, allowedCommands, taskState);
 						if (finalText && finalText.trim() && finalText.trim() !== 'null') {
 							printAssistantMessage(finalText.trim());
 						}
@@ -897,6 +1037,12 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					} catch (err) {
 						stopSpinner();
 						if (isRequestCancelled(err)) {
+							// The task can be resumed with "continue".
+							if (taskState.status === 'running') {
+								taskState.status = 'interrupted';
+								taskState.reason = 'cancelled by user';
+								printInfo('Task paused. Type "continue" to resume from where it stopped.');
+							}
 							continue mainLoop;
 						}
 						// Tool calling failed (e.g. HTTP 400 because the model does not
@@ -912,7 +1058,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						if (toolCalls.length > 0) {
 							const narration = (fallback.content ?? '').trim().replace(/^null$/, '').trim();
 							if (narration && !narration.includes('"tool_calls"')) printAssistantMessage(narration);
-							const finalText = await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, permissionMode, allowedCommands);
+							const finalText = await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, permissionMode, allowedCommands, taskState);
 							if (finalText && finalText.trim() && finalText.trim() !== 'null') {
 								rememberChat(projectRoot, 'Assistant', finalText);
 								printAssistantMessage(finalText.trim());
@@ -926,13 +1072,21 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 							}
 					} catch (err2) {
 						printError('NVIDIA NIM provider error: ' + providerError(err2));
-						conversation.pop();
+						// Keep the conversation intact so "continue" can resume.
+						if (taskState.status === 'running') {
+							taskState.status = 'interrupted';
+							taskState.reason = providerError(err2);
+							appendToAgentTermoMemory('### Interrupted task\n\nGoal: ' + taskState.goal + '\nReason: ' + taskState.reason + '\nLast actions: ' + taskState.lastActions.join('; '), projectRoot);
+							printInfo('The task was interrupted. Type "continue" to resume from where it stopped.');
+						}
 						continue mainLoop;
 					}
 				}
-			} else {
-				await replyWithText(conversation, nimClient, projectRoot);
 			}
+
+			// The run reached the end without throwing: the task is complete.
+			taskState.status = 'idle';
+			taskState.reason = '';
 
 			if (conversation.length > 42) {
 				compactConversation(conversation);
@@ -941,6 +1095,12 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 			input.close();
 			stopSpinner();
 			printError('Session error: ' + (err instanceof Error ? err.message : String(err)));
+			if (taskState.status === 'running') {
+				taskState.status = 'interrupted';
+				taskState.reason = err instanceof Error ? err.message : String(err);
+				appendToAgentTermoMemory('### Interrupted task\n\nGoal: ' + taskState.goal + '\nReason: ' + taskState.reason + '\nLast actions: ' + taskState.lastActions.join('; '), projectRoot);
+				printInfo('The task was interrupted. Type "continue" to resume from where it stopped.');
+			}
 		}
 	}
 }

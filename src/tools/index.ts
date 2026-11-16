@@ -4,7 +4,7 @@
 
 import { readFile as readFileAsync, writeFile as writeFileAsync, unlink as unlinkAsync } from 'node:fs/promises';
 import { resolve, isAbsolute, relative } from 'node:path';
-import { exec as execAsync } from 'node:child_process';
+import { exec as execAsync, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { default as globAsync } from 'glob';
 import { simpleGit } from 'simple-git';
@@ -34,6 +34,20 @@ const TOOL_MAP: Record<string, (...args: any[]) => Promise<ToolResult>> = {
 
 // ── Re-exported tool definitions for OpenAI schema ───────────────────────────
 export const TOOL_DEFS = TOOL_MAP;
+
+// ── Terminal streaming hooks (wired to the UI by main.ts) ───────────────────
+//
+// bash:execute streams live output through these hooks so the running
+// terminal is visible in the bottom panel while the command executes.
+export interface TerminalHooks {
+	onStart?: (command: string) => void;
+	onOutput?: (text: string) => void;
+	onEnd?: (exitCode: number | null) => void;
+}
+let terminalHooks: TerminalHooks = {};
+export function setTerminalHooks(hooks: TerminalHooks): void {
+	terminalHooks = hooks;
+}
 
 // ── Public API ──────────────────────────────────────────────────────────────
 
@@ -324,15 +338,56 @@ async function toolBash(args: Record<string, unknown>, projectRoot: string): Pro
 		}
 	}
 
-	try {
-		const { stdout, stderr } = await exec(command, { cwd: fullCwd, timeout } as { cwd: string; timeout: number });
-		const output = [stdout, stderr].filter(Boolean).join('\n');
-		return { id: '', name: 'bash:execute', success: true, output: output || '(no output)', durationMs: 0 };
-	} catch (err: unknown) {
-		const errorObj = err as { message?: string; stdout?: string; stderr?: string };
-		const combined = [errorObj.stdout, errorObj.stderr].filter(Boolean).join('\n');
-		return { id: '', name: 'bash:execute', success: false, error: combined.slice(0, 500) || errorObj.message, durationMs: 0 };
-	}
+	// Stream the command live (like Claude Code / opencode): output is piped
+	// to the terminal panel hooks while it runs, and captured for the model.
+	return await new Promise<ToolResult>((resolve) => {
+		let settled = false;
+		let output = '';
+		let timer: ReturnType<typeof setTimeout> | null = null;
+		const finish = (success: boolean, exitCode: number | null, error?: string): void => {
+			if (settled) return;
+			settled = true;
+			if (timer) clearTimeout(timer);
+			terminalHooks.onEnd?.(exitCode);
+			resolve(
+				success
+					? { id: '', name: 'bash:execute', success: true, output: output || '(no output)', durationMs: 0 }
+					: {
+						id: '',
+						name: 'bash:execute',
+						success: false,
+						error: (output ? output.slice(0, 500) + '\n' : '') + (error ?? `Command failed with exit code ${exitCode ?? 'unknown'}`),
+						durationMs: 0,
+					},
+			);
+		};
+
+		terminalHooks.onStart?.(command);
+		const child = spawn(command, {
+			cwd: fullCwd,
+			shell: true,
+			windowsHide: true,
+			env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' },
+		});
+
+		const capture = (chunk: Buffer | string): void => {
+			const text = chunk.toString();
+			output += text;
+			terminalHooks.onOutput?.(text);
+		};
+		child.stdout?.on('data', capture);
+		child.stderr?.on('data', capture);
+		child.on('error', (err) => finish(false, null, err.message));
+		child.on('close', (code) => finish(code === 0, code));
+
+		if (timeout > 0) {
+			timer = setTimeout(() => {
+				terminalHooks.onOutput?.(`\n[agent-termo] timed out after ${timeout}s`);
+				child.kill('SIGKILL');
+				finish(false, null, `Command timed out after ${timeout}s`);
+			}, timeout * 1000);
+		}
+	});
 }
 
 // ── Git Tools ────────────────────────────────────────────────────────────────

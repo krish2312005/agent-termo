@@ -5,6 +5,11 @@
 // terminal while a bordered input box and a status line stay pinned to the
 // bottom. Implemented with a DECSTBM scroll region, so every console.log /
 // process.stdout.write elsewhere in the app lands in the scrolling region.
+//
+// The input box supports multi-line editing (Shift+Enter / pasted text keeps
+// its newlines) and grows upward, scrolling the output region with it. While
+// typing a slash command or @mention, an opencode-style completion popup is
+// rendered directly above the input box.
 // =============================================================================
 
 import Chalk from 'chalk';
@@ -17,11 +22,17 @@ const CSI = '\x1b[';
 const SAVE = '\x1b7'; // DECSC — save cursor
 const RESTORE = '\x1b8'; // DECRC — restore cursor
 
-/** Rows pinned to the bottom: top border, input row, bottom border, status row. */
-const CHROME_ROWS = 4;
 const MIN_ROWS = 12;
 const MIN_COLS = 40;
 const PLACEHOLDER = 'Ask anything… or type / for commands';
+/** Maximum input rows rendered inside the box (extra lines scroll). */
+const MAX_INPUT_LINES = 16;
+/** Maximum rows in the command completion popup. */
+const MAX_POPUP_ROWS = 8;
+/** Rows of live output shown in the terminal panel below the input box. */
+const TERM_PANEL_LINES = 6;
+/** Key(s) that toggle (close/open) the terminal panel. */
+const TERM_TOGGLE_KEYS = new Set(['ctrl+o', 'ctrl+t']);
 
 export interface CommandInfo {
 	name: string;
@@ -31,7 +42,7 @@ export interface CommandInfo {
 const S = {
 	active: false,
 	editing: false,
-	/** False when the output position saved at the start of editing is stale (resize). */
+	/** False when the output position saved at the start of editing is stale (resize / scrolled region). */
 	savedValid: true,
 	rows: 0,
 	model: '',
@@ -45,7 +56,27 @@ const S = {
 	nextInput: '',
 	buffer: '',
 	cursor: 0,
-	offset: 0,
+	/** First buffer line rendered in the input box (vertical scroll). */
+	topLine: 0,
+	/** Selected row in the completion popup. */
+	popupSel: 0,
+	/** Buffer value for which the popup was dismissed with Escape. */
+	popupHiddenFor: '',
+	/** Rows the last rendered popup occupied (cleared when it disappears). */
+	lastPopupRows: 0,
+	lastPopupTopRow: 0,
+	/** Live terminal panel: the running (or last) bash command + its output. */
+	term: null as null | {
+		command: string;
+		/** Sanitised output lines (ANSI stripped, \r progress lines folded). */
+		lines: string[];
+		/** Partial line still waiting for a newline. */
+		pending: string;
+		/** null = still running; number = exit code. */
+		exitCode: null | number;
+	},
+	/** Whether the terminal panel is shown below the input box. */
+	termOpen: false,
 };
 
 export function setCommands(commands: CommandInfo[]): void {
@@ -82,6 +113,106 @@ function shortPath(p: string): string {
 	return home && p.startsWith(home) ? '~' + p.slice(home.length) : p;
 }
 
+// =============================================================================
+// Terminal panel (live bash output, Claude Code style)
+//
+// While the agent runs terminal commands the output is streamed into a panel
+// pinned below the input box. Ctrl+O (or Ctrl+T) toggles it, so a running
+// terminal can be closed and reopened at any time.
+// =============================================================================
+
+let termPaintTimer: ReturnType<typeof setTimeout> | null = null;
+
+function termPanelRows(): number {
+	if (!S.term || !S.termOpen) return 0;
+	const shown = Math.min(TERM_PANEL_LINES, Math.max(1, S.term.lines.length));
+	return shown + 2; // header row + bottom border
+}
+
+/** Strip ANSI escapes and fold \r progress-bar rewrites into single lines. */
+function termCleanLine(line: string): string {
+	const plain = line.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '');
+	const last = plain.split('\r').pop() ?? '';
+	return last.replace(/\t/g, '  ').slice(0, 400);
+}
+
+function termPaint(): void {
+	if (!S.active) return;
+	if (termPaintTimer) return;
+	termPaintTimer = setTimeout(() => {
+		termPaintTimer = null;
+		paint();
+	}, 60);
+}
+
+/** A terminal command started: open the panel and begin streaming its output. */
+export function startTerminalPanel(command: string): void {
+	clearTerminalPanel();
+	S.term = { command, lines: [], pending: '', exitCode: null };
+	S.termOpen = true;
+	syncTermKeyListener();
+	paint();
+}
+
+/** Stream raw stdout/stderr text into the panel. */
+export function appendTerminalOutput(text: string): void {
+	if (!S.term) return;
+	S.term.pending += text;
+	const parts = S.term.pending.split('\n');
+	S.term.pending = parts.pop() ?? '';
+	for (const part of parts) S.term.lines.push(termCleanLine(part));
+	if (S.term.lines.length > 500) S.term.lines.splice(0, S.term.lines.length - 500);
+	termPaint();
+}
+
+/** The terminal command finished; keep the panel open with the final output. */
+export function finishTerminalPanel(exitCode: number | null): void {
+	if (!S.term) return;
+	if (S.term.pending) {
+		S.term.lines.push(termCleanLine(S.term.pending));
+		S.term.pending = '';
+	}
+	S.term.exitCode = exitCode ?? -1;
+	syncTermKeyListener();
+	paint();
+}
+
+/** Toggle the terminal panel open/closed (Ctrl+O / Ctrl+T). */
+export function toggleTerminalPanel(): void {
+	if (!S.term) return;
+	S.termOpen = !S.termOpen;
+	syncTermKeyListener();
+	paint();
+}
+
+/** Close the terminal panel and drop the session (next command reopens it). */
+export function clearTerminalPanel(): void {
+	S.term = null;
+	S.termOpen = false;
+	syncTermKeyListener();
+	paint();
+}
+
+export function terminalPanelVisible(): boolean {
+	return Boolean(S.term && S.termOpen);
+}
+
+// A background key listener while the user is NOT editing (during the agent
+// tool loop), so Ctrl+O can close the running terminal at any time.
+let termKeyStop: (() => void) | null = null;
+
+function syncTermKeyListener(): void {
+	const want = Boolean(S.term) && !S.editing && S.active;
+	if (want && !termKeyStop) {
+		termKeyStop = listenKeys((key) => {
+			if (TERM_TOGGLE_KEYS.has(key.name)) toggleTerminalPanel();
+		});
+	} else if (!want && termKeyStop) {
+		termKeyStop();
+		termKeyStop = null;
+	}
+}
+
 export function layoutSupported(): boolean {
 	return Boolean(
 		out.isTTY && process.stdin.isTTY && (out.rows ?? 0) >= MIN_ROWS && (out.columns ?? 0) >= MIN_COLS,
@@ -89,94 +220,379 @@ export function layoutSupported(): boolean {
 }
 
 // =============================================================================
+// Buffer geometry (multi-line aware)
+// =============================================================================
+
+function bufferLines(): string[] {
+	return S.buffer.split('\n');
+}
+
+function cursorPos(): { line: number; col: number } {
+	const before = S.buffer.slice(0, S.cursor);
+	const line = before.split('\n').length - 1;
+	const col = S.cursor - (before.lastIndexOf('\n') + 1);
+	return { line, col };
+}
+
+function lineStartIndex(line: number): number {
+	const lines = bufferLines();
+	let index = 0;
+	for (let i = 0; i < line && i < lines.length; i++) index += (lines[i] ?? '').length + 1;
+	return index;
+}
+
+function maxVisibleLines(): number {
+	return Math.max(1, Math.min(MAX_INPUT_LINES, dims().rows - 12));
+}
+
+function visibleLines(): number {
+	return Math.min(bufferLines().length, maxVisibleLines());
+}
+
+/** Rows pinned to the bottom: borders + input lines + status line (+ panel). */
+function chromeRows(): number {
+	return visibleLines() + 3 + termPanelRows();
+}
+
+/** Horizontal window for one input line so the cursor stays visible. */
+function lineOffset(col: number, width: number): number {
+	if (col < width) return 0;
+	return col - width + 1;
+}
+
+// =============================================================================
+// Scroll region management
+//
+// The chrome height changes with the number of input lines, so the DECSTBM
+// scroll region is adjusted dynamically: when the chrome grows, the region
+// content is scrolled up so the latest output stays visible; when it shrinks,
+// the rows the box art occupied are cleared.
+// =============================================================================
+
+let regionBottomRow = 0;
+
+function syncRegion(): void {
+	if (!S.active) return;
+	const want = Math.max(1, dims().rows - chromeRows());
+	if (regionBottomRow === want) return;
+	if (regionBottomRow > want) {
+		const delta = regionBottomRow - want;
+		if (delta > 0) {
+			// Chrome grew — push the scrolling region content up so the most
+			// recent output remains visible above the taller input box.
+			out.write(`${CSI}${delta}S`);
+			S.savedValid = false;
+		}
+	} else if (regionBottomRow > 0) {
+		// Chrome shrank — clear the rows the box art used to occupy.
+		let clear = '';
+		for (let r = regionBottomRow + 1; r <= want; r++) clear += `${CSI}${r};1H${CSI}2K`;
+		out.write(clear);
+	}
+	regionBottomRow = want;
+	out.write(`${CSI}1;${want}r`);
+}
+
+function regionBottom(): number {
+	return Math.max(1, dims().rows - chromeRows());
+}
+
+// =============================================================================
+// Completion popup (opencode style, rendered above the input box)
+// =============================================================================
+
+interface PopupState {
+	kind: 'command' | 'mention';
+	items: Array<{ label: string; description: string }>;
+	/** For mentions: buffer range the selected item replaces. */
+	start?: number;
+	end?: number;
+}
+
+/**
+ * The mention token at the cursor: an @ anywhere in the line followed by a
+ * partial name with no whitespace, so files/agents can be referenced in the
+ * middle of a prompt (like Claude Code), not only at the start.
+ */
+function activeMention(): { start: number; typed: string } | null {
+	const pos = cursorPos();
+	const line = bufferLines()[pos.line] ?? '';
+	const before = line.slice(0, pos.col);
+	const match = /(^|\s)@([\w./@\\-]*)$/.exec(before);
+	if (!match) return null;
+	const at = before.lastIndexOf('@', pos.col - 1);
+	if (at < 0) return null;
+	return { start: lineStartIndex(pos.line) + at, typed: match[2] ?? '' };
+}
+
+function activePopup(): PopupState | null {
+	if (!S.editing) return null;
+	if (S.buffer === S.popupHiddenFor) return null;
+	const buffer = S.buffer;
+	if (buffer.startsWith('/') && !buffer.includes(' ') && !buffer.includes('\n') && buffer.length > 0) {
+		const typed = buffer.toLowerCase();
+		const hits = S.commands.filter((cmd) => cmd.name.toLowerCase().startsWith(typed));
+		if (hits.length === 0) return null;
+		return { kind: 'command', items: hits.map((h) => ({ label: h.name, description: h.description })) };
+	}
+	// @mentions: anywhere in any line, at the cursor.
+	if (!buffer.startsWith('/')) {
+		const mention = activeMention();
+		if (mention) {
+			const typed = mention.typed.toLowerCase();
+			const agents = S.agentNames
+				.filter((name) => name.toLowerCase().startsWith(typed))
+				.map((name) => ({ label: '@' + name, description: 'agent' }));
+			const files = S.contextFiles
+				.filter((file) => file.toLowerCase().includes(typed))
+				.map((file) => ({ label: '@' + file, description: 'file' }));
+			const hits = [...agents, ...files].slice(0, MAX_POPUP_ROWS);
+			if (hits.length === 0) return null;
+			return { kind: 'mention', items: hits, start: mention.start, end: S.cursor };
+		}
+	}
+	return null;
+}
+
+function popupString(topBorderRow: number): string {
+	const popup = activePopup();
+	if (!popup) return '';
+	const { cols } = dims();
+	const width = Math.min(cols - 4, 64);
+	if (width < 30) return '';
+	const inner = width - 2;
+	// File paths need a wider column than command names.
+	const nameWidth = popup.kind === 'mention' ? Math.min(30, inner - 10) : 16;
+	const descWidth = inner - nameWidth - 3;
+
+	const items = popup.items;
+	// Fit the popup into the rows available above the input box; one blank
+	// row of breathing space keeps it visually separate from the input border.
+	const room = Math.max(0, topBorderRow - 2);
+	const count = Math.min(items.length, MAX_POPUP_ROWS, room);
+	if (count < 1) return '';
+	const height = count + 2;
+	const top = topBorderRow - height - 1; // one blank row below the popup
+
+	// Window the list around the selection.
+	let first = 0;
+	if (S.popupSel >= count) first = S.popupSel - count + 1;
+	first = Math.max(0, Math.min(first, items.length - count));
+
+	const at = (row: number, text: string): string => `${CSI}${row};1H${CSI}2K  ${text}`;
+	const border = (open: string, close: string): string => open + '─'.repeat(inner) + close;
+
+	// The popup keeps the app's own theme (magenta border, cyan names) with a
+	// magenta highlight on the selected row.
+	const parts: string[] = [at(top, c.magenta(border('╭', '╮')))];
+	for (let i = 0; i < count; i++) {
+		const item = items[first + i];
+		if (!item) break;
+		const selected = first + i === S.popupSel;
+		const name = clipText(item.label, nameWidth).padEnd(nameWidth);
+		const desc = clipText(item.description, descWidth).padEnd(descWidth);
+		const rowInner = (' ' + name + ' ' + desc).padEnd(inner).slice(0, inner);
+		parts.push(
+			selected
+				? at(top + 1 + i, c.bgMagenta.white('│' + rowInner + '│'))
+				: at(top + 1 + i, c.magenta('│') + ' ' + c.cyan(name) + ' ' + c.dim(desc) + ' ' + c.magenta('│')),
+		);
+	}
+
+	parts.push(at(top + height - 1, c.magenta(border('╰', '╯'))));
+	return parts.join('');
+}
+
+/**
+ * Erase every row the popup may have touched since the last paint — including
+ * rows a taller previous popup occupied — so no ghost fragments remain when it
+ * shrinks, moves, or disappears. Rows the popup is about to redraw are skipped.
+ */
+/**
+ * Erase every row the popup may have touched since the last paint — including
+ * rows a taller previous popup occupied — so no ghost fragments remain when it
+ * shrinks, moves, or disappears. The popup redraws its own rows right after.
+ */
+function popupClearString(): string {
+	// The rows that may still hold popup art: the extent of the previous
+	// popup plus the rows the popup is about to occupy. Without this, the
+	// first popup was never tracked and its rows were left behind whenever
+	// the list shrank (ghost panels).
+	const popup = activePopup();
+	const zoneTop = popup ? popupTopRow(popup) : -1;
+	const prevTop = S.lastPopupTopRow;
+	S.lastPopupTopRow = zoneTop > 0 ? zoneTop : 0;
+	const from = Math.min(prevTop > 0 ? prevTop : Number.POSITIVE_INFINITY, zoneTop > 0 ? zoneTop : Number.POSITIVE_INFINITY);
+	if (!Number.isFinite(from) || from <= 0) return '';
+	const to = dims().rows - chromeRows(); // gap row above the input top border
+	let clear = '';
+	for (let r = from; r <= to; r++) {
+		if (r >= 1) clear += `${CSI}${r};1H${CSI}2K`;
+	}
+	return clear;
+}
+
+/** Row the given popup starts on (mirrors the geometry in popupString). */
+function popupTopRow(popup: NonNullable<ReturnType<typeof activePopup>>): number {
+	const { cols, rows } = dims();
+	const width = Math.min(cols - 4, 64);
+	if (width < 30) return 1;
+	const topBorderRow = rows - chromeRows() + 1; // input box top border row
+	const room = Math.max(0, topBorderRow - 2);
+	const count = Math.min(popup.items.length, MAX_POPUP_ROWS, room);
+	if (count < 1) return 1;
+	return topBorderRow - (count + 2) - 1;
+}
+
+// =============================================================================
 // Bottom chrome (input box + status line)
 // =============================================================================
 
 function statusLine(max: number): string {
-	// While typing a slash command, the status line shows matching commands.
-	if (S.editing && S.buffer.startsWith('/') && !S.buffer.includes(' ')) {
-		const typed = S.buffer.toLowerCase();
-		const hits = S.commands.filter((cmd) => cmd.name.startsWith(typed));
-		const only = hits[0];
-		if (hits.length === 1 && only) {
-			return ' ' + c.cyan(only.name) + c.dim(clipText(' — ' + only.description, max - only.name.length - 1));
-		}
-		if (hits.length > 1) {
-			return c.cyan(clipText(' ' + hits.map((h) => h.name).join('  '), max));
-		}
-	}
-	if (S.editing && /^@[^\s]*$/.test(S.buffer)) {
-		const typed = S.buffer.slice(1).toLowerCase();
-		const agents = S.agentNames.filter((name) => name.toLowerCase().startsWith(typed)).map((name) => '@' + name);
-		const files = S.contextFiles.filter((file) => file.toLowerCase().startsWith(typed)).map((file) => '@' + file);
-		const hits = [...agents, ...files].slice(0, 8);
-		if (hits.length > 0) return c.cyan(clipText(' ' + hits.join('  '), max));
-	}
+	const hint =
+		S.permissionMode === 'auto'
+			? 'AUTO-ACCEPT · /permissions ask to disable'
+			: S.permissionMode === 'files'
+				? 'FILES-AUTO · terminal commands still ask'
+				: 'shift+enter newline · /help · ctrl+c interrupt';
 
-	const hint = S.permissionMode === 'auto' ? 'AUTO-ACCEPT · /permissions ask to disable' : S.permissionMode === 'files' ? 'FILES-AUTO · terminal commands still ask' : '/help · @agent · ctrl+c to interrupt';
-	const modelPart = clipText(' ' + S.model, max);
-	const thinkingPart = clipText(' · think:' + S.thinking, max);
-	const usagePart = clipText(' · ' + S.usage, max);
-	const roomWithHint = max - modelPart.length - thinkingPart.length - usagePart.length - hint.length - 2;
-	const showHint = roomWithHint >= 15;
-	const projPart = clipText(
-		' · ' + shortPath(S.project),
-		showHint ? roomWithHint : Math.max(0, max - modelPart.length - thinkingPart.length - usagePart.length),
-	);
-	const gap = Math.max(1, max - modelPart.length - thinkingPart.length - usagePart.length - projPart.length - hint.length);
-	return c.cyan(modelPart) + c.yellow(thinkingPart) + c.blue(usagePart) + (S.permissionMode === 'auto' ? c.red.bold(' AUTO') : S.permissionMode === 'files' ? c.yellow.bold(' FILES') : '') + c.dim(projPart + (showHint ? ' '.repeat(gap) + hint : ''));
+	// The model name is the most important part of the status line: it is
+	// always shown in full (never truncated) and lower-priority segments are
+	// dropped instead when the terminal is narrow.
+	const modelPart = S.model ? ' ' + S.model : '';
+	const modelShown = modelPart.length <= max ? modelPart : clipText(modelPart, max);
+
+	const segments: Array<{ text: string; paint: (s: string) => string }> = [
+		{ text: ' · think:' + S.thinking, paint: (s) => c.yellow(s) },
+		{ text: ' · ' + S.usage, paint: (s) => c.blue(s) },
+		{ text: ' · ' + shortPath(S.project), paint: (s) => c.dim(s) },
+		{ text: '  ' + hint, paint: (s) => c.dim(s) },
+	];
+
+	let used = modelShown.length;
+	let result = c.cyan(modelShown);
+	if (S.permissionMode === 'auto') result += c.red.bold(' AUTO');
+	else if (S.permissionMode === 'files') result += c.yellow.bold(' FILES');
+	for (const segment of segments) {
+		if (used + segment.text.length <= max) {
+			result += segment.paint(segment.text);
+			used += segment.text.length;
+		}
+	}
+	return result;
 }
 
 function chromeString(): string {
 	const { rows, cols } = dims();
 	const width = Math.max(1, cols - 6); // '│ ❯ ' + text + ' │'
+	const lines = bufferLines();
+	const vis = visibleLines();
+	const pos = cursorPos();
 
-	// Keep the cursor inside the visible window of the input line.
-	S.offset = Math.min(S.offset, Math.max(0, S.buffer.length - width + 1));
-	if (S.cursor < S.offset) S.offset = S.cursor;
-	if (S.cursor > S.offset + width - 1) S.offset = S.cursor - width + 1;
+	// Keep the cursor line inside the visible window.
+	if (pos.line < S.topLine) S.topLine = pos.line;
+	if (pos.line >= S.topLine + vis) S.topLine = pos.line - vis + 1;
+	S.topLine = Math.max(0, Math.min(S.topLine, Math.max(0, lines.length - vis)));
 
-	const edge = S.permissionMode === 'auto' ? c.red : S.permissionMode === 'files' ? c.yellow : (S.editing ? c.magenta : c.dim);
-	const body = S.buffer
-		? S.buffer.slice(S.offset, S.offset + width).padEnd(width)
-		: c.dim(clipText(PLACEHOLDER, width).padEnd(width));
+	const edge =
+		S.permissionMode === 'auto' ? c.red : S.permissionMode === 'files' ? c.yellow : S.editing ? c.magenta : c.dim;
+	const prompt =
+		S.permissionMode === 'auto' ? c.red.bold('❯') : S.permissionMode === 'files' ? c.yellow.bold('❯') : c.magenta.bold('❯');
 
-	const top = rows - 3;
+	// Terminal panel sits between the input box and the status line.
+	const panel = termPanelRows();
+	const bottomBorderRow = rows - 1 - panel;
+	// Input rows sit directly above the bottom border; the top border is one
+	// row above them (it was previously drawn under the first input line and
+	// erased by it, which hid it completely).
+	const topBorderRow = bottomBorderRow - vis - 1;
 	const line = (row: number, text: string): string => `${CSI}${row};1H${CSI}2K${text}`;
-	return [
-		line(top, edge('╭' + '─'.repeat(cols - 2) + '╮')),
-			line(top + 1, edge('│') + ' ' + (S.permissionMode === 'auto' ? c.red.bold('❯') : S.permissionMode === 'files' ? c.yellow.bold('❯') : c.magenta.bold('❯')) + ' ' + body + ' ' + edge('│')),
-		line(top + 2, edge('╰' + '─'.repeat(cols - 2) + '╯')),
-		line(rows, statusLine(cols - 1)),
-	].join('');
+
+	const parts: string[] = [];
+	// Completion popup floats above the input box.
+	parts.push(popupString(topBorderRow));
+	parts.push(line(topBorderRow, edge('╭' + '─'.repeat(cols - 2) + '╮')));
+
+	for (let i = 0; i < vis; i++) {
+		const idx = S.topLine + i;
+		const text = lines[idx] ?? '';
+		const isCursorLine = idx === pos.line;
+		const offset = isCursorLine ? lineOffset(pos.col, width) : 0;
+		let body: string;
+		if (isCursorLine) {
+			body = text.slice(offset, offset + width).padEnd(width);
+		} else if (text) {
+			body = clipText(text, width).padEnd(width);
+		} else if (lines.length === 1 && !S.buffer && idx === 0) {
+			body = c.dim(clipText(PLACEHOLDER, width).padEnd(width));
+		} else {
+			body = ' '.repeat(width);
+		}
+		const prefix = idx === 0 ? edge('│') + ' ' + prompt + ' ' : edge('│') + '   ';
+		parts.push(line(bottomBorderRow - vis + i, prefix + body + ' ' + edge('│')));
+	}
+
+	parts.push(line(bottomBorderRow, edge('╰' + '─'.repeat(cols - 2) + '╯')));
+
+	// ── Terminal panel: live output of the agent's bash commands ──────────
+	if (S.term && panel > 0) {
+		const shown = panel - 2;
+		const headerRow = rows - panel;
+		const status =
+			S.term.exitCode === null
+				? c.yellow('● running')
+				: S.term.exitCode === 0
+					? c.green(`✓ exit ${S.term.exitCode}`)
+					: c.red(`✗ exit ${S.term.exitCode}`);
+		const title = clipText(S.term.command, Math.max(8, cols - 34));
+		const hint = c.dim(' ctrl+o close ');
+		parts.push(
+			line(
+				headerRow,
+				c.cyan('╭─ bash ─ ') + c.bold(clipText(title, cols - 30)) + ' ' + status + c.cyan('─'.repeat(Math.max(1, cols - 30 - title.length - 20))) + hint + c.cyan('╮'),
+			),
+		);
+		const content = S.term.lines.slice(-shown);
+		for (let i = 0; i < shown; i++) {
+			const text = content[i] ?? '';
+			const body = clipText(text, width).padEnd(width);
+			parts.push(line(headerRow + 1 + i, c.cyan('│') + ' ' + body + ' ' + c.cyan('│')));
+		}
+		parts.push(line(rows - 1, c.cyan('╰' + '─'.repeat(cols - 2) + '╯')));
+	}
+
+	parts.push(line(rows, statusLine(cols - 1)));
+	return parts.join('');
 }
 
 function inputCursor(): string {
-	const { rows } = dims();
-	return `${CSI}${rows - 2};${5 + S.cursor - S.offset}H`;
+	const { rows, cols } = dims();
+	const pos = cursorPos();
+	const vis = visibleLines();
+	const width = Math.max(1, cols - 6);
+	const offset = lineOffset(pos.col, width);
+	// The cursor must sit on the row being edited, which moves with the
+	// number of input lines and the terminal panel below the box.
+	const row = rows - 1 - termPanelRows() - vis + (pos.line - S.topLine);
+	return `${CSI}${Math.max(1, Math.min(rows, row))};${5 + pos.col - offset}H`;
 }
 
 function paint(): void {
 	if (!S.active) return;
+	syncRegion();
 	if (S.editing) {
 		// The saved slot holds the output position while editing: don't touch it.
-		out.write(CSI + '?25l' + chromeString() + inputCursor() + CSI + '?25h');
+		out.write(CSI + '?25l' + popupClearString() + chromeString() + inputCursor() + CSI + '?25h');
 	} else {
-		out.write(SAVE + chromeString() + RESTORE);
+		out.write(SAVE + popupClearString() + chromeString() + RESTORE);
 	}
-}
-
-function regionBottom(): number {
-	return Math.max(1, dims().rows - CHROME_ROWS);
-}
-
-function applyRegion(): void {
-	out.write(`${CSI}1;${regionBottom()}r`); // also homes the cursor
 }
 
 function onResize(): void {
 	const { rows } = dims();
-	if (rows === S.rows) {
+	S.lastPopupRows = 0;
+	S.lastPopupTopRow = 0;
+	if (rows === S.rows && regionBottomRow === Math.max(1, rows - chromeRows())) {
 		paint();
 		return;
 	}
@@ -184,7 +600,8 @@ function onResize(): void {
 	S.rows = rows;
 	S.savedValid = false;
 	out.write(`${CSI}2J${CSI}H`);
-	applyRegion();
+	regionBottomRow = 0;
+	syncRegion();
 	out.write(chromeString() + `${CSI}${regionBottom()};1H`);
 	if (S.editing) paint();
 }
@@ -201,8 +618,12 @@ export function initScreen(info: { model: string; project: string; thinking?: st
 
 	S.active = true;
 	S.rows = dims().rows;
+	S.buffer = '';
+	S.cursor = 0;
+	S.topLine = 0;
 	out.write(`${CSI}2J${CSI}H`);
-	applyRegion();
+	regionBottomRow = 0;
+	syncRegion();
 	out.write(chromeString() + `${CSI}1;1H`);
 	out.on('resize', onResize);
 	process.on('exit', teardownScreen);
@@ -224,17 +645,24 @@ export function setPermissionMode(permissionMode: 'ask' | 'files' | 'auto'): voi
 /** Clear everything and start output again from the top (used by /clear). */
 export function resetScreen(): void {
 	out.write(`${CSI}2J${CSI}H`);
+	S.lastPopupRows = 0;
+	S.lastPopupTopRow = 0;
 	if (!S.active) return;
-	applyRegion();
+	regionBottomRow = 0;
+	syncRegion();
 	out.write(chromeString() + `${CSI}1;1H`);
 }
 
 export function teardownScreen(): void {
 	if (!S.active) return;
 	S.active = false;
+	if (termKeyStop) {
+		termKeyStop();
+		termKeyStop = null;
+	}
 
 	const { rows } = dims();
-	const first = Math.max(1, rows - CHROME_ROWS + 1);
+	const first = Math.max(1, rows - chromeRows() + 1);
 	let wipe = '';
 	for (let r = first; r <= rows; r++) wipe += `${CSI}${r};1H${CSI}2K`;
 
@@ -242,6 +670,7 @@ export function teardownScreen(): void {
 	const head = S.editing ? '' : SAVE;
 	const back = S.editing && !S.savedValid ? `${CSI}${first};1H` : RESTORE;
 	out.write(head + CSI + 'r' + wipe + back + CSI + '?25h' + CSI + '?2004l');
+	regionBottomRow = 0;
 }
 
 // =============================================================================
@@ -258,7 +687,17 @@ const TOKEN_RE = /\x1b\[200~|\x1b\[201~|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1bO[A-Za-z]|
 
 const NAMED: Record<string, string> = {
 	'\r': 'enter',
-	'\n': 'enter',
+	// macOS Terminal.app and several other terminals encode Shift+Enter as
+	// ESC+CR; opencode, Claude Code and Codex all accept it as a newline.
+	'\x1b\r': 'shift+enter',
+	'\x1b\n': 'shift+enter',
+	// A bare LF is Shift+Enter on terminals that send a distinct newline
+	// (most terminal emulators send CR for Enter). Inserting a line instead
+	// of submitting matches the Shift+Enter behavior users expect.
+	'\n': 'shift+enter',
+	// Kitty-keyboard-protocol encodings of Shift+Enter / Ctrl+Enter.
+	'\x1b[13;2u': 'shift+enter',
+	'\x1b[13;5u': 'shift+enter',
 	'\x03': 'ctrl+c',
 	'\x04': 'ctrl+d',
 	'\x7f': 'backspace',
@@ -295,6 +734,14 @@ const NAMED: Record<string, string> = {
 	'\x1b[1;3C': 'word-right',
 	'\x1bf': 'word-right',
 	'\x1b\x7f': 'ctrl+w',
+	'\x0f': 'ctrl+o',
+	'\x14': 'ctrl+t',
+	// Kitty keyboard protocol encodings (enabled below) — without them some
+	// terminals cannot distinguish Shift+Enter from Enter at all.
+	'\x1b[27u': 'escape',
+	'\x1b[98;3u': 'word-left',
+	'\x1b[102;3u': 'word-right',
+	'\x1b[13;3u': 'shift+enter',
 };
 
 /**
@@ -354,7 +801,7 @@ export function listenKeys(handler: (key: Key) => void, onError?: () => void): (
 		if (stopped) return;
 		stopped = true;
 		stdin.off('data', onData);
-		if (out.isTTY) out.write(`${CSI}?2004l`);
+		if (out.isTTY) out.write(`${CSI}?2004l${CSI}<u${CSI}>4;0m`);
 		stdin.setRawMode?.(false);
 		stdin.pause();
 	};
@@ -372,7 +819,15 @@ export function listenKeys(handler: (key: Key) => void, onError?: () => void): (
 	stdin.setRawMode?.(true);
 	stdin.resume();
 	stdin.setEncoding('utf8');
-	if (out.isTTY) out.write(`${CSI}?2004h`); // bracketed paste
+	if (out.isTTY) {
+		// Bracketed paste + kitty keyboard flags (the same negotiation opencode
+		// uses). The kitty push makes supporting terminals report Shift+Enter
+		// distinctly (CSI 13;2u) and the Esc key as CSI 27u. Terminals without
+		// kitty support fall back to xterm modifyOtherKeys (mode 1), which also
+		// encodes Shift+Enter as CSI 13;2u; terminals with neither simply ignore
+		// both sequences and keep their legacy encoding.
+		out.write(`${CSI}?2004h${CSI}>1u${CSI}>4;1m`);
+	}
 	stdin.on('data', onData);
 
 	return stop;
@@ -396,22 +851,29 @@ function wordRight(s: string, from: number): number {
 	return i;
 }
 
-/** Pasted text is kept on one line: newlines become spaces, controls are dropped. */
+/**
+ * Pasted text keeps its original line structure (newlines preserved) so
+ * multi-line content is displayed exactly as it was copied. Tabs become two
+ * spaces and other control characters are dropped.
+ */
 function sanitizePaste(text: string): string {
-	return [...text.replace(/\r\n|\r|\n/g, ' ').replace(/\t/g, '  ')]
-		.filter((ch) => (ch.codePointAt(0) ?? 0) >= 0x20 && ch !== '\x7f')
+	return [...text.replace(/\r\n?/g, '\n').replace(/\t/g, '  ')]
+		.filter((ch) => ch === '\n' || ((ch.codePointAt(0) ?? 0) >= 0x20 && ch !== '\x7f'))
 		.join('');
 }
 
 function completeCommand(): void {
-	if (S.buffer.startsWith('@') && !S.buffer.includes(' ')) {
-		const prefix = S.buffer.slice(1).toLowerCase();
-		const agents = S.agentNames.filter((name) => name.toLowerCase().startsWith(prefix)).map((name) => '@' + name);
-		const files = S.contextFiles.filter((file) => file.toLowerCase().startsWith(prefix)).map((file) => '@' + file);
-		const first = [...agents, ...files][0];
-		if (first) {
-			S.buffer = first + ' ';
-			S.cursor = S.buffer.length;
+	// @mentions complete anywhere in the line (like Claude Code), replacing
+	// the partial token at the cursor with the highlighted item.
+	if (!S.buffer.startsWith('/')) {
+		const popup = activePopup();
+		if (popup?.kind === 'mention' && popup.start !== undefined && popup.end !== undefined) {
+			const item = popup.items[S.popupSel] ?? popup.items[0];
+			if (item) {
+				const start = popup.start;
+				S.buffer = S.buffer.slice(0, start) + item.label + ' ' + S.buffer.slice(popup.end);
+				S.cursor = start + item.label.length + 1;
+			}
 		}
 		return;
 	}
@@ -423,7 +885,7 @@ function completeCommand(): void {
 		S.cursor = S.buffer.length;
 		return;
 	}
-	if (!S.buffer.startsWith('/') || S.buffer.includes(' ')) return;
+	if (!S.buffer.startsWith('/') || S.buffer.includes(' ') || S.buffer.includes('\n')) return;
 	const typed = S.buffer.toLowerCase();
 	const names = S.commands.map((cmd) => cmd.name).filter((n) => n.startsWith(typed));
 	const first = names[0];
@@ -463,28 +925,35 @@ export function createInput(): InputController {
 			if (!S.active) return plainQuestion();
 
 			return new Promise<string>((resolve) => {
-					let histIdx = -1;
-					let draft = S.nextInput;
-					S.nextInput = '';
-					let done = false;
+				let histIdx = -1;
+				let draft = S.nextInput;
+				S.nextInput = '';
+				let done = false;
 
-					S.editing = true;
-					S.savedValid = true;
-					S.buffer = draft;
-					S.cursor = draft.length;
-				S.offset = 0;
+				S.editing = true;
+				syncTermKeyListener(); // the editor owns the keys now
+				S.savedValid = true;
+				S.buffer = draft;
+				S.cursor = draft.length;
+				S.topLine = 0;
+				S.popupSel = 0;
+				S.popupHiddenFor = '';
+				S.lastPopupRows = 0;
+				S.lastPopupTopRow = 0;
 				out.write(SAVE); // remember where output continues
 				paint();
 
 				// Return the cursor to the scrolling region and go idle.
-					const leave = (): void => {
-						done = true;
-						stop?.();
-						stop = null;
-						S.editing = false;
-						S.buffer = '';
-						S.cursor = 0;
-					S.offset = 0;
+				const leave = (): void => {
+					done = true;
+					stop?.();
+					stop = null;
+					S.editing = false;
+					syncTermKeyListener(); // let ctrl+o reach the terminal panel again
+					S.buffer = '';
+					S.cursor = 0;
+					S.topLine = 0;
+					S.popupHiddenFor = '';
 					out.write(S.savedValid ? RESTORE : `${CSI}${regionBottom()};1H`);
 					paint();
 				};
@@ -496,6 +965,10 @@ export function createInput(): InputController {
 				};
 
 				const set = (text: string, cursor: number): void => {
+					if (text !== S.buffer) {
+						S.popupSel = 0;
+						if (text !== S.popupHiddenFor) S.popupHiddenFor = '';
+					}
 					S.buffer = text;
 					S.cursor = cursor;
 					paint();
@@ -504,16 +977,43 @@ export function createInput(): InputController {
 				stop = listenKeys((key) => {
 					if (done) return;
 					const { buffer, cursor } = S;
+					const popup = activePopup();
 
 					switch (key.name) {
 						case 'enter': {
-							const line = buffer.trim();
+							if (popup) {
+								if (popup.kind === 'command') {
+									// Enter runs the highlighted slash command.
+									const item = popup.items[S.popupSel] ?? popup.items[0];
+									if (item) {
+										S.buffer = item.label;
+										S.cursor = S.buffer.length;
+									}
+								} else if (popup.start !== undefined && popup.end !== undefined) {
+									// Enter on an @mention completes the token at the
+									// cursor instead of submitting the message.
+									const item = popup.items[S.popupSel] ?? popup.items[0];
+									if (item) {
+										const start = popup.start;
+										S.buffer = S.buffer.slice(0, start) + item.label + ' ' + S.buffer.slice(popup.end);
+										S.cursor = start + item.label.length + 1;
+										S.popupHiddenFor = '';
+										paint();
+										return;
+									}
+								}
+							}
+							const value = S.buffer;
+							const line = value.trim();
 							if (line && history[0] !== line) history.unshift(line);
 							if (history.length > 100) history.pop();
 							leave();
 							resolve(line);
 							return;
 						}
+						case 'shift+enter':
+							set(buffer.slice(0, cursor) + '\n' + buffer.slice(cursor), cursor + 1);
+							return;
 						case 'ctrl+c':
 							if (buffer) {
 								histIdx = -1;
@@ -538,12 +1038,17 @@ export function createInput(): InputController {
 						case 'right':
 							set(buffer, Math.min(buffer.length, cursor + 1));
 							return;
-						case 'home':
-							set(buffer, 0);
+						case 'home': {
+							const pos = cursorPos();
+							set(buffer, lineStartIndex(pos.line));
 							return;
-						case 'end':
-							set(buffer, buffer.length);
+						}
+						case 'end': {
+							const pos = cursorPos();
+							const lines = bufferLines();
+							set(buffer, lineStartIndex(pos.line) + (lines[pos.line] ?? '').length);
 							return;
+						}
 						case 'word-left':
 							set(buffer, wordLeft(buffer, cursor));
 							return;
@@ -564,11 +1069,53 @@ export function createInput(): InputController {
 						case 'ctrl+l':
 							paint();
 							return;
-						case 'tab':
+						case 'ctrl+o':
+						case 'ctrl+t':
+							toggleTerminalPanel();
+							return;
+						case 'tab': {
+							if (popup) {
+								const item = popup.items[S.popupSel] ?? popup.items[0];
+								if (item) {
+									if (popup.kind === 'command') {
+										set(item.label, item.label.length);
+									} else if (popup.start !== undefined && popup.end !== undefined) {
+										const start = popup.start;
+										set(
+											S.buffer.slice(0, start) + item.label + ' ' + S.buffer.slice(popup.end),
+											start + item.label.length + 1,
+										);
+									}
+								}
+								return;
+							}
 							completeCommand();
 							paint();
 							return;
-						case 'up':
+						}
+						case 'escape': {
+							if (popup) {
+								S.popupHiddenFor = S.buffer;
+								paint();
+								return;
+							}
+							return;
+						}
+						case 'up': {
+							if (popup) {
+								S.popupSel = Math.max(0, S.popupSel - 1);
+								paint();
+								return;
+							}
+							const lines = bufferLines();
+							const pos = cursorPos();
+							if (pos.line > 0) {
+								// Move up within the multi-line buffer.
+								const prevLen = (lines[pos.line - 1] ?? '').length;
+								const col = Math.min(pos.col, prevLen);
+								set(buffer, lineStartIndex(pos.line - 1) + col);
+								return;
+							}
 							if (histIdx < history.length - 1) {
 								if (histIdx === -1) draft = buffer;
 								histIdx++;
@@ -576,13 +1123,30 @@ export function createInput(): InputController {
 								set(entry, entry.length);
 							}
 							return;
-						case 'down':
+						}
+						case 'down': {
+							if (popup) {
+								const items = popup.items;
+								S.popupSel = Math.min(items.length - 1, S.popupSel + 1);
+								paint();
+								return;
+							}
+							const lines = bufferLines();
+							const pos = cursorPos();
+							if (pos.line < lines.length - 1) {
+								// Move down within the multi-line buffer.
+								const nextLen = (lines[pos.line + 1] ?? '').length;
+								const col = Math.min(pos.col, nextLen);
+								set(buffer, lineStartIndex(pos.line + 1) + col);
+								return;
+							}
 							if (histIdx >= 0) {
 								histIdx--;
 								const entry = histIdx === -1 ? draft : (history[histIdx] ?? '');
 								set(entry, entry.length);
 							}
 							return;
+						}
 						case 'text':
 						case 'paste': {
 							const text = key.name === 'paste' ? sanitizePaste(key.text ?? '') : (key.text ?? '');
@@ -592,21 +1156,22 @@ export function createInput(): InputController {
 						default:
 							return;
 					}
-					}, () => {
-						leave();
-						resolve('');
-					});
+				}, () => {
+					leave();
+					resolve('');
+				});
 			});
 		},
 
-			close(): void {
-				stop?.();
-				stop = null;
-				S.editing = false;
-				S.buffer = '';
-				S.cursor = 0;
-				S.offset = 0;
-			},
+		close(): void {
+			stop?.();
+			stop = null;
+			S.editing = false;
+			syncTermKeyListener();
+			S.buffer = '';
+			S.cursor = 0;
+			S.topLine = 0;
+		},
 
 		showPrompt(): void {
 			paint();
@@ -638,7 +1203,7 @@ export function pick(opts: {
 	if (!process.stdin.isTTY || !out.isTTY) return Promise.resolve(null);
 
 	const { rows, cols } = dims();
-	const visible = Math.max(3, Math.min(10, rows - (S.active ? CHROME_ROWS : 0) - 5));
+	const visible = Math.max(3, Math.min(10, rows - (S.active ? chromeRows() : 0) - 5));
 	const height = visible + 3; // title, search, items, footer
 	const max = cols - 1;
 
