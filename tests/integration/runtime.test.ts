@@ -2,16 +2,25 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, readFileSync, existsSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { appendToMemory, logToTimeline, loadTimeline, logAgentTermoTimeline, appendToAgentTermoMemory, loadAgentTermoMemory } from '../../src/memory/index.js';
+import {
+  appendToMemory,
+  appendToSessionLog,
+  loadSessionLog,
+  loadTimeline,
+  logAgentTermoTimeline,
+  logToTimeline,
+} from '../../src/memory/index.js';
 import { loadAllAgents } from '../../src/agents/index.js';
-import { ensureAgentFolder } from '../../src/runtime/agent-folder.js';
+import { ensureAgentFolder, ensureAgentStructure, loadProjectAgents } from '../../src/runtime/agent-folder.js';
 
 describe('packaged-project runtime initialization', () => {
-  it('creates docs and timeline before logging in an empty project', async () => {
+  it('keeps project docs outside .agent-termo and private logs inside it', async () => {
     const projectRoot = mkdtempSync(join(tmpdir(), 'agent-termo-empty-project-'));
     try {
+      ensureAgentStructure(projectRoot);
       await logToTimeline(projectRoot, 'startup smoke test');
       await appendToMemory(projectRoot, 'memory smoke test');
+      appendToSessionLog('### User\n\nsession smoke test', projectRoot);
       logAgentTermoTimeline('agent log smoke test', projectRoot);
 
       const timelinePath = join(projectRoot, 'docs', 'TIMELINE.md');
@@ -19,10 +28,17 @@ describe('packaged-project runtime initialization', () => {
       expect(existsSync(timelinePath)).toBe(true);
       expect(existsSync(memoryPath)).toBe(true);
       expect(existsSync(join(projectRoot, '.agent-termo', 'agents'))).toBe(true);
+      expect(existsSync(join(projectRoot, '.agent-termo', 'commands'))).toBe(true);
       expect(existsSync(join(projectRoot, '.agent-termo', 'logs'))).toBe(true);
-      expect(existsSync(join(projectRoot, '.agent-termo', 'docs'))).toBe(true);
+      expect(existsSync(join(projectRoot, '.agent-termo', 'docs'))).toBe(false);
+      expect(existsSync(join(projectRoot, '.agent-termo', 'memory.md'))).toBe(false);
+      expect(existsSync(join(projectRoot, '.agent-termo', 'timeline.md'))).toBe(false);
+
       expect(readFileSync(timelinePath, 'utf-8')).toContain('startup smoke test');
       expect(readFileSync(memoryPath, 'utf-8')).toContain('memory smoke test');
+      expect(readFileSync(join(projectRoot, '.agent-termo', 'logs', 'session.md'), 'utf-8')).toContain('session smoke test');
+      expect(readFileSync(join(projectRoot, '.agent-termo', 'logs', 'timeline.md'), 'utf-8')).toContain('agent log smoke test');
+      expect(readFileSync(timelinePath, 'utf-8')).not.toContain('agent log smoke test');
       expect(await loadTimeline(projectRoot)).toContain('startup smoke test');
     } finally {
       rmSync(projectRoot, { recursive: true, force: true });
@@ -44,30 +60,88 @@ describe('packaged-project runtime initialization', () => {
     }
   });
 
-  it('persists the current chat in project-local Agent-Termo memory', () => {
-    const projectRoot = mkdtempSync(join(tmpdir(), 'agent-termo-chat-memory-'));
+  it('merges bundled and project agents so one custom agent does not hide the rest', () => {
+    const projectRoot = mkdtempSync(join(tmpdir(), 'agent-termo-agent-merge-'));
     try {
-      appendToAgentTermoMemory('### User\n\nExplain the architecture', projectRoot);
-      appendToAgentTermoMemory('### Assistant\n\nThe project uses layered modules.', projectRoot);
-      const memory = loadAgentTermoMemory(projectRoot);
-      expect(memory).toContain('Explain the architecture');
-      expect(memory).toContain('layered modules');
+      mkdirSync(join(projectRoot, '.claude', 'agents'), { recursive: true });
+      mkdirSync(join(projectRoot, '.agent-termo', 'agents'), { recursive: true });
+      writeFileSync(join(projectRoot, '.claude', 'agents', 'base.md'), 'You are the bundled base agent.', 'utf-8');
+      writeFileSync(join(projectRoot, '.claude', 'agents', 'shared.md'), 'You are the bundled shared agent.', 'utf-8');
+      writeFileSync(join(projectRoot, '.agent-termo', 'agents', 'custom.md'), 'You are the project custom agent.', 'utf-8');
+      writeFileSync(join(projectRoot, '.agent-termo', 'agents', 'shared.md'), 'You are the project shared agent.', 'utf-8');
+
+      const agents = loadProjectAgents(projectRoot);
+      expect(agents.map((agent) => agent.name)).toEqual(['base', 'custom', 'shared']);
+      expect(agents.find((agent) => agent.name === 'shared')?.systemPrompt).toContain('project shared');
     } finally {
       rmSync(projectRoot, { recursive: true, force: true });
     }
   });
 
-  it('scaffolds the complete project-local agent folder', () => {
+  it('persists the current chat only in the private session log', () => {
+    const projectRoot = mkdtempSync(join(tmpdir(), 'agent-termo-chat-memory-'));
+    try {
+      appendToSessionLog('### User\n\nExplain the architecture', projectRoot);
+      appendToSessionLog('### Assistant\n\nThe project uses layered modules.', projectRoot);
+
+      expect(loadSessionLog(projectRoot)).toContain('Explain the architecture');
+      expect(loadSessionLog(projectRoot)).toContain('layered modules');
+      expect(existsSync(join(projectRoot, '.agent-termo', 'logs', 'session.md'))).toBe(true);
+      expect(existsSync(join(projectRoot, '.agent-termo', 'memory.md'))).toBe(false);
+      expect(existsSync(join(projectRoot, 'docs', 'MEMORY.md'))).toBe(false);
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('scaffolds agents, commands, logs and shared docs in one layout', () => {
     const projectRoot = mkdtempSync(join(tmpdir(), 'agent-termo-folder-'));
     try {
       const result = ensureAgentFolder(projectRoot);
       expect(existsSync(join(projectRoot, '.agent-termo', 'agents'))).toBe(true);
       expect(existsSync(join(projectRoot, '.agent-termo', 'commands'))).toBe(true);
-      expect(existsSync(join(projectRoot, '.agent-termo', 'docs'))).toBe(true);
       expect(existsSync(join(projectRoot, '.agent-termo', 'logs'))).toBe(true);
-      expect(existsSync(join(projectRoot, '.agent-termo', 'memory.md'))).toBe(true);
-      expect(existsSync(join(projectRoot, '.agent-termo', 'timeline.md'))).toBe(true);
+      expect(existsSync(join(projectRoot, 'docs', 'MEMORY.md'))).toBe(true);
+      expect(existsSync(join(projectRoot, 'docs', 'TIMELINE.md'))).toBe(true);
+      expect(existsSync(join(projectRoot, '.agent-termo', 'docs'))).toBe(false);
+      expect(existsSync(join(projectRoot, '.agent-termo', 'memory.md'))).toBe(false);
+      expect(existsSync(join(projectRoot, '.agent-termo', 'timeline.md'))).toBe(false);
       expect(result.root).toBe(join(projectRoot, '.agent-termo'));
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('migrates legacy .agent-termo docs and memory files into the canonical layout', () => {
+    const projectRoot = mkdtempSync(join(tmpdir(), 'agent-termo-migrate-'));
+    try {
+      const oldRoot = join(projectRoot, '.agent-termo');
+      mkdirSync(join(oldRoot, 'docs'), { recursive: true });
+      writeFileSync(join(oldRoot, 'memory.md'), '### User\n\nold session entry', 'utf-8');
+      writeFileSync(join(oldRoot, 'timeline.md'), '- old runtime entry', 'utf-8');
+      writeFileSync(join(oldRoot, 'docs', 'README.md'), '# Agent-Termo Runtime Docs\n\nGenerated wrapper.\n', 'utf-8');
+
+      ensureAgentFolder(projectRoot);
+
+      expect(existsSync(join(oldRoot, 'memory.md'))).toBe(false);
+      expect(existsSync(join(oldRoot, 'timeline.md'))).toBe(false);
+      expect(existsSync(join(oldRoot, 'docs'))).toBe(false);
+      expect(readFileSync(join(oldRoot, 'logs', 'session.md'), 'utf-8')).toContain('old session entry');
+      expect(readFileSync(join(oldRoot, 'logs', 'timeline.md'), 'utf-8')).toContain('old runtime entry');
+      expect(existsSync(join(projectRoot, 'docs', 'MEMORY.md'))).toBe(true);
+      expect(existsSync(join(projectRoot, 'docs', 'TIMELINE.md'))).toBe(true);
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('does not overwrite existing project docs', () => {
+    const projectRoot = mkdtempSync(join(tmpdir(), 'agent-termo-keep-docs-'));
+    try {
+      mkdirSync(join(projectRoot, 'docs'), { recursive: true });
+      writeFileSync(join(projectRoot, 'docs', 'MEMORY.md'), '# Custom memory\n', 'utf-8');
+      ensureAgentStructure(projectRoot);
+      expect(readFileSync(join(projectRoot, 'docs', 'MEMORY.md'), 'utf-8')).toBe('# Custom memory\n');
     } finally {
       rmSync(projectRoot, { recursive: true, force: true });
     }

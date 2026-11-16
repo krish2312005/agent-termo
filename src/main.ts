@@ -2,16 +2,15 @@
 // Agent-Termo — Main REPL entry point
 // =============================================================================
 
-import { NimClient, fromWireToolName, type ThinkingCapacity } from './llm/client.js';
+import { NimClient, parseToolCallsFromText, type ThinkingCapacity } from './llm/client.js';
 import { TOOL_DEFINITIONS } from './llm/tools.js';
-import { executeTool, applyFileChange, setTerminalHooks } from './tools/index.js';
-import { loadMemory, logToTimeline, logAgentTermoTimeline, appendToAgentTermoMemory, appendToTimeline, loadAgentTermoMemory } from './memory/index.js';
-import { loadAllAgents } from './agents/index.js';
+import { executeTool, applyFileChange, setTerminalHooks, killRunningTerminal } from './tools/index.js';
+import { loadMemory, loadTimeline, logToTimeline, logAgentTermoTimeline, appendToSessionLog, appendToTimeline, loadSessionLog } from './memory/index.js';
 import { buildSystemPrompt } from './agents/index.js';
 import { resolveProjectRoot, saveNimModel, saveNimThinking, savePermissionMode } from './utils/config.js';
 import { resolve } from 'node:path';
-import { mkdirSync, readdirSync, readFileSync } from 'node:fs';
-import { ensureAgentFolder, loadAgentCommands, type AgentCommand } from './runtime/agent-folder.js';
+import { readdirSync, readFileSync } from 'node:fs';
+import { ensureAgentFolder, ensureAgentStructure, loadProjectAgents, loadAgentCommands, type AgentCommand } from './runtime/agent-folder.js';
 import { commandApprovalKey, isCommandApprovalRequired, loadAllowedCommands, saveAllowedCommands } from './runtime/permissions.js';
 import {
 	printWelcome,
@@ -81,12 +80,23 @@ function expandContextMentions(input: string, projectRoot: string, contextFiles:
 }
 
 function dedup(arr: ToolCall[]): ToolCall[] {
-	const seen = new Set<string>();
-	return arr.filter((tc) => {
-		if (seen.has(tc.id)) return false;
-		seen.add(tc.id);
-		return true;
-	});
+	// Providers occasionally reuse one id for parallel calls. Keep genuinely
+	// different calls (with a fresh id) instead of silently dropping them.
+	const seen = new Map<string, string>();
+	const result: ToolCall[] = [];
+	for (const tc of arr) {
+		const signature = tc.name + ':' + JSON.stringify(tc.arguments);
+		const existing = seen.get(tc.id);
+		if (existing === undefined) {
+			seen.set(tc.id, signature);
+			result.push(tc);
+		} else if (existing !== signature) {
+			const id = `${tc.id}-${result.length}`;
+			seen.set(id, signature);
+			result.push({ ...tc, id });
+		}
+	}
+	return result;
 }
 
 class RequestCancelledError extends Error {
@@ -112,8 +122,8 @@ function providerError(err: unknown): string {
 }
 
 /** Transient provider failures worth one automatic retry before surfacing. */
-function isTransientError(err: unknown): boolean {
-	return /429|500|502|503|504|timeout|timed out|ECONNRESET|ECONNREFUSED|ETIMEDOUT|socket hang up|fetch failed|network/i.test(
+export function isTransientError(err: unknown): boolean {
+	return /429|500|502|503|504|timeout|timed out|connection error|connection reset|ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|UND_ERR|socket hang up|fetch failed|network/i.test(
 		providerError(err),
 	);
 }
@@ -140,6 +150,16 @@ function newTaskState(): TaskState {
 function recordTaskAction(state: TaskState, action: string): void {
 	state.lastActions.push(action);
 	if (state.lastActions.length > 15) state.lastActions.shift();
+}
+
+/**
+ * Mark a run complete. An interrupted run stays interrupted so "continue" can
+ * still resume it instead of dropping back to idle.
+ */
+export function finishTaskState(state: TaskState): void {
+	if (state.status === 'interrupted') return;
+	state.status = 'idle';
+	state.reason = '';
 }
 
 /** Does this input mean "keep going from where you stopped"? */
@@ -192,40 +212,6 @@ async function withEscapeCancellation<T>(nimClient: NimClient, operation: () => 
 	} finally {
 		stop();
 	}
-}
-
-/**
- * Parse JSON tool calls that a non-tool-calling model may emit as plain text,
- * e.g. {"tool_calls":[{"id":"call_1","name":"file:write","arguments":{...}}]}.
- * Returns an empty array when nothing parseable is found.
- */
-function parseToolCallsFromText(text: string): ToolCall[] {
-	let cleaned = (text ?? '').trim();
-	cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
-
-	let obj: { tool_calls?: unknown };
-	try {
-		obj = JSON.parse(cleaned);
-	} catch {
-		const start = cleaned.indexOf('{');
-		const end = cleaned.lastIndexOf('}');
-		if (start === -1 || end === -1 || end <= start) return [];
-		try {
-			obj = JSON.parse(cleaned.slice(start, end + 1));
-		} catch {
-			return [];
-		}
-	}
-
-	const rawCalls = Array.isArray(obj.tool_calls) ? obj.tool_calls : [];
-	return rawCalls.map((tc: { id?: string; name?: string; function?: { name?: string; arguments?: unknown } }) => ({
-		id: tc.id ?? crypto.randomUUID(),
-		name: fromWireToolName(tc.name ?? (tc.function?.name ?? '')),
-		arguments:
-			typeof tc.function?.arguments === 'string'
-				? (() => { try { return JSON.parse(tc.function.arguments as string); } catch { return { _raw: tc.function.arguments }; } })()
-				: (tc.function?.arguments ?? {}),
-	}));
 }
 
 function extractProposedChange(toolName: string, resultOutput: string): ProposedFileChange | undefined {
@@ -343,17 +329,19 @@ async function runDelegatedAgent(
 	const agentName = String(toolCall.arguments.agent ?? '').trim();
 	const task = String(toolCall.arguments.task ?? '').trim();
 	const context = String(toolCall.arguments.context ?? '').trim();
-	const projectAgentRoot = resolve(projectRoot, '.agent-termo');
-	const projectAgents = loadAllAgents(projectAgentRoot);
-	const agents = projectAgents.length > 0 ? projectAgents : loadAllAgents(resolve(projectRoot, '.claude'));
+	const agents = loadProjectAgents(projectRoot);
 	const agent = agents.find((candidate) => candidate.name === agentName);
 	if (!agent || !task) {
 		return { id: toolCall.id, name: toolCall.name, success: false, error: `Unknown agent or empty task: ${agentName}`, durationMs: Date.now() - started };
 	}
 
 	printInfo('Delegating to ' + agent.name + '…');
+	const [projectMemory, projectTimeline] = await Promise.all([
+		loadMemory(projectRoot),
+		loadTimeline(projectRoot),
+	]);
 	const delegatedMessages: ConversationMessage[] = [
-		{ id: crypto.randomUUID(), role: 'system', content: buildSystemPrompt('', '', projectRoot, agent.systemPrompt), timestamp: new Date(), agent: agent.name },
+		{ id: crypto.randomUUID(), role: 'system', content: buildSystemPrompt(projectMemory, projectTimeline, projectRoot, agent.systemPrompt), timestamp: new Date(), agent: agent.name },
 		{
 			id: crypto.randomUUID(),
 			role: 'user',
@@ -374,7 +362,7 @@ async function runDelegatedAgent(
 			let result: { content: string; toolCalls: ToolCall[] };
 			try {
 				result = await withEscapeCancellation(nimClient, () =>
-					nimClient.complete(delegatedMessages, nimClient.buildToolDefs(delegatedToolDefs), (stage) => printInfo(`[${agent.name}] ${stage}`)),
+					nimClient.complete(delegatedMessages, nimClient.buildToolDefs(delegatedToolDefs)),
 				);
 				setScreenStatus({ usage: nimClient.formatUsage() });
 			} catch (err) {
@@ -382,8 +370,11 @@ async function runDelegatedAgent(
 					return { id: toolCall.id, name: toolCall.name, success: false, error: 'Sub-agent run cancelled.', durationMs: Date.now() - started };
 				}
 				// The model may not support native tool calling — plain text fallback.
-				const fallback = await withEscapeCancellation(nimClient, () => nimClient.complete(delegatedMessages, undefined, (stage) => printInfo(`[${agent.name}] ${stage}`)));
-				result = { content: fallback.content, toolCalls: parseToolCallsFromText(fallback.content) };
+				const fallback = await withEscapeCancellation(nimClient, () => nimClient.complete(delegatedMessages, undefined));
+				result = {
+					content: fallback.content,
+					toolCalls: fallback.toolCalls.length > 0 ? fallback.toolCalls : parseToolCallsFromText(fallback.content),
+				};
 			}
 
 			const toolCalls = dedup(result.toolCalls);
@@ -464,6 +455,9 @@ async function runToolLoop(
 							: await executeToolWithReview(tc.name, tc.arguments, projectRoot, input, permissionMode, allowedCommands);
 
 				const toolResult = execution.toolResult;
+				// Delegated runs bypass executeToolWithReview, so show their
+				// result explicitly instead of only feeding it to the model.
+				if (tc.name === 'agent:delegate') printToolResult(tc.name, toolResult);
 			const statusText = toolResult.success ? 'OK' : ('ERR: ' + (toolResult.error ? toolResult.error.slice(0, 80) : 'unknown error'));
 			const changeNote = execution.change ? (execution.applied ? ' (applied)' : ' (rejected)') : '';
 			const target = String(tc.arguments.path ?? tc.arguments.command ?? tc.arguments.task ?? '').slice(0, 80);
@@ -488,14 +482,14 @@ async function runToolLoop(
 		try {
 			const tools = nimClient.buildToolDefs(TOOL_DEFINITIONS);
 			try {
-					result = await withEscapeCancellation(nimClient, () => nimClient.complete(conversation, tools, (stage) => printInfo(stage)));
+					result = await withEscapeCancellation(nimClient, () => nimClient.complete(conversation, tools));
 			} catch (transient) {
 				if (isRequestCancelled(transient) || !isTransientError(transient)) throw transient;
 				// One automatic retry for transient provider failures so a
 				// long task does not die mid-flight on a blip.
 				printInfo('Transient provider error (' + providerError(transient) + ') — retrying…');
 				await new Promise((delay) => setTimeout(delay, 1500));
-					result = await withEscapeCancellation(nimClient, () => nimClient.complete(conversation, tools, (stage) => printInfo(stage)));
+					result = await withEscapeCancellation(nimClient, () => nimClient.complete(conversation, tools));
 			}
 			setScreenStatus({ usage: nimClient.formatUsage() });
 			} catch (err) {
@@ -509,11 +503,11 @@ async function runToolLoop(
 				}
 				// and parse any JSON tool calls emitted in the content.
 				try {
-					const fallback = await withEscapeCancellation(nimClient, () => nimClient.complete(conversation, undefined, (stage) => printInfo(stage)));
+					const fallback = await withEscapeCancellation(nimClient, () => nimClient.complete(conversation, undefined));
 				setScreenStatus({ usage: nimClient.formatUsage() });
 				result = {
 					content: fallback.content,
-					toolCalls: parseToolCallsFromText(fallback.content),
+					toolCalls: fallback.toolCalls.length > 0 ? fallback.toolCalls : parseToolCallsFromText(fallback.content),
 				};
 				} catch (err2) {
 					stopSpinner();
@@ -521,9 +515,11 @@ async function runToolLoop(
 					// Keep everything done so far and let "continue" resume the task.
 					taskState.status = 'interrupted';
 					taskState.reason = providerError(err2);
-					appendToAgentTermoMemory('### Interrupted task\n\nGoal: ' + taskState.goal + '\nReason: ' + taskState.reason + '\nLast actions: ' + taskState.lastActions.join('; '), projectRoot);
+					appendToSessionLog('### Interrupted task\n\nGoal: ' + taskState.goal + '\nReason: ' + taskState.reason + '\nLast actions: ' + taskState.lastActions.join('; '), projectRoot);
 					printInfo('The task was interrupted. Type "continue" to resume from where it stopped.');
-					break;
+					// Do not return stale narration from an earlier turn; the
+					// caller must not treat this interrupted run as finished.
+					return '';
 				}
 		}
 		stopSpinner();
@@ -654,19 +650,20 @@ async function handleThinkingCommand(arg: string, nimClient: NimClient, projectR
 export async function runRepl(projectRoot?: string): Promise<void> {
 	projectRoot = resolve(resolveProjectRoot(projectRoot ?? process.cwd()));
 
-	// The project docs/ folder is where the agent workflow writes its
-	// documentation deliverables — make sure it always exists.
+	// One canonical layout: shared project docs live in docs/, while agents,
+	// commands and private logs live under .agent-termo/. Older versions also
+	// wrote .agent-termo/memory.md and timeline.md; those are migrated here.
 	try {
-		mkdirSync(resolve(projectRoot, 'docs'), { recursive: true });
+		ensureAgentStructure(projectRoot);
 	} catch {
 		// Read-only filesystem or similar: tools will surface the error.
 	}
 
 	const memory = await loadMemory(projectRoot);
-	// Recent Agent-Termo memory gives the session (and a later "continue")
-	// context from previous sessions, including interrupted tasks.
-	const recentMemory = loadAgentTermoMemory(projectRoot);
-	const memoryContext = recentMemory ? recentMemory.slice(-4000) : '';
+	// Recent session log gives the session (and a later "continue") context
+	// from previous sessions, including interrupted tasks.
+	const recentSession = loadSessionLog(projectRoot);
+	const memoryContext = recentSession ? recentSession.slice(-4000) : '';
 	const nimClient = new NimClient(projectRoot);
 	let permissionMode: PermissionMode = process.env.AGENT_TERMO_PERMISSION_MODE === 'files'
 		? 'files'
@@ -675,11 +672,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 			: 'ask';
 	const allowedCommands = loadAllowedCommands(projectRoot);
 	const agentRoot = resolve(projectRoot, '.agent-termo');
-	const loadProjectAgents = () => {
-		const projectAgents = loadAllAgents(agentRoot);
-		return projectAgents.length > 0 ? projectAgents : loadAllAgents(resolve(projectRoot, '.claude'));
-	};
-	let customAgents = loadProjectAgents();
+	let customAgents = loadProjectAgents(projectRoot);
 	setAgentNames(customAgents.map((agent) => agent.name));
 	const contextFiles = discoverProjectFiles(projectRoot);
 	setContextFiles(contextFiles);
@@ -700,7 +693,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 	const taskState = newTaskState();
 	const buildSessionPrompt = (): string => {
 		let prompt = buildSystemPrompt(memory, '', projectRoot, activeAgentPrompt);
-		if (memoryContext) prompt += '\n\n## Recent Session Memory (previous sessions, may include interrupted tasks)\n' + memoryContext;
+		if (memoryContext) prompt += '\n\n## Recent Session Log (previous sessions, may include interrupted tasks)\n' + memoryContext;
 		if (taskState.goal && taskState.status !== 'idle') {
 			prompt += '\n\n## Active Task\n' + taskState.goal + '\nStatus: ' + taskState.status + (taskState.reason ? ' (' + taskState.reason + ')' : '');
 		}
@@ -887,7 +880,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					}
 					if (cmd === '/agent-folder') {
 						const result = ensureAgentFolder(projectRoot);
-						customAgents = loadProjectAgents();
+						customAgents = loadProjectAgents(projectRoot);
 						customCommands = loadAgentCommands(projectRoot);
 						setAgentNames(customAgents.map((agent) => agent.name));
 						refreshCommandCompletion();
@@ -919,6 +912,32 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						printInfo(`Agent: ${activeAgentName || '(default)'}`);
 						printInfo(`Goal: ${currentGoal || '(none)'}`);
 						printInfo(`Messages: ${conversation.length - 1}`);
+						continue mainLoop;
+					}
+					if (cmd === '/terminal' || cmd.startsWith('/terminal ')) {
+						printUserMessage(userInput);
+						displayedInput = true;
+						const sub = cmd.slice('/terminal'.length).trim().toLowerCase();
+						if (sub === 'kill' || sub === 'stop') {
+							if (killRunningTerminal()) {
+								printInfo('Agent terminal command killed.');
+							} else {
+								printInfo('No terminal command is running.');
+							}
+						} else if (sub === 'list' || sub === 'status' || sub === '') {
+							const { terminalPanelVisible, terminalPanelState } = await import('./ui/screen.js');
+							const visible = terminalPanelVisible();
+							const state = terminalPanelState();
+							if (state) {
+								const status = state.exitCode === null ? 'running' : state.exitCode === 0 ? 'exit ' + state.exitCode : 'exit ' + state.exitCode + ' (failed)';
+								printInfo('Terminal: ' + state.command + ' — ' + status);
+								if (!visible) printInfo('(panel closed — press Ctrl+O to open)');
+							} else {
+								printInfo('No terminal session.');
+							}
+						} else {
+							printInfo('Usage: /terminal [list|kill] — list shows status, kill stops running command.');
+						}
 						continue mainLoop;
 					}
 					if (cmd === '/context') {
@@ -1004,7 +1023,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				{
 					startSpinner('Working');
 					try {
-							const result = await withEscapeCancellation(nimClient, () => nimClient.complete(conversation, tools, (stage) => printInfo(stage)));
+							const result = await withEscapeCancellation(nimClient, () => nimClient.complete(conversation, tools));
 						setScreenStatus({ usage: nimClient.formatUsage() });
 					const fullText = result.content;
 						const toolCalls = dedup(result.toolCalls);
@@ -1050,7 +1069,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					// any JSON tool calls the model may have emitted as plain text.
 						printInfo('NVIDIA NIM tool request failed: ' + providerError(err) + ' — retrying without tools.');
 						try {
-								const fallback = await withEscapeCancellation(nimClient, () => nimClient.complete(conversation, undefined, (stage) => printInfo(stage)));
+								const fallback = await withEscapeCancellation(nimClient, () => nimClient.complete(conversation, undefined));
 							setScreenStatus({ usage: nimClient.formatUsage() });
 						const toolCalls = dedup(
 							fallback.toolCalls.length > 0 ? fallback.toolCalls : parseToolCallsFromText(fallback.content),
@@ -1076,7 +1095,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						if (taskState.status === 'running') {
 							taskState.status = 'interrupted';
 							taskState.reason = providerError(err2);
-							appendToAgentTermoMemory('### Interrupted task\n\nGoal: ' + taskState.goal + '\nReason: ' + taskState.reason + '\nLast actions: ' + taskState.lastActions.join('; '), projectRoot);
+							appendToSessionLog('### Interrupted task\n\nGoal: ' + taskState.goal + '\nReason: ' + taskState.reason + '\nLast actions: ' + taskState.lastActions.join('; '), projectRoot);
 							printInfo('The task was interrupted. Type "continue" to resume from where it stopped.');
 						}
 						continue mainLoop;
@@ -1084,9 +1103,9 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				}
 			}
 
-			// The run reached the end without throwing: the task is complete.
-			taskState.status = 'idle';
-			taskState.reason = '';
+			// The run reached the end without throwing: the task is complete,
+			// unless it was interrupted and must remain resumable with "continue".
+			finishTaskState(taskState);
 
 			if (conversation.length > 42) {
 				compactConversation(conversation);
@@ -1098,7 +1117,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 			if (taskState.status === 'running') {
 				taskState.status = 'interrupted';
 				taskState.reason = err instanceof Error ? err.message : String(err);
-				appendToAgentTermoMemory('### Interrupted task\n\nGoal: ' + taskState.goal + '\nReason: ' + taskState.reason + '\nLast actions: ' + taskState.lastActions.join('; '), projectRoot);
+				appendToSessionLog('### Interrupted task\n\nGoal: ' + taskState.goal + '\nReason: ' + taskState.reason + '\nLast actions: ' + taskState.lastActions.join('; '), projectRoot);
 				printInfo('The task was interrupted. Type "continue" to resume from where it stopped.');
 			}
 		}
@@ -1107,5 +1126,5 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 
 function rememberChat(projectRoot: string, role: 'User' | 'Assistant', content: string): void {
 	const trimmed = content.trim();
-	if (trimmed) appendToAgentTermoMemory('### ' + role + '\n\n' + trimmed.slice(0, 12000), projectRoot);
+	if (trimmed) appendToSessionLog('### ' + role + '\n\n' + trimmed.slice(0, 12000), projectRoot);
 }

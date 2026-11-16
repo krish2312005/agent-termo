@@ -116,32 +116,17 @@ program
   .description('Initialize Agent-Termo in a project directory')
   .argument('[dir]', 'Directory to initialize', '.')
   .action(async (dir: string) => {
-    const { mkdirSync, writeFileSync, existsSync } = await import('node:fs');
+    const { mkdirSync } = await import('node:fs');
     const { resolve } = await import('node:path');
 
-    const dirsToCreate = [resolve(dir, 'docs'), resolve(dir, '.claude', 'agents'), resolve(dir, 'src')];
+    const dirsToCreate = [resolve(dir, 'src')];
     for (const d of dirsToCreate) {
       mkdirSync(d, { recursive: true });
     }
 		const agentFolder = ensureAgentFolder(resolve(dir));
 
-    // Create stub docs
-    const memoryPath = resolve(dir, 'docs', 'MEMORY.md');
-    if (!existsSync(memoryPath)) {
-      writeFileSync(memoryPath, '# Project Memory\n\n## Project Context\n(Add project context here)\n', 'utf-8');
-    }
-
-    const timelinePath = resolve(dir, 'docs', 'TIMELINE.md');
-    if (!existsSync(timelinePath)) {
-      writeFileSync(
-        timelinePath,
-        '# Project Timeline\n\n## Initialization\n- [date] Agent-Termo initialized\n',
-        'utf-8',
-      );
-    }
-
     console.log(`\n✓ Initialized Agent-Termo in ${resolve(dir)}`);
-		console.log(`  Created: docs/, .agent-termo/ (agents: ${agentFolder.copiedAgents}, commands: ${agentFolder.copiedCommands})`);
+		console.log(`  Created: docs/MEMORY.md, docs/TIMELINE.md, .agent-termo/ (agents: ${agentFolder.copiedAgents}, commands: ${agentFolder.copiedCommands})`);
     console.log('  Agent-Termo will ask for your NVIDIA NIM API key the first time you launch it.');
   });
 
