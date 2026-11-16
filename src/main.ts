@@ -201,6 +201,11 @@ function isContinueRequest(input: string): boolean {
 	return /^(?:\/)?continue\b/i.test(input.trim()) || input.trim().toLowerCase() === 'c';
 }
 
+function shouldUseTools(input: string, activeAgentName: string, continuing: boolean): boolean {
+	if (continuing || activeAgentName) return true;
+	return /\b(build|code|debug|deploy|edit|file|fix|implement|refactor|review|run|test|write|create|delete|inspect|analy[sz]e)\b/i.test(input);
+}
+
 /** Build the continuation directive injected when the user says "continue". */
 function buildContinueMessage(state: TaskState): string {
 	const lines = [
@@ -1077,14 +1082,16 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					printSubAgents(command.slice('/subagents'.length).trim() || undefined);
 				});
 
-				// Tools are always available: gating them by keywords made the agent
-			// break mid-task whenever a follow-up message lacked a trigger word.
-			const tools = nimClient.buildToolDefs(TOOL_DEFINITIONS);
+				// Plain conversation does not need a large tool schema. Keeping it out of
+				// the request also supports providers/models that reject tool mode.
+				const tools = shouldUseTools(userInput, activeAgentName, continuing)
+					? nimClient.buildToolDefs(TOOL_DEFINITIONS)
+					: undefined;
 
 				{
 					startSpinner('Working');
 					try {
-							const result = await withEscapeCancellation(nimClient, () => nimClient.complete(conversation, tools));
+							const result = await withEscapeCancellation(nimClient, () => completeWithRetry(nimClient, conversation, tools));
 						setScreenStatus({ usage: nimClient.formatUsage() });
 					const fullText = result.content;
 						const toolCalls = dedup(result.toolCalls);
@@ -1124,9 +1131,18 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 									printInfo('Task paused. Type "continue" to resume from where it stopped.');
 								}
 								stopBackgroundCommands();
+									continue mainLoop;
+							}
+							if (!tools || isTransientError(err)) {
+								printError('NVIDIA NIM provider error: ' + providerError(err), 'Try /model to select an available model, then retry.');
+								if (taskState.status === 'running') {
+									taskState.status = 'interrupted';
+									taskState.reason = providerError(err);
+								}
+								stopBackgroundCommands();
 								continue mainLoop;
-						}
-						// Tool calling failed (e.g. HTTP 400 because the model does not
+							}
+							// Tool calling failed (e.g. HTTP 400 because the model does not
 					// support the `tools` parameter). Retry without tools and parse
 					// any JSON tool calls the model may have emitted as plain text.
 						printInfo('NVIDIA NIM tool request failed: ' + providerError(err) + ' — retrying without tools.');

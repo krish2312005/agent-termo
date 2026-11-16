@@ -7,6 +7,7 @@ import type { ToolCall, ConversationMessage, ToolDef, TokenUsage } from '../type
 import { mergeModels, type ModelInfo } from './models.js';
 
 type NIMTool = OpenAI.Chat.ChatCompletionTool;
+type NIMFunctionTool = Extract<NIMTool, { type: 'function' }>;
 
 export type ThinkingCapacity = 'off' | 'auto' | 'low' | 'medium' | 'high';
 
@@ -190,7 +191,7 @@ export class NimClient {
       function: {
 			name: toWireToolName(t.name),
         description: t.description,
-        parameters: t.parameters as unknown as NIMTool['function']['parameters'],
+			parameters: t.parameters as unknown as NIMFunctionTool['function']['parameters'],
       },
     })) as NIMTool[];
   }
@@ -421,16 +422,17 @@ export class NimClient {
         '',
       ).trim() ?? '';
 
-    const toolCalls: ToolCall[] = (msg?.tool_calls ?? []).map((tc) => {
-      let args: Record<string, unknown> = {};
+		const toolCalls: ToolCall[] = (msg?.tool_calls ?? []).flatMap((tc) => {
+			if (tc.type !== 'function') return [];
+			let args: Record<string, unknown> = {};
       try {
         const parsed = JSON.parse(tc.function.arguments ?? '{}') as unknown;
         args = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : { _raw: String(parsed) };
       } catch {
         args = { _raw: tc.function.arguments };
       }
-			return { id: tc.id, name: fromWireToolName(tc.function.name), arguments: args };
-    });
+			return [{ id: tc.id, name: fromWireToolName(tc.function.name), arguments: args }];
+	    });
 
     // If no native tool calls, parse JSON tool calls emitted as text.
 	    if (toolCalls.length === 0) {

@@ -5,8 +5,7 @@
 import { readFile as readFileAsync, writeFile as writeFileAsync, unlink as unlinkAsync } from 'node:fs/promises';
 import { resolve, isAbsolute, relative } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { promisify } from 'node:util';
-import { default as globAsync } from 'glob';
+import { glob as globPromise } from 'glob';
 import { simpleGit } from 'simple-git';
 import { statSync, existsSync, mkdirSync } from 'node:fs';
 import { getConfig } from '../utils/config.js';
@@ -14,8 +13,6 @@ import { resolveShell } from '../utils/shell.js';
 import { fromWireToolName } from '../llm/client.js';
 import { computeDiff } from '../diff/index.js';
 import type { ToolResult, ProposedFileChange } from '../types/index.js';
-
-const globPromise = promisify(globAsync);
 
 const MAX_GLOB_RESULTS = 500;
 const MAX_GREP_MATCHES = 300;
