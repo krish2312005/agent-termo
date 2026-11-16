@@ -108,6 +108,10 @@ export function shouldRunDelegationsInParallel(toolCalls: ToolCall[]): boolean {
 	return toolCalls.length > 1 && toolCalls.every((toolCall) => toolCall.name === 'agent:delegate');
 }
 
+function toolOperationKey(toolCall: ToolCall): string {
+	return toolCall.name + ':' + JSON.stringify(toolCall.arguments);
+}
+
 class RequestCancelledError extends Error {
 	constructor() {
 		super('Request cancelled');
@@ -137,6 +141,26 @@ export function isTransientError(err: unknown): boolean {
 	);
 }
 
+export async function withTransientRetries<T>(operation: () => Promise<T>, delays = [750, 1500, 3000]): Promise<T> {
+	for (let attempt = 0; ; attempt++) {
+		try {
+			return await operation();
+		} catch (error) {
+			if (!isTransientError(error) || attempt >= delays.length) throw error;
+			printInfo(`Transient provider error (${providerError(error)}) — retrying in ${delays[attempt]}ms…`);
+			await new Promise((resolveDelay) => setTimeout(resolveDelay, delays[attempt]));
+		}
+	}
+}
+
+async function completeWithRetry(
+	nimClient: NimClient,
+	messages: ConversationMessage[],
+	tools?: Parameters<NimClient['complete']>[1],
+): Promise<Awaited<ReturnType<NimClient['complete']>>> {
+	return withTransientRetries(() => nimClient.complete(messages, tools));
+}
+
 // =============================================================================
 // Task state — lets an interrupted run be resumed with "continue" instead of
 // restarted. The full conversation (including tool results) is preserved, so
@@ -150,10 +174,11 @@ interface TaskState {
 	status: TaskStatus;
 	reason: string;
 	lastActions: string[];
+	completedOperations?: Set<string>;
 }
 
 function newTaskState(): TaskState {
-	return { goal: '', status: 'idle', reason: '', lastActions: [] };
+	return { goal: '', status: 'idle', reason: '', lastActions: [], completedOperations: new Set() };
 }
 
 function recordTaskAction(state: TaskState, action: string): void {
@@ -376,8 +401,8 @@ async function runDelegatedAgent(
 		for (let iteration = 0; iteration < DELEGATED_TOOL_BUDGET; iteration++) {
 			let result: { content: string; toolCalls: ToolCall[] };
 			try {
-					result = await withEscapeCancellation(delegatedClient, () =>
-						delegatedClient.complete(delegatedMessages, delegatedClient.buildToolDefs(delegatedToolDefs)),
+						result = await withEscapeCancellation(delegatedClient, () =>
+							completeWithRetry(delegatedClient, delegatedMessages, delegatedClient.buildToolDefs(delegatedToolDefs)),
 					);
 					setScreenStatus({ usage: delegatedClient.formatUsage() });
 			} catch (err) {
@@ -386,7 +411,7 @@ async function runDelegatedAgent(
 						return { id: toolCall.id, name: toolCall.name, success: false, error: 'Sub-agent run cancelled.', durationMs: Date.now() - started };
 				}
 				// The model may not support native tool calling — plain text fallback.
-					const fallback = await withEscapeCancellation(delegatedClient, () => delegatedClient.complete(delegatedMessages, undefined));
+					const fallback = await withEscapeCancellation(delegatedClient, () => completeWithRetry(delegatedClient, delegatedMessages, undefined));
 				result = {
 					content: fallback.content,
 					toolCalls: fallback.toolCalls.length > 0 ? fallback.toolCalls : parseToolCallsFromText(fallback.content),
@@ -469,12 +494,17 @@ async function runToolLoop(
 
 				// Execute all delegation calls in parallel. Ordinary tools stay sequential
 				// because concurrent writes or terminal commands can race with each other.
-				const allDelegations = shouldRunDelegationsInParallel(toolCalls);
-				const executions: Array<{ toolResult: { success: boolean; output?: string; error?: string }; applied: boolean; change?: ProposedFileChange }> = [];
+					const completedOperations = taskState.completedOperations ?? (taskState.completedOperations = new Set());
+					const allDelegations = shouldRunDelegationsInParallel(toolCalls) && !toolCalls.some((tc) => completedOperations.has(toolOperationKey(tc)));
+					const executions: Array<{ toolResult: { success: boolean; output?: string; error?: string }; applied: boolean; change?: ProposedFileChange }> = [];
 				if (allDelegations) {
 					executions.push(...await Promise.all(toolCalls.map((tc) => runDelegatedAgent(projectRoot, tc, nimClient, input, permissionMode, allowedCommands, taskState).then((toolResult) => ({ toolResult, applied: false })) )));
 				} else {
 					for (const tc of toolCalls) {
+						if (completedOperations.has(toolOperationKey(tc))) {
+							executions.push({ toolResult: { success: true, output: 'Already completed; skipped duplicate operation.' }, applied: false });
+							continue;
+						}
 						executions.push(tc.name === 'agent:delegate'
 							? { toolResult: await runDelegatedAgent(projectRoot, tc, nimClient, input, permissionMode, allowedCommands, taskState), applied: false }
 							: await executeToolWithReview(tc.name, tc.arguments, projectRoot, input, permissionMode, allowedCommands));
@@ -484,7 +514,8 @@ async function runToolLoop(
 				for (const [index, tc] of toolCalls.entries()) {
 					const execution = executions[index]!;
 
-				const toolResult = execution.toolResult;
+					const toolResult = execution.toolResult;
+					if (toolResult.success) completedOperations.add(toolOperationKey(tc));
 				// Delegated runs bypass executeToolWithReview, so show their
 				// result explicitly instead of only feeding it to the model.
 				if (tc.name === 'agent:delegate') printToolResult(tc.name, toolResult);
@@ -509,19 +540,10 @@ async function runToolLoop(
 			// The LLM will either produce text or more tool calls
 			startSpinner('Working');
 		let result: { content: string; toolCalls: ToolCall[] };
-		try {
-			const tools = nimClient.buildToolDefs(TOOL_DEFINITIONS);
 			try {
-					result = await withEscapeCancellation(nimClient, () => nimClient.complete(conversation, tools));
-			} catch (transient) {
-				if (isRequestCancelled(transient) || !isTransientError(transient)) throw transient;
-				// One automatic retry for transient provider failures so a
-				// long task does not die mid-flight on a blip.
-				printInfo('Transient provider error (' + providerError(transient) + ') — retrying…');
-				await new Promise((delay) => setTimeout(delay, 1500));
-					result = await withEscapeCancellation(nimClient, () => nimClient.complete(conversation, tools));
-			}
-			setScreenStatus({ usage: nimClient.formatUsage() });
+				const tools = nimClient.buildToolDefs(TOOL_DEFINITIONS);
+				result = await withEscapeCancellation(nimClient, () => completeWithRetry(nimClient, conversation, tools));
+				setScreenStatus({ usage: nimClient.formatUsage() });
 			} catch (err) {
 				if (isRequestCancelled(err)) {
 					stopSpinner();
@@ -531,9 +553,9 @@ async function runToolLoop(
 					printInfo('Task paused. Type "continue" to resume from where it stopped.');
 					return '';
 				}
-				// and parse any JSON tool calls emitted in the content.
-				try {
-					const fallback = await withEscapeCancellation(nimClient, () => nimClient.complete(conversation, undefined));
+					// and parse any JSON tool calls emitted in the content.
+					try {
+						const fallback = await withEscapeCancellation(nimClient, () => completeWithRetry(nimClient, conversation, undefined));
 				setScreenStatus({ usage: nimClient.formatUsage() });
 				result = {
 					content: fallback.content,
@@ -1035,9 +1057,10 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				taskState.reason = '';
 			} else {
 				taskState.goal = userInput.replace(/\s+/g, ' ').slice(0, 300);
-				taskState.reason = '';
-				taskState.lastActions = [];
-				taskState.status = 'running';
+					taskState.reason = '';
+					taskState.lastActions = [];
+					taskState.completedOperations = new Set();
+					taskState.status = 'running';
 			}
 
 			const userMsg: ConversationMessage = {
@@ -1108,7 +1131,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					// any JSON tool calls the model may have emitted as plain text.
 						printInfo('NVIDIA NIM tool request failed: ' + providerError(err) + ' — retrying without tools.');
 						try {
-								const fallback = await withEscapeCancellation(nimClient, () => nimClient.complete(conversation, undefined));
+								const fallback = await withEscapeCancellation(nimClient, () => completeWithRetry(nimClient, conversation, undefined));
 							setScreenStatus({ usage: nimClient.formatUsage() });
 						const toolCalls = dedup(
 							fallback.toolCalls.length > 0 ? fallback.toolCalls : parseToolCallsFromText(fallback.content),

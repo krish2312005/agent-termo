@@ -22,6 +22,17 @@ const MAX_GREP_MATCHES = 300;
 const MAX_GREP_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_BASH_OUTPUT = 60_000;
 
+interface ReadCacheEntry { mtimeMs: number; size: number; output: string }
+const readCache = new Map<string, ReadCacheEntry>();
+const globCache = new Map<string, string>();
+
+/** Invalidate workspace observations after a command or approved file change. */
+export function invalidateToolCache(projectRoot: string): void {
+	const prefix = projectRoot + '\0';
+	for (const key of readCache.keys()) if (key.startsWith(prefix)) readCache.delete(key);
+	for (const key of globCache.keys()) if (key.startsWith(prefix)) globCache.delete(key);
+}
+
 /** Model-facing aliases for argument names (Claude-style tools use file_path, old_str, ...). */
 const ARG_ALIASES: Record<string, string> = {
 	file_path: 'path',
@@ -133,7 +144,9 @@ export async function executeTool(
 		if (!fn) {
 			return { id, name, success: false, error: 'Unknown tool: ' + name, durationMs: Date.now() - start };
 		}
-		return await fn(toolArgs, projectRoot);
+			const result = await fn(toolArgs, projectRoot);
+			if (result.success && fromWireToolName(name) === 'bash:execute') invalidateToolCache(projectRoot);
+			return result;
 	} catch (err) {
 		return {
 			id,
@@ -229,9 +242,10 @@ export async function applyFileChange(change: ProposedFileChange, projectRoot: s
 			if (!existsSync(dir)) {
 				mkdirSync(dir, { recursive: true });
 			}
-			await writeFileAsync(fullPath, change.proposedContent, 'utf-8');
-		}
-		return {
+				await writeFileAsync(fullPath, change.proposedContent, 'utf-8');
+			}
+			invalidateToolCache(projectRoot);
+			return {
 			id: '',
 			name: 'file:write',
 			success: true,
@@ -262,17 +276,24 @@ async function toolFileRead(args: Record<string, unknown>, projectRoot: string):
 	const limit = Number(args.limit ?? 0);
 	const offset = Number(args.offset ?? 0);
 
-	try {
-		const statResult = statSync(fullPath);
-		if (statResult.isDirectory()) {
-			return { id: '', name: 'file:read', success: false, error: 'Path "' + path + '" is a directory', durationMs: 0 };
-		}
+		try {
+			const statResult = statSync(fullPath);
+			if (statResult.isDirectory()) {
+				return { id: '', name: 'file:read', success: false, error: 'Path "' + path + '" is a directory', durationMs: 0 };
+			}
 
-		const content = await readFileAsync(fullPath, 'utf-8');
-		const lines = content.split('\n');
-		const sliced = lines.slice(offset, limit > 0 ? offset + limit : undefined);
-		const summary = limit > 0 ? '[Showing lines ' + (offset + 1) + '-' + (offset + sliced.length) + ' of ' + lines.length + ']' : '';
-		return { id: '', name: 'file:read', success: true, output: (summary ? summary + '\n' : '') + sliced.join('\n'), durationMs: 0 };
+			const cacheKey = `${projectRoot}\0${fullPath}\0${offset}\0${limit}`;
+			const cached = readCache.get(cacheKey);
+			if (cached && cached.mtimeMs === statResult.mtimeMs && cached.size === statResult.size) {
+				return { id: '', name: 'file:read', success: true, output: cached.output, durationMs: 0 };
+			}
+			const content = await readFileAsync(fullPath, 'utf-8');
+			const lines = content.split('\n');
+			const sliced = lines.slice(offset, limit > 0 ? offset + limit : undefined);
+			const summary = limit > 0 ? '[Showing lines ' + (offset + 1) + '-' + (offset + sliced.length) + ' of ' + lines.length + ']' : '';
+			const output = (summary ? summary + '\n' : '') + sliced.join('\n');
+			readCache.set(cacheKey, { mtimeMs: statResult.mtimeMs, size: statResult.size, output });
+			return { id: '', name: 'file:read', success: true, output, durationMs: 0 };
 	} catch (err) {
 		return { id: '', name: 'file:read', success: false, error: 'Cannot read ' + path + ': ' + (err instanceof Error ? err.message : String(err)), durationMs: 0 };
 	}
@@ -393,6 +414,9 @@ async function toolFileGlob(args: Record<string, unknown>, projectRoot: string):
 	}
 
 	try {
+		const cacheKey = `${projectRoot}\0${fullCwd}\0${globPattern}`;
+		const cached = globCache.get(cacheKey);
+		if (cached !== undefined) return { id: '', name: 'file:glob', success: true, output: cached, durationMs: 0 };
 		const files = await globPromise(globPattern, {
 			cwd: fullCwd,
 			absolute: false,
@@ -401,7 +425,9 @@ async function toolFileGlob(args: Record<string, unknown>, projectRoot: string):
 		});
 		const shown = files.slice(0, MAX_GLOB_RESULTS);
 		const suffix = files.length > shown.length ? `\n(${files.length - shown.length} more files not shown; narrow the pattern)` : '';
-		return { id: '', name: 'file:glob', success: true, output: shown.length > 0 ? shown.join('\n') + suffix : '(no files matched)', durationMs: 0 };
+		const output = shown.length > 0 ? shown.join('\n') + suffix : '(no files matched)';
+		globCache.set(cacheKey, output);
+		return { id: '', name: 'file:glob', success: true, output, durationMs: 0 };
 	} catch (err) {
 		return { id: '', name: 'file:glob', success: false, error: 'glob error: ' + (err instanceof Error ? err.message : String(err)), durationMs: 0 };
 	}
