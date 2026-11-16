@@ -318,7 +318,7 @@ function activeMention(): { start: number; typed: string } | null {
 	const pos = cursorPos();
 	const line = bufferLines()[pos.line] ?? '';
 	const before = line.slice(0, pos.col);
-	const match = /(^|\s)@([\w./@-]*)$/.exec(before);
+	const match = /(^|\s)@([\w./@\\-]*)$/.exec(before);
 	if (!match) return null;
 	const at = before.lastIndexOf('@', pos.col - 1);
 	if (at < 0) return null;
@@ -395,7 +395,7 @@ function popupString(topBorderRow: number): string {
 		parts.push(
 			selected
 				? at(top + 1 + i, c.bgMagenta.white('│' + rowInner + '│'))
-				: at(top + 1 + i, c.magenta('│') + ' ' + c.cyan(name) + ' ' + c.dim(desc) + c.magenta('│')),
+				: at(top + 1 + i, c.magenta('│') + ' ' + c.cyan(name) + ' ' + c.dim(desc) + ' ' + c.magenta('│')),
 		);
 	}
 
@@ -414,16 +414,21 @@ function popupString(topBorderRow: number): string {
  * shrinks, moves, or disappears. The popup redraws its own rows right after.
  */
 function popupClearString(): string {
-	if (S.lastPopupTopRow <= 0) return '';
+	// The rows that may still hold popup art: the extent of the previous
+	// popup plus the rows the popup is about to occupy. Without this, the
+	// first popup was never tracked and its rows were left behind whenever
+	// the list shrank (ghost panels).
 	const popup = activePopup();
 	const zoneTop = popup ? popupTopRow(popup) : -1;
-	const from = Math.min(S.lastPopupTopRow, zoneTop > 0 ? zoneTop : Number.POSITIVE_INFINITY);
-	const to = dims().rows - chromeRows(); // input box top border - 1 = gap row
+	const prevTop = S.lastPopupTopRow;
+	S.lastPopupTopRow = zoneTop > 0 ? zoneTop : 0;
+	const from = Math.min(prevTop > 0 ? prevTop : Number.POSITIVE_INFINITY, zoneTop > 0 ? zoneTop : Number.POSITIVE_INFINITY);
+	if (!Number.isFinite(from) || from <= 0) return '';
+	const to = dims().rows - chromeRows(); // gap row above the input top border
 	let clear = '';
 	for (let r = from; r <= to; r++) {
 		if (r >= 1) clear += `${CSI}${r};1H${CSI}2K`;
 	}
-	S.lastPopupTopRow = zoneTop > 0 ? zoneTop : 0;
 	return clear;
 }
 
@@ -563,10 +568,13 @@ function chromeString(): string {
 function inputCursor(): string {
 	const { rows, cols } = dims();
 	const pos = cursorPos();
+	const vis = visibleLines();
 	const width = Math.max(1, cols - 6);
 	const offset = lineOffset(pos.col, width);
-	const row = rows - 2 - (pos.line - S.topLine);
-	return `${CSI}${Math.max(1, row)};${5 + pos.col - offset}H`;
+	// The cursor must sit on the row being edited, which moves with the
+	// number of input lines and the terminal panel below the box.
+	const row = rows - 1 - termPanelRows() - vis + (pos.line - S.topLine);
+	return `${CSI}${Math.max(1, Math.min(rows, row))};${5 + pos.col - offset}H`;
 }
 
 function paint(): void {
@@ -679,6 +687,10 @@ const TOKEN_RE = /\x1b\[200~|\x1b\[201~|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1bO[A-Za-z]|
 
 const NAMED: Record<string, string> = {
 	'\r': 'enter',
+	// macOS Terminal.app and several other terminals encode Shift+Enter as
+	// ESC+CR; opencode, Claude Code and Codex all accept it as a newline.
+	'\x1b\r': 'shift+enter',
+	'\x1b\n': 'shift+enter',
 	// A bare LF is Shift+Enter on terminals that send a distinct newline
 	// (most terminal emulators send CR for Enter). Inserting a line instead
 	// of submitting matches the Shift+Enter behavior users expect.
@@ -789,7 +801,7 @@ export function listenKeys(handler: (key: Key) => void, onError?: () => void): (
 		if (stopped) return;
 		stopped = true;
 		stdin.off('data', onData);
-		if (out.isTTY) out.write(`${CSI}?2004l${CSI}<u`);
+		if (out.isTTY) out.write(`${CSI}?2004l${CSI}<u${CSI}>4;0m`);
 		stdin.setRawMode?.(false);
 		stdin.pause();
 	};
@@ -808,10 +820,13 @@ export function listenKeys(handler: (key: Key) => void, onError?: () => void): (
 	stdin.resume();
 	stdin.setEncoding('utf8');
 	if (out.isTTY) {
-		// Bracketed paste + kitty keyboard flags. The kitty push makes terminals
-		// that support it report Shift+Enter distinctly (CSI 13;2u) and the Esc
-		// key as CSI 27u; terminals without support simply ignore it.
-		out.write(`${CSI}?2004h${CSI}>1u`);
+		// Bracketed paste + kitty keyboard flags (the same negotiation opencode
+		// uses). The kitty push makes supporting terminals report Shift+Enter
+		// distinctly (CSI 13;2u) and the Esc key as CSI 27u. Terminals without
+		// kitty support fall back to xterm modifyOtherKeys (mode 1), which also
+		// encodes Shift+Enter as CSI 13;2u; terminals with neither simply ignore
+		// both sequences and keep their legacy encoding.
+		out.write(`${CSI}?2004h${CSI}>1u${CSI}>4;1m`);
 	}
 	stdin.on('data', onData);
 
