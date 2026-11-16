@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { executeTool, applyFileChange } from '../../src/tools/index.js';
+import { executeTool, applyFileChange, invalidateToolCache } from '../../src/tools/index.js';
 import { fromWireToolName, parseToolCallsFromText } from '../../src/llm/client.js';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -143,7 +143,7 @@ describe('executeTool', () => {
 		expect(traversal.error).toContain('Access denied');
 	});
 
-	it('parses text-emitted tool calls with top-level arguments', () => {
+		it('parses text-emitted tool calls with top-level arguments', () => {
 		const wrapped = parseToolCallsFromText('{"tool_calls":[{"id":"call_1","name":"write_file","arguments":{"path":"a.txt","content":"x"}}]}');
 		expect(wrapped).toHaveLength(1);
 		expect(wrapped[0]?.name).toBe('file:write');
@@ -154,8 +154,32 @@ describe('executeTool', () => {
 		expect(single[0]?.arguments).toEqual({ command: 'echo hi' });
 
 		const bare = parseToolCallsFromText('[{"name":"Read","arguments":{"file_path":"a.txt"}}]');
-		expect(bare[0]?.name).toBe('file:read');
-	});
+			expect(bare[0]?.name).toBe('file:read');
+		});
+
+		it('parses XML-style tool calls without exposing markup', () => {
+			const calls = parseToolCallsFromText('<tool_call><function=file_read><parameter name="path">package.json</parameter></function></tool_call>');
+			expect(calls).toHaveLength(1);
+			expect(calls[0]?.name).toBe('file:read');
+			expect(calls[0]?.arguments).toEqual({ path: 'package.json' });
+		});
+
+		it('invalidates cached reads after an approved mutation', async () => {
+			const path = '.test-cache-invalidation.txt';
+			const absolutePath = resolve(PROJECT_ROOT, path);
+			try {
+				writeFileSync(absolutePath, 'one\n', 'utf-8');
+				const first = await executeTool('file:read', { path }, PROJECT_ROOT);
+				const change = JSON.parse((await executeTool('file:write', { path, content: 'two\n' }, PROJECT_ROOT)).output ?? '').proposedChange;
+				expect((await applyFileChange(change, PROJECT_ROOT)).success).toBe(true);
+				const second = await executeTool('file:read', { path }, PROJECT_ROOT);
+				expect(first.output).toContain('one');
+				expect(second.output).toContain('two');
+			} finally {
+				invalidateToolCache(PROJECT_ROOT);
+				rmSync(absolutePath, { force: true });
+			}
+		});
 
   it('file:read — reads package.json successfully', async () => {
     const result = await executeTool('file:read', { path: 'package.json' }, PROJECT_ROOT);

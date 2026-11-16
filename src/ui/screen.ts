@@ -209,6 +209,7 @@ export function terminalPanelState(): { command: string; exitCode: number | null
 // A background key listener while the user is NOT editing (during the agent
 // tool loop), so Ctrl+O can close the running terminal at any time.
 let termKeyStop: (() => void) | null = null;
+let backgroundCommandStop: (() => void) | null = null;
 
 function syncTermKeyListener(): void {
 	const want = Boolean(S.term) && !S.editing && S.active;
@@ -226,6 +227,40 @@ export function layoutSupported(): boolean {
 	return Boolean(
 		out.isTTY && process.stdin.isTTY && (out.rows ?? 0) >= MIN_ROWS && (out.columns ?? 0) >= MIN_COLS,
 	);
+}
+
+/**
+ * Accept read-only slash commands while the main agent request is in flight.
+ * The normal line editor is closed during tool execution; this listener fills
+ * that gap without consuming Escape, which remains cancellation.
+ */
+export function startBackgroundCommandListener(onCommand: (command: string) => void): () => void {
+	if (!process.stdin.isTTY || backgroundCommandStop) return () => undefined;
+	const stdin = process.stdin;
+	const state = { paste: null as string | null };
+	let buffer = '';
+	const onData = (chunk: string | Buffer): void => {
+		for (const key of parseKeys(chunk.toString(), state)) {
+			if (key.name === 'text' || key.name === 'paste') buffer += key.text ?? '';
+			else if (key.name === 'backspace') buffer = buffer.slice(0, -1);
+			else if (key.name === 'enter') {
+				const command = buffer.trim();
+				buffer = '';
+				if (/^\/subagents(?:\s|$)/i.test(command)) onCommand(command);
+			} else if (key.name === 'escape') buffer = '';
+		}
+	};
+	stdin.setRawMode?.(true);
+	stdin.setEncoding('utf8');
+	stdin.resume();
+	stdin.on('data', onData);
+	backgroundCommandStop = () => {
+		stdin.off('data', onData);
+		stdin.setRawMode?.(false);
+		stdin.pause();
+		backgroundCommandStop = null;
+	};
+	return backgroundCommandStop;
 }
 
 // =============================================================================

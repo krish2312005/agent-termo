@@ -7,6 +7,7 @@ import type { ToolCall, ConversationMessage, ToolDef, TokenUsage } from '../type
 import { mergeModels, type ModelInfo } from './models.js';
 
 type NIMTool = OpenAI.Chat.ChatCompletionTool;
+type NIMFunctionTool = Extract<NIMTool, { type: 'function' }>;
 
 export type ThinkingCapacity = 'off' | 'auto' | 'low' | 'medium' | 'high';
 
@@ -69,6 +70,29 @@ export function fromWireToolName(name: string): string {
 	return WIRE_TO_CANONICAL[key] ?? name;
 }
 
+function parseMarkupToolCalls(text: string): ToolCall[] {
+	const calls: ToolCall[] = [];
+	const pattern = /<tool_call>\s*<function=([^>]+)>\s*([\s\S]*?)\s*<\/function>\s*<\/tool_call>/gi;
+	for (const match of text.matchAll(pattern)) {
+		const body = (match[2] ?? '').trim();
+		let args: Record<string, unknown> = {};
+		try {
+			const parsed = JSON.parse(body) as unknown;
+			if (parsed && typeof parsed === 'object') args = parsed as Record<string, unknown>;
+		} catch {
+			for (const parameter of body.matchAll(/<parameter(?:\s+name=["']([^"']+)["'])?>([\s\S]*?)<\/parameter>/gi)) {
+				args[parameter[1] ?? 'input'] = parameter[2] ?? '';
+			}
+		}
+		calls.push({ id: crypto.randomUUID(), name: fromWireToolName(match[1]!.trim()), arguments: args });
+	}
+	return calls;
+}
+
+function removeToolCallMarkup(text: string): string {
+	return text.replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '').trim();
+}
+
 /**
  * Parse JSON tool calls a model may emit as plain text instead of native
  * tool_calls, e.g. {"tool_calls":[{"name":"file:write","arguments":{...}}]}.
@@ -78,6 +102,8 @@ export function parseToolCallsFromText(text: string): ToolCall[] {
 	let cleaned = (text ?? '').trim();
 	cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
 	if (!cleaned) return [];
+	const markupCalls = parseMarkupToolCalls(cleaned);
+	if (markupCalls.length > 0) return markupCalls;
 
 	const readJson = (value: string): unknown => {
 		try {
@@ -165,7 +191,7 @@ export class NimClient {
       function: {
 			name: toWireToolName(t.name),
         description: t.description,
-        parameters: t.parameters as unknown as NIMTool['function']['parameters'],
+			parameters: t.parameters as unknown as NIMFunctionTool['function']['parameters'],
       },
     })) as NIMTool[];
   }
@@ -339,8 +365,16 @@ export class NimClient {
 			return { id: tc.id, name: fromWireToolName(tc.name), arguments: args };
     });
 
+		let visibleContent = finalContent;
+		if (toolCalls.length === 0) {
+			const parsedCalls = parseToolCallsFromText(finalContent);
+			if (parsedCalls.length > 0) {
+				toolCalls.push(...parsedCalls);
+				visibleContent = finalContent.includes('<tool_call>') ? removeToolCallMarkup(finalContent) : '';
+			}
+		}
 		if (this.activeController === controller) this.activeController = null;
-		yield { content: finalContent, toolCalls };
+		yield { content: visibleContent, toolCalls };
   }
 
   /**
@@ -388,27 +422,29 @@ export class NimClient {
         '',
       ).trim() ?? '';
 
-    const toolCalls: ToolCall[] = (msg?.tool_calls ?? []).map((tc) => {
-      let args: Record<string, unknown> = {};
+		const toolCalls: ToolCall[] = (msg?.tool_calls ?? []).flatMap((tc) => {
+			if (tc.type !== 'function') return [];
+			let args: Record<string, unknown> = {};
       try {
         const parsed = JSON.parse(tc.function.arguments ?? '{}') as unknown;
         args = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : { _raw: String(parsed) };
       } catch {
         args = { _raw: tc.function.arguments };
       }
-			return { id: tc.id, name: fromWireToolName(tc.function.name), arguments: args };
-    });
+			return [{ id: tc.id, name: fromWireToolName(tc.function.name), arguments: args }];
+	    });
 
     // If no native tool calls, parse JSON tool calls emitted as text.
-    if (toolCalls.length === 0) {
-      const parsedCalls = parseToolCallsFromText(content);
-      if (parsedCalls.length > 0) {
-        toolCalls.push(...parsedCalls);
-        // Remove the JSON payload from the visible response.
-        const marker = content.indexOf('"tool_calls"');
-        const start = marker !== -1 ? content.lastIndexOf('{', marker) : content.trimStart().startsWith('[') ? content.indexOf('[') : content.lastIndexOf('{');
-        if (start !== -1) content = content.slice(0, start).trim();
-      }
+	    if (toolCalls.length === 0) {
+	      const parsedCalls = parseToolCallsFromText(content);
+	      if (parsedCalls.length > 0) {
+	        toolCalls.push(...parsedCalls);
+	        content = content.includes('<tool_call>') ? removeToolCallMarkup(content) : (() => {
+	          const marker = content.indexOf('"tool_calls"');
+	          const start = marker !== -1 ? content.lastIndexOf('{', marker) : content.trimStart().startsWith('[') ? content.indexOf('[') : content.lastIndexOf('{');
+	          return start !== -1 ? content.slice(0, start).trim() : content;
+	        })();
+	      }
     }
 
 		if (this.activeController === controller) this.activeController = null;
