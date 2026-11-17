@@ -91,6 +91,11 @@ const S = {
 	},
 	/** Whether the terminal panel is shown below the input box. */
 	termOpen: false,
+	/** True while the agent is working and the background activity navigator owns input. */
+	backgroundActive: false,
+	backgroundMonitorOpen: false,
+	backgroundEscapeConsumed: false,
+	backgroundOverlay: [] as string[],
 };
 
 export function setCommands(commands: CommandInfo[]): void {
@@ -141,6 +146,10 @@ function termPanelRows(): number {
 	if (!S.term || !S.termOpen) return 0;
 	const shown = Math.min(TERM_PANEL_LINES, Math.max(1, S.term.lines.length));
 	return shown + 2; // header row + bottom border
+}
+
+function subAgentPanelRows(): number {
+	return S.backgroundMonitorOpen && S.backgroundOverlay.length > 0 ? S.backgroundOverlay.length + 2 : 0;
 }
 
 /** Strip ANSI escapes and fold \r progress-bar rewrites into single lines. */
@@ -253,6 +262,10 @@ let bgTyped = '';
  * consuming Escape, which remains cancellation.
  */
 export function startBackgroundCommandListener(onCommand: (command: string) => void): () => void {
+	return startBackgroundCommandListenerWithKeys(onCommand);
+}
+
+export function startBackgroundCommandListenerWithKeys(onCommand: (command: string) => void, onKey?: (key: Key) => void): () => void {
 	if (!process.stdin.isTTY || backgroundCommandStop) return () => undefined;
 	bgTyped = '';
 	const stopKeys = listenKeys(
@@ -276,6 +289,32 @@ export function startBackgroundCommandListener(onCommand: (command: string) => v
 	};
 	monitorRefresh();
 	return backgroundCommandStop;
+}
+
+export function setBackgroundMonitorOpen(open: boolean): void {
+	S.backgroundMonitorOpen = open;
+	paint();
+}
+
+export function isBackgroundMonitorOpen(): boolean {
+	return S.backgroundMonitorOpen;
+}
+
+/** Returns true once for Escape consumed by the read-only monitor. */
+export function consumeBackgroundMonitorEscape(): boolean {
+	const consumed = S.backgroundEscapeConsumed;
+	S.backgroundEscapeConsumed = false;
+	return consumed;
+}
+
+export function setBackgroundOverlay(lines: string[]): void {
+	S.backgroundOverlay = lines.slice(0, 8);
+	paint();
+}
+
+export function clearBackgroundOverlay(): void {
+	S.backgroundOverlay = [];
+	paint();
 }
 
 // =============================================================================
@@ -614,11 +653,13 @@ function popupTopRow(popup: NonNullable<ReturnType<typeof activePopup>>): number
 
 function statusLine(max: number): string {
 	const hint =
-		S.permissionMode === 'auto'
+		S.backgroundActive
+			? `←/→ sub-agents · ↑/↓ select · Enter inspect · Esc ${S.backgroundMonitorOpen ? 'close' : 'cancel'}`
+			: S.permissionMode === 'auto'
 			? 'AUTO-ACCEPT · /permissions ask to disable'
 			: S.permissionMode === 'files'
 				? 'FILES-AUTO · terminal commands still ask'
-				: 'shift+enter newline · /help · ctrl+c interrupt';
+			: 'shift+enter newline · /help · ctrl+c interrupt';
 
 	// The model name is the most important part of the status line: it is
 	// always shown in full (never truncated) and lower-priority segments are

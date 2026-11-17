@@ -13,6 +13,8 @@ import {
 	listenKeys,
 	resetScreen,
 	setCommands,
+	isBackgroundMonitorOpen,
+	setBackgroundOverlay,
 	terminalWidth,
 	type CommandInfo,
 } from './screen.js';
@@ -32,6 +34,12 @@ export {
 	appendTerminalOutput,
 	finishTerminalPanel,
 	startBackgroundCommandListener,
+	startBackgroundCommandListenerWithKeys,
+	setBackgroundMonitorOpen,
+	isBackgroundMonitorOpen,
+	consumeBackgroundMonitorEscape,
+	setBackgroundOverlay,
+	clearBackgroundOverlay,
 	clearTerminalPanel,
 	toggleTerminalPanel,
 	terminalPanelVisible,
@@ -256,7 +264,24 @@ export function printSubAgents(selectedId?: string): void {
 				`${clipText(activity.task.replace(/\s+/g, ' '), Math.max(20, terminalWidth() - 60))}\n`,
 		);
 	}
-	out.write(c.dim('Use /subagents <id> to inspect one sub-agent.') + '\n\n');
+	out.write(c.dim('←/→ close/open · ↑/↓ select · Enter inspect · /subagents <id> also works') + '\n\n');
+}
+
+export function moveSubAgentSelection(direction: 'up' | 'down'): string | undefined {
+	const ids = [...subAgentActivities.keys()];
+	if (ids.length === 0) return undefined;
+	let index = ids.indexOf(selectedSubAgentId);
+	if (index < 0) index = 0;
+	index = direction === 'down' ? (index + 1) % ids.length : (index - 1 + ids.length) % ids.length;
+	selectedSubAgentId = ids[index] ?? ids[0] ?? '';
+	showSubAgentMonitor();
+	return selectedSubAgentId || undefined;
+}
+
+export function printSelectedSubAgent(): void {
+	if (isBackgroundMonitorOpen()) setBackgroundOverlay(monitorLines(selectedSubAgentId));
+	else if (selectedSubAgentId) printSubAgents(selectedSubAgentId);
+	else printSubAgents();
 }
 
 // =============================================================================

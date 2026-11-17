@@ -55,7 +55,13 @@ import {
 	appendTerminalOutput,
 	finishTerminalPanel,
 	printSubAgents,
-	startBackgroundCommandListener,
+	startBackgroundCommandListenerWithKeys,
+	moveSubAgentSelection,
+	printSelectedSubAgent,
+	showSubAgentMonitor,
+	setBackgroundMonitorOpen,
+	clearBackgroundOverlay,
+	consumeBackgroundMonitorEscape,
 } from './ui/index.js';
 import type { ConversationMessage, ToolCall, ToolResult, ProposedFileChange } from './types/index.js';
 
@@ -210,7 +216,7 @@ function isContinueRequest(input: string): boolean {
 
 function shouldUseTools(input: string, activeAgentName: string, continuing: boolean): boolean {
 	if (continuing || activeAgentName) return true;
-	return /\b(build|code|debug|deploy|edit|file|fix|implement|refactor|review|run|test|write|create|delete|inspect|analy[sz]e)\b/i.test(input);
+	return /\b(build|code|debug|deploy|edit|file|fix|implement|refactor|review|run|test|write|rewrite|create|delete|inspect|analy[sz]e|documentation|docs|architecture|delegate|spawn|specialist|sub-?agent)\b/i.test(input);
 }
 
 /** Build the continuation directive injected when the user says "continue". */
@@ -240,8 +246,9 @@ async function withEscapeCancellation<T>(nimClient: NimClient, operation: () => 
 		rejectCancellation = reject;
 	});
 	const stop = listenKeys((key) => {
-		if (key.name === 'escape' || key.name === 'ctrl+c') {
-			if (cancelled) return;
+			if (key.name === 'escape' || key.name === 'ctrl+c') {
+				if (key.name === 'escape' && consumeBackgroundMonitorEscape()) return;
+				if (cancelled) return;
 			cancelled = true;
 			nimClient.cancelCurrentRequest();
 			printInfo(key.name === 'ctrl+c' ? 'Response interrupted.' : 'Response cancelled.');
