@@ -6,12 +6,22 @@ import { NimClient, parseToolCallsFromText, type ThinkingCapacity } from './llm/
 import { TOOL_DEFINITIONS } from './llm/tools.js';
 import { executeTool, applyFileChange, setTerminalHooks, killRunningTerminal } from './tools/index.js';
 import { loadMemory, loadTimeline, logToTimeline, logAgentTermoTimeline, appendToSessionLog, appendToTimeline, loadSessionLog } from './memory/index.js';
-import { buildSystemPrompt } from './agents/index.js';
+import { buildSystemPrompt, resolveDelegation } from './agents/index.js';
 import { resolveProjectRoot, saveNimModel, saveNimThinking, savePermissionMode } from './utils/config.js';
 import { resolve } from 'node:path';
 import { readdirSync, readFileSync } from 'node:fs';
 import { ensureAgentFolder, ensureAgentStructure, loadProjectAgents, loadAgentCommands, type AgentCommand } from './runtime/agent-folder.js';
 import { commandApprovalKey, isCommandApprovalRequired, loadAllowedCommands, saveAllowedCommands } from './runtime/permissions.js';
+import {
+	addSubAgentProgress,
+	beginSubAgentRun,
+	endSubAgentTool,
+	finishSubAgent,
+	setSubAgentActivity,
+	setSubAgentWaiting,
+	spawnSubAgent,
+	startSubAgentTool,
+} from './runtime/subagents.js';
 import {
 	printWelcome,
 	printUserMessage,
@@ -44,9 +54,6 @@ import {
 	startTerminalPanel,
 	appendTerminalOutput,
 	finishTerminalPanel,
-	startSubAgentActivity,
-	recordSubAgentActivity,
-	finishSubAgentActivity,
 	printSubAgents,
 	startBackgroundCommandListener,
 } from './ui/index.js';
@@ -240,7 +247,7 @@ async function withEscapeCancellation<T>(nimClient: NimClient, operation: () => 
 			printInfo(key.name === 'ctrl+c' ? 'Response interrupted.' : 'Response cancelled.');
 			rejectCancellation?.(new RequestCancelledError());
 		}
-	}, () => rejectCancellation?.(new RequestCancelledError()));
+	}, () => rejectCancellation?.(new RequestCancelledError()), { background: true });
 	try {
 		const result = await Promise.race([operation(), cancellation]);
 		if (cancelled) throw new RequestCancelledError();
@@ -289,12 +296,16 @@ async function executeToolWithReview(
 	input: InputController,
 	permissionMode: PermissionMode,
 	allowedCommands: Set<string>,
+	/** Called with true while the user is being asked to approve something (sub-agents show "waiting"). */
+	onWaiting?: (waiting: boolean) => void,
 ): Promise<{ toolResult: { success: boolean; output?: string; error?: string }; change?: ProposedFileChange; applied: boolean }> {
 	printToolCall(toolName, args);
 	const approvalKey = commandApprovalKey(toolName, args);
 	if (permissionMode !== 'auto' && isCommandApprovalRequired(toolName) && !allowedCommands.has(approvalKey)) {
 		input.close();
+		onWaiting?.(true);
 		const decision = await promptCommandApproval(typeof args.command === 'string' ? args.command : approvalKey);
+		onWaiting?.(false);
 		input.showPrompt();
 		if (decision === 'reject') return { toolResult: { success: false, error: 'Command rejected by user' }, applied: false };
 		if (decision === 'always') {
@@ -321,7 +332,9 @@ async function executeToolWithReview(
 		// Show terminal diff viewer
 		printToolResult(toolName, { success: toolResult.success, output: toolResult.output, error: toolResult.error }, { needsApproval: true, proposedChange });
 
+			onWaiting?.(true);
 			const decision = await promptAcceptReject('Accept this change?');
+			onWaiting?.(false);
 
 		// Restore input for next REPL iteration
 		input.showPrompt();
@@ -349,11 +362,19 @@ async function executeToolWithReview(
 
 const DELEGATED_TOOL_BUDGET = 8;
 
+/** One-line summary of a tool call's arguments for the sub-agent monitor. */
+function describeArgs(args: Record<string, unknown>): string {
+	return String(args.path ?? args.command ?? args.pattern ?? args.glob ?? args.message ?? '').slice(0, 160);
+}
+
 /**
  * Run a delegated specialist agent. The sub-agent gets real tool access in a
  * bounded loop, so it can actually read files and write its deliverables (for
  * example its documentation into the project's docs/ folder) instead of only
  * describing what it would do. Nested delegation is not allowed.
+ *
+ * Everything it does is reported to the sub-agent registry (runtime/subagents.ts),
+ * which the /subagents command and the live monitor read.
  */
 async function runDelegatedAgent(
 	projectRoot: string,
@@ -365,16 +386,18 @@ async function runDelegatedAgent(
 	taskState: TaskState,
 ): Promise<ToolResult> {
 	const started = Date.now();
-	const agentName = String(toolCall.arguments.agent ?? '').trim();
-	const task = String(toolCall.arguments.task ?? '').trim();
-	const context = String(toolCall.arguments.context ?? '').trim();
 	const agents = loadProjectAgents(projectRoot);
-	const agent = agents.find((candidate) => candidate.name === agentName);
+	const { agent, requested, task, context } = resolveDelegation(toolCall.arguments, agents);
 	if (!agent || !task) {
-			return { id: toolCall.id, name: toolCall.name, success: false, error: `Unknown agent or empty task: ${agentName}`, durationMs: Date.now() - started };
+		// Name the valid agents so the model can correct itself on its next call.
+		const known = agents.map((candidate) => candidate.name).join(', ') || 'none installed (run /agent-folder)';
+		const error = agent
+			? 'Empty task: pass the focused task in the "task" argument.'
+			: `Unknown agent "${requested}". Available agents: ${known}.`;
+		return { id: toolCall.id, name: toolCall.name, success: false, error, durationMs: Date.now() - started };
 	}
 
-	startSubAgentActivity(toolCall.id, agent.name, task);
+	const subId = spawnSubAgent(toolCall.id, agent.name, task, DELEGATED_TOOL_BUDGET);
 	printInfo('Delegating to ' + agent.name + '…');
 	// Each parallel worker gets its own client/controller so cancelling one request
 	// or updating its usage cannot interrupt a sibling worker.
@@ -401,22 +424,24 @@ async function runDelegatedAgent(
 	// Sub-agents cannot delegate further; they get every other tool.
 	const delegatedToolDefs = TOOL_DEFINITIONS.filter((t) => t.name !== 'agent:delegate');
 	let finalText = '';
+	let lastNarration = '';
 
 	try {
 		for (let iteration = 0; iteration < DELEGATED_TOOL_BUDGET; iteration++) {
+			setSubAgentActivity(subId, 'waiting for the model', iteration + 1);
 			let result: { content: string; toolCalls: ToolCall[] };
 			try {
-						result = await withEscapeCancellation(delegatedClient, () =>
-							completeWithRetry(delegatedClient, delegatedMessages, delegatedClient.buildToolDefs(delegatedToolDefs)),
-					);
-					setScreenStatus({ usage: delegatedClient.formatUsage() });
+				result = await withEscapeCancellation(delegatedClient, () =>
+					completeWithRetry(delegatedClient, delegatedMessages, delegatedClient.buildToolDefs(delegatedToolDefs)),
+				);
+				setScreenStatus({ usage: delegatedClient.formatUsage() });
 			} catch (err) {
 				if (isRequestCancelled(err)) {
-						finishSubAgentActivity(toolCall.id, 'cancelled');
-						return { id: toolCall.id, name: toolCall.name, success: false, error: 'Sub-agent run cancelled.', durationMs: Date.now() - started };
+					finishSubAgent(subId, 'cancelled', 'Cancelled by the user.');
+					return { id: toolCall.id, name: toolCall.name, success: false, error: 'Sub-agent run cancelled.', durationMs: Date.now() - started };
 				}
 				// The model may not support native tool calling — plain text fallback.
-					const fallback = await withEscapeCancellation(delegatedClient, () => completeWithRetry(delegatedClient, delegatedMessages, undefined));
+				const fallback = await withEscapeCancellation(delegatedClient, () => completeWithRetry(delegatedClient, delegatedMessages, undefined));
 				result = {
 					content: fallback.content,
 					toolCalls: fallback.toolCalls.length > 0 ? fallback.toolCalls : parseToolCallsFromText(fallback.content),
@@ -428,6 +453,10 @@ async function runDelegatedAgent(
 				finalText = result.content.trim();
 				break;
 			}
+			if (result.content.trim()) {
+				lastNarration = result.content.trim();
+				addSubAgentProgress(subId, lastNarration);
+			}
 
 			delegatedMessages.push({
 				id: crypto.randomUUID(),
@@ -438,10 +467,17 @@ async function runDelegatedAgent(
 			});
 
 			for (const tc of toolCalls) {
-				const execution = await executeToolWithReview(tc.name, tc.arguments, projectRoot, input, permissionMode, allowedCommands);
+				startSubAgentTool(subId, tc.name, describeArgs(tc.arguments) || task);
+				const execution = await executeToolWithReview(tc.name, tc.arguments, projectRoot, input, permissionMode, allowedCommands, (waiting) => setSubAgentWaiting(subId, waiting));
 				const toolResult = execution.toolResult;
-					const target = String(tc.arguments.path ?? tc.arguments.command ?? task).slice(0, 80);
-					recordSubAgentActivity(toolCall.id, `${tc.name} ${target} — ${toolResult.success ? 'ok' : 'failed'}`);
+				const target = String(tc.arguments.path ?? tc.arguments.command ?? task).slice(0, 80);
+				endSubAgentTool(
+					subId,
+					toolResult.success,
+					execution.change
+						? `${execution.applied ? 'applied' : 'not applied'} ${execution.change.path}`
+						: toolResult.success ? (toolResult.output ?? 'ok') : (toolResult.error ?? 'failed'),
+				);
 				recordTaskAction(taskState, `[${agent.name}] ${tc.name} ${target} ${toolResult.success ? 'ok' : 'failed'}`);
 				delegatedMessages.push({
 					id: tc.id,
@@ -453,14 +489,15 @@ async function runDelegatedAgent(
 			}
 		}
 
-			const output = finalText || '(sub-agent returned no text)';
-			finishSubAgentActivity(toolCall.id, 'completed', output);
+		// If the step budget ran out mid-work, report the last thing it said instead of nothing.
+		const output = finalText || lastNarration || `(sub-agent stopped after ${DELEGATED_TOOL_BUDGET} steps without a final report)`;
+		finishSubAgent(subId, 'completed', output);
 		logAgentTermoTimeline(`Sub-agent ${agent.name} completed delegated task: ${task.slice(0, 120)}`, projectRoot);
 		void appendToTimeline(projectRoot, agent.name, 'Delegated task completed', [`Task: ${task.slice(0, 300)}`], [`Summary: ${output.replace(/\s+/g, ' ').slice(0, 400)}`]);
 		return { id: toolCall.id, name: toolCall.name, success: true, output: `[${agent.name}]\n${output}`, durationMs: Date.now() - started };
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			finishSubAgentActivity(toolCall.id, 'failed', message);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		finishSubAgent(subId, 'failed', message);
 		logAgentTermoTimeline(`Sub-agent ${agent.name} failed: ${message.slice(0, 120)}`, projectRoot);
 		return { id: toolCall.id, name: toolCall.name, success: false, error: message, durationMs: Date.now() - started };
 	}
@@ -749,7 +786,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 	let currentGoal = '';
 	const taskState = newTaskState();
 	const buildSessionPrompt = (): string => {
-		let prompt = buildSystemPrompt(memory, '', projectRoot, activeAgentPrompt);
+		let prompt = buildSystemPrompt(memory, '', projectRoot, activeAgentPrompt, customAgents);
 		if (memoryContext) prompt += '\n\n## Recent Session Log (previous sessions, may include interrupted tasks)\n' + memoryContext;
 		if (taskState.goal && taskState.status !== 'idle') {
 			prompt += '\n\n## Active Task\n' + taskState.goal + '\nStatus: ' + taskState.status + (taskState.reason ? ' (' + taskState.reason + ')' : '');
@@ -1078,6 +1115,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				rememberChat(projectRoot, 'User', userInput);
 				void appendToTimeline(projectRoot, activeAgentName || 'Agent-Termo', 'User request', ['Request: ' + userInput.replace(/\s+/g, ' ').slice(0, 700)], []);
 				if (!displayedInput) printUserMessage(userInput);
+				beginSubAgentRun();
 				stopBackgroundCommands = startBackgroundCommandListener((command) => {
 					printSubAgents(command.slice('/subagents'.length).trim() || undefined);
 				});

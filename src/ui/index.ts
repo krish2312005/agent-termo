@@ -6,6 +6,8 @@
 import Chalk from 'chalk';
 import type { ProposedFileChange } from '../types/index.js';
 import { loadMemory, loadTimeline } from '../memory/index.js';
+import { getSubAgent, listSubAgents, subscribeSubAgents } from '../runtime/subagents.js';
+import { buildInspector, formatDuration, statusIcon } from './subagent-view.js';
 import {
 	clipText,
 	listenKeys,
@@ -214,66 +216,45 @@ export function printAssistantMessage(content: string): void {
 	md.end();
 }
 
-type SubAgentStatus = 'running' | 'completed' | 'failed' | 'cancelled';
-
-interface SubAgentActivity {
-	id: string;
-	agent: string;
-	task: string;
-	status: SubAgentStatus;
-	startedAt: number;
-	endedAt?: number;
-	events: string[];
-	output?: string;
-}
-
-const subAgentActivities = new Map<string, SubAgentActivity>();
-
-export function startSubAgentActivity(id: string, agent: string, task: string): void {
-	const activity = { id: id.slice(0, 12), agent, task, status: 'running' as const, startedAt: Date.now(), events: [] };
-	subAgentActivities.set(activity.id, activity);
-	out.write(c.magenta('◆ ') + c.bold(agent) + c.dim(' started in parallel') + '\n');
-}
-
-export function recordSubAgentActivity(id: string, event: string): void {
-	const activity = subAgentActivities.get(id.slice(0, 12));
-	if (activity) activity.events.push(event.slice(0, 180));
-}
-
-export function finishSubAgentActivity(id: string, status: Exclude<SubAgentStatus, 'running'>, output?: string): void {
-	const activity = subAgentActivities.get(id.slice(0, 12));
+// Sub-agent state lives in runtime/subagents.ts; /subagents and the live monitor
+// (screen.ts) are two views of it. These lines mark spawn and completion in the
+// scrolling output.
+subscribeSubAgents((event) => {
+	const activity = event.id ? getSubAgent(event.id) : undefined;
 	if (!activity) return;
-	activity.status = status;
-	activity.endedAt = Date.now();
-	activity.output = output;
-	const duration = Math.max(0, Math.round((activity.endedAt - activity.startedAt) / 1000));
-	const icon = status === 'completed' ? c.green('✓') : status === 'cancelled' ? c.yellow('!') : c.red('✗');
-	out.write(c.magenta('◆ ') + icon + ' ' + activity.agent + c.dim(` finished in ${duration}s`) + '\n');
-}
+	if (event.type === 'spawned') {
+		out.write(c.magenta('◆ ') + c.bold(activity.agent) + c.dim(' started in parallel') + '\n');
+	} else if (event.type === 'finished') {
+		const duration = formatDuration((activity.endedAt ?? Date.now()) - activity.startedAt);
+		out.write(c.magenta('◆ ') + statusIcon(activity.status) + ' ' + activity.agent + c.dim(` finished in ${duration}`) + '\n');
+	}
+});
 
 export function printSubAgents(selectedId?: string): void {
-	const activities = [...subAgentActivities.values()];
+	const activities = listSubAgents();
 	if (activities.length === 0) {
 		printInfo('No sub-agent activity in this session.');
 		return;
 	}
 	if (selectedId) {
-		const activity = activities.find((item) => item.id === selectedId || item.agent === selectedId);
+		const activity = getSubAgent(selectedId);
 		if (!activity) {
 			printInfo('Unknown sub-agent. Use /subagents to list activity IDs.');
 			return;
 		}
+		const { head, body } = buildInspector(activity, Math.max(20, Math.min(terminalWidth() - 2, 100)));
 		out.write('\n' + c.bold('Sub-agent ' + activity.agent) + c.dim(` [${activity.id}]`) + '\n' + rule() + '\n');
-		out.write(c.dim('Task: ') + activity.task + '\n');
-		for (const event of activity.events) out.write('  ' + c.dim('• ') + event + '\n');
-		if (activity.output) out.write('\n' + c.dim('Result: ') + clipText(activity.output.replace(/\s+/g, ' '), terminalWidth() - 12) + '\n');
+		for (const line of [...head, ...body]) out.write(line + '\n');
 		out.write('\n');
 		return;
 	}
 	out.write('\n' + c.bold('Sub-agents') + '\n' + rule() + '\n');
 	for (const activity of activities) {
-		const icon = activity.status === 'running' ? c.yellow('◐') : activity.status === 'completed' ? c.green('✓') : c.red('✗');
-		out.write(`${icon} ${c.cyan(activity.id.padEnd(12))} ${activity.agent.padEnd(28)} ${activity.status} — ${clipText(activity.task.replace(/\s+/g, ' '), Math.max(20, terminalWidth() - 58))}\n`);
+		const duration = formatDuration((activity.endedAt ?? Date.now()) - activity.startedAt);
+		out.write(
+			`${statusIcon(activity.status)} ${c.cyan(activity.id.padEnd(12))} ${clipText(activity.agent, 24).padEnd(24)} ${activity.status.padEnd(9)} ${duration.padStart(6)} — ` +
+				`${clipText(activity.task.replace(/\s+/g, ' '), Math.max(20, terminalWidth() - 60))}\n`,
+		);
 	}
 	out.write(c.dim('Use /subagents <id> to inspect one sub-agent.') + '\n\n');
 }
