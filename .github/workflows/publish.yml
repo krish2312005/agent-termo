@@ -9,8 +9,13 @@ permissions:
   contents: read
   id-token: write
 
+concurrency:
+  group: npm-publish-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   publish:
+    name: Validate and publish package
     runs-on: ubuntu-latest
 
     steps:
@@ -24,14 +29,33 @@ jobs:
           registry-url: "https://registry.npmjs.org"
           package-manager-cache: false
 
+      - name: Validate release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Release tag must use the form vX.Y.Z (received: $GITHUB_REF_NAME)" >&2
+            exit 1
+          fi
+          echo "PACKAGE_VERSION=$version" >> "$GITHUB_ENV"
+
       - name: Install dependencies
         run: npm ci
 
-      - name: Build package
-        run: npm run build --if-present
+      - name: Set package version from tag
+        run: npm version "$PACKAGE_VERSION" --no-git-tag-version --allow-same-version
 
-      - name: Run tests
-        run: npm test --if-present
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test -- --run
+
+      - name: Build package
+        run: npm run build
 
       - name: Publish to npm
-        run: npm publish
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -77,6 +77,11 @@ const S = {
 	},
 	/** Whether the terminal panel is shown below the input box. */
 	termOpen: false,
+	/** True while the agent is working and the background activity navigator owns input. */
+	backgroundActive: false,
+	backgroundMonitorOpen: false,
+	backgroundEscapeConsumed: false,
+	backgroundOverlay: [] as string[],
 };
 
 export function setCommands(commands: CommandInfo[]): void {
@@ -127,6 +132,10 @@ function termPanelRows(): number {
 	if (!S.term || !S.termOpen) return 0;
 	const shown = Math.min(TERM_PANEL_LINES, Math.max(1, S.term.lines.length));
 	return shown + 2; // header row + bottom border
+}
+
+function subAgentPanelRows(): number {
+	return S.backgroundMonitorOpen && S.backgroundOverlay.length > 0 ? S.backgroundOverlay.length + 2 : 0;
 }
 
 /** Strip ANSI escapes and fold \r progress-bar rewrites into single lines. */
@@ -235,6 +244,10 @@ export function layoutSupported(): boolean {
  * that gap without consuming Escape, which remains cancellation.
  */
 export function startBackgroundCommandListener(onCommand: (command: string) => void): () => void {
+	return startBackgroundCommandListenerWithKeys(onCommand);
+}
+
+export function startBackgroundCommandListenerWithKeys(onCommand: (command: string) => void, onKey?: (key: Key) => void): () => void {
 	if (!process.stdin.isTTY || backgroundCommandStop) return () => undefined;
 	const stdin = process.stdin;
 	const state = { paste: null as string | null };
@@ -243,24 +256,67 @@ export function startBackgroundCommandListener(onCommand: (command: string) => v
 		for (const key of parseKeys(chunk.toString(), state)) {
 			if (key.name === 'text' || key.name === 'paste') buffer += key.text ?? '';
 			else if (key.name === 'backspace') buffer = buffer.slice(0, -1);
-			else if (key.name === 'enter') {
-				const command = buffer.trim();
-				buffer = '';
-				if (/^\/subagents(?:\s|$)/i.test(command)) onCommand(command);
-			} else if (key.name === 'escape') buffer = '';
-		}
-	};
+				else if (key.name === 'enter') {
+					const command = buffer.trim();
+					buffer = '';
+					if (/^\/subagents(?:\s|$)/i.test(command)) onCommand(command);
+					else if (!command) onKey?.(key);
+				} else if (key.name === 'escape') {
+					buffer = '';
+					if (S.backgroundMonitorOpen) {
+						S.backgroundMonitorOpen = false;
+						S.backgroundEscapeConsumed = true;
+						paint();
+					}
+					onKey?.(key);
+				} else {
+					onKey?.(key);
+				}
+			}
+		};
+	S.backgroundActive = true;
 	stdin.setRawMode?.(true);
 	stdin.setEncoding('utf8');
 	stdin.resume();
 	stdin.on('data', onData);
 	backgroundCommandStop = () => {
 		stdin.off('data', onData);
-		stdin.setRawMode?.(false);
-		stdin.pause();
-		backgroundCommandStop = null;
-	};
+			stdin.setRawMode?.(false);
+			stdin.pause();
+			S.backgroundActive = false;
+			S.backgroundMonitorOpen = false;
+			S.backgroundOverlay = [];
+			backgroundCommandStop = null;
+			paint();
+		};
+	paint();
 	return backgroundCommandStop;
+}
+
+export function setBackgroundMonitorOpen(open: boolean): void {
+	S.backgroundMonitorOpen = open;
+	paint();
+}
+
+export function isBackgroundMonitorOpen(): boolean {
+	return S.backgroundMonitorOpen;
+}
+
+/** Returns true once for Escape consumed by the read-only monitor. */
+export function consumeBackgroundMonitorEscape(): boolean {
+	const consumed = S.backgroundEscapeConsumed;
+	S.backgroundEscapeConsumed = false;
+	return consumed;
+}
+
+export function setBackgroundOverlay(lines: string[]): void {
+	S.backgroundOverlay = lines.slice(0, 8);
+	paint();
+}
+
+export function clearBackgroundOverlay(): void {
+	S.backgroundOverlay = [];
+	paint();
 }
 
 // =============================================================================
@@ -295,7 +351,7 @@ function visibleLines(): number {
 
 /** Rows pinned to the bottom: borders + input lines + status line (+ panel). */
 function chromeRows(): number {
-	return visibleLines() + 3 + termPanelRows();
+	return visibleLines() + 3 + termPanelRows() + subAgentPanelRows();
 }
 
 /** Horizontal window for one input line so the cursor stays visible. */
@@ -494,11 +550,13 @@ function popupTopRow(popup: NonNullable<ReturnType<typeof activePopup>>): number
 
 function statusLine(max: number): string {
 	const hint =
-		S.permissionMode === 'auto'
+		S.backgroundActive
+			? `←/→ sub-agents · ↑/↓ select · Enter inspect · Esc ${S.backgroundMonitorOpen ? 'close' : 'cancel'}`
+			: S.permissionMode === 'auto'
 			? 'AUTO-ACCEPT · /permissions ask to disable'
 			: S.permissionMode === 'files'
 				? 'FILES-AUTO · terminal commands still ask'
-				: 'shift+enter newline · /help · ctrl+c interrupt';
+			: 'shift+enter newline · /help · ctrl+c interrupt';
 
 	// The model name is the most important part of the status line: it is
 	// always shown in full (never truncated) and lower-priority segments are
@@ -543,9 +601,10 @@ function chromeString(): string {
 	const prompt =
 		S.permissionMode === 'auto' ? c.red.bold('❯') : S.permissionMode === 'files' ? c.yellow.bold('❯') : c.magenta.bold('❯');
 
-	// Terminal panel sits between the input box and the status line.
-	const panel = termPanelRows();
-	const bottomBorderRow = rows - 1 - panel;
+		// Read-only panels sit between the input box and the status line.
+		const termRows = termPanelRows();
+		const monitorRows = subAgentPanelRows();
+		const bottomBorderRow = rows - 1 - termRows - monitorRows;
 	// Input rows sit directly above the bottom border; the top border is one
 	// row above them (it was previously drawn under the first input line and
 	// erased by it, which hid it completely).
@@ -578,10 +637,21 @@ function chromeString(): string {
 
 	parts.push(line(bottomBorderRow, edge('╰' + '─'.repeat(cols - 2) + '╯')));
 
-	// ── Terminal panel: live output of the agent's bash commands ──────────
-	if (S.term && panel > 0) {
-		const shown = panel - 2;
-		const headerRow = rows - panel;
+		// ── Sub-agent monitor: fixed rows, never scrollback ───────────────────
+		if (monitorRows > 0) {
+			const headerRow = rows - termRows - monitorRows;
+			parts.push(line(headerRow, c.cyan('╭─ sub-agents ─ ') + c.dim('↑/↓ select · Enter inspect · Esc close') + c.cyan('─'.repeat(Math.max(1, cols - 50)) + '╮')));
+			for (let i = 0; i < S.backgroundOverlay.length; i++) {
+				const body = clipText(S.backgroundOverlay[i] ?? '', width).padEnd(width);
+				parts.push(line(headerRow + 1 + i, c.cyan('│') + ' ' + body + ' ' + c.cyan('│')));
+			}
+			parts.push(line(headerRow + monitorRows - 1, c.cyan('╰' + '─'.repeat(cols - 2) + '╯')));
+		}
+
+		// ── Terminal panel: live output of the agent's bash commands ──────────
+		if (S.term && termRows > 0) {
+			const shown = termRows - 2;
+			const headerRow = rows - termRows;
 		const status =
 			S.term.exitCode === null
 				? c.yellow('● running')
