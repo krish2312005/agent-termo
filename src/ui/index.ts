@@ -11,6 +11,8 @@ import {
 	listenKeys,
 	resetScreen,
 	setCommands,
+	isBackgroundMonitorOpen,
+	setBackgroundOverlay,
 	terminalWidth,
 	type CommandInfo,
 } from './screen.js';
@@ -30,6 +32,12 @@ export {
 	appendTerminalOutput,
 	finishTerminalPanel,
 	startBackgroundCommandListener,
+	startBackgroundCommandListenerWithKeys,
+	setBackgroundMonitorOpen,
+	isBackgroundMonitorOpen,
+	consumeBackgroundMonitorEscape,
+	setBackgroundOverlay,
+	clearBackgroundOverlay,
 	clearTerminalPanel,
 	toggleTerminalPanel,
 	terminalPanelVisible,
@@ -228,16 +236,53 @@ interface SubAgentActivity {
 }
 
 const subAgentActivities = new Map<string, SubAgentActivity>();
+let selectedSubAgentId = '';
+
+function monitorLines(selectedId?: string): string[] {
+	const activities = [...subAgentActivities.values()];
+	const running = activities.filter((item) => item.status === 'running').length;
+	if (selectedId) {
+		const activity = activities.find((item) => item.id === selectedId || item.agent === selectedId);
+		if (!activity) return ['Unknown sub-agent. Use /subagents to list activity IDs.'];
+		return [
+			`${activity.agent} [${activity.id}] · ${activity.status} · ${Math.round(((activity.endedAt ?? Date.now()) - activity.startedAt) / 1000)}s`,
+			`Task: ${clipText(activity.task.replace(/\s+/g, ' '), Math.max(20, terminalWidth() - 12))}`,
+			...activity.events.slice(-4).map((event) => '• ' + event),
+			...(activity.output ? ['Result: ' + clipText(activity.output.replace(/\s+/g, ' '), Math.max(20, terminalWidth() - 10))] : []),
+		];
+	}
+	return [
+		`${running} running · ${activities.filter((item) => item.status === 'completed').length} completed · ${activities.filter((item) => item.status === 'failed' || item.status === 'cancelled').length} failed`,
+		...activities.slice(-6).map((activity) => `${activity.id === selectedSubAgentId ? '❯' : ' '} ${activity.status.padEnd(9)} ${activity.agent} — ${clipText(activity.events.at(-1) ?? activity.task.replace(/\s+/g, ' '), Math.max(20, terminalWidth() - 32))}`),
+	];
+}
+
+export function showSubAgentMonitor(selectedId?: string): void {
+	if (!isBackgroundMonitorOpen()) return;
+	setBackgroundOverlay(monitorLines(selectedId));
+}
+
+function printSubAgentIndicator(): void {
+	const activities = [...subAgentActivities.values()];
+	const running = activities.filter((item) => item.status === 'running').length;
+	const completed = activities.filter((item) => item.status === 'completed').length;
+	const failed = activities.filter((item) => item.status === 'failed' || item.status === 'cancelled').length;
+	out.write(c.dim(`● ${running} subagent${running === 1 ? '' : 's'} running` + (completed ? ` · ${completed} completed` : '') + (failed ? ` · ${failed} failed` : '') + ' · ←/→ monitor · ↑/↓ navigate · Enter inspect') + '\n');
+}
 
 export function startSubAgentActivity(id: string, agent: string, task: string): void {
 	const activity = { id: id.slice(0, 12), agent, task, status: 'running' as const, startedAt: Date.now(), events: [] };
 	subAgentActivities.set(activity.id, activity);
+	if (!selectedSubAgentId) selectedSubAgentId = activity.id;
 	out.write(c.magenta('◆ ') + c.bold(agent) + c.dim(' started in parallel') + '\n');
+	printSubAgentIndicator();
+	showSubAgentMonitor();
 }
 
 export function recordSubAgentActivity(id: string, event: string): void {
 	const activity = subAgentActivities.get(id.slice(0, 12));
 	if (activity) activity.events.push(event.slice(0, 180));
+	showSubAgentMonitor();
 }
 
 export function finishSubAgentActivity(id: string, status: Exclude<SubAgentStatus, 'running'>, output?: string): void {
@@ -249,6 +294,8 @@ export function finishSubAgentActivity(id: string, status: Exclude<SubAgentStatu
 	const duration = Math.max(0, Math.round((activity.endedAt - activity.startedAt) / 1000));
 	const icon = status === 'completed' ? c.green('✓') : status === 'cancelled' ? c.yellow('!') : c.red('✗');
 	out.write(c.magenta('◆ ') + icon + ' ' + activity.agent + c.dim(` finished in ${duration}s`) + '\n');
+	printSubAgentIndicator();
+	showSubAgentMonitor();
 }
 
 export function printSubAgents(selectedId?: string): void {
@@ -272,10 +319,29 @@ export function printSubAgents(selectedId?: string): void {
 	}
 	out.write('\n' + c.bold('Sub-agents') + '\n' + rule() + '\n');
 	for (const activity of activities) {
-		const icon = activity.status === 'running' ? c.yellow('◐') : activity.status === 'completed' ? c.green('✓') : c.red('✗');
-		out.write(`${icon} ${c.cyan(activity.id.padEnd(12))} ${activity.agent.padEnd(28)} ${activity.status} — ${clipText(activity.task.replace(/\s+/g, ' '), Math.max(20, terminalWidth() - 58))}\n`);
+			const icon = activity.status === 'running' ? c.yellow('◐') : activity.status === 'completed' ? c.green('✓') : c.red('✗');
+		const selected = activity.id === selectedSubAgentId;
+		const row = `${icon} ${c.cyan(activity.id.padEnd(12))} ${activity.agent.padEnd(28)} ${activity.status} — ${clipText(activity.task.replace(/\s+/g, ' '), Math.max(20, terminalWidth() - 58))}`;
+		out.write((selected ? c.bgBlue.white('❯ ' + row) : '  ' + row) + '\n');
 	}
-	out.write(c.dim('Use /subagents <id> to inspect one sub-agent.') + '\n\n');
+	out.write(c.dim('←/→ close/open · ↑/↓ select · Enter inspect · /subagents <id> also works') + '\n\n');
+}
+
+export function moveSubAgentSelection(direction: 'up' | 'down'): string | undefined {
+	const ids = [...subAgentActivities.keys()];
+	if (ids.length === 0) return undefined;
+	let index = ids.indexOf(selectedSubAgentId);
+	if (index < 0) index = 0;
+	index = direction === 'down' ? (index + 1) % ids.length : (index - 1 + ids.length) % ids.length;
+	selectedSubAgentId = ids[index] ?? ids[0] ?? '';
+	showSubAgentMonitor();
+	return selectedSubAgentId || undefined;
+}
+
+export function printSelectedSubAgent(): void {
+	if (isBackgroundMonitorOpen()) setBackgroundOverlay(monitorLines(selectedSubAgentId));
+	else if (selectedSubAgentId) printSubAgents(selectedSubAgentId);
+	else printSubAgents();
 }
 
 // =============================================================================
