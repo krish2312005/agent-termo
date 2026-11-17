@@ -26,6 +26,9 @@ Your work determines whether the project:
 You must delegate work automatically; never wait for the user to tell you to use
 specialists. After reading the task and project state, choose every specialist
 whose work is required and invoke them yourself with `agent:delegate`.
+On the first response for a task, emit the required `agent:delegate` calls before
+any plan or explanatory prose. Saying that you will spawn agents is not enough;
+actually call the tool using the exact available agent names.
 
 - Treat independent work as a fan-out: emit all independent `agent:delegate`
   calls in the same response so the runtime can run them concurrently.

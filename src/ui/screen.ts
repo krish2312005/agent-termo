@@ -77,6 +77,10 @@ const S = {
 	},
 	/** Whether the terminal panel is shown below the input box. */
 	termOpen: false,
+	/** True while the agent is working and the background activity navigator owns input. */
+	backgroundActive: false,
+	backgroundMonitorOpen: false,
+	backgroundEscapeConsumed: false,
 };
 
 export function setCommands(commands: CommandInfo[]): void {
@@ -235,6 +239,10 @@ export function layoutSupported(): boolean {
  * that gap without consuming Escape, which remains cancellation.
  */
 export function startBackgroundCommandListener(onCommand: (command: string) => void): () => void {
+	return startBackgroundCommandListenerWithKeys(onCommand);
+}
+
+export function startBackgroundCommandListenerWithKeys(onCommand: (command: string) => void, onKey?: (key: Key) => void): () => void {
 	if (!process.stdin.isTTY || backgroundCommandStop) return () => undefined;
 	const stdin = process.stdin;
 	const state = { paste: null as string | null };
@@ -243,24 +251,55 @@ export function startBackgroundCommandListener(onCommand: (command: string) => v
 		for (const key of parseKeys(chunk.toString(), state)) {
 			if (key.name === 'text' || key.name === 'paste') buffer += key.text ?? '';
 			else if (key.name === 'backspace') buffer = buffer.slice(0, -1);
-			else if (key.name === 'enter') {
-				const command = buffer.trim();
-				buffer = '';
-				if (/^\/subagents(?:\s|$)/i.test(command)) onCommand(command);
-			} else if (key.name === 'escape') buffer = '';
-		}
-	};
+				else if (key.name === 'enter') {
+					const command = buffer.trim();
+					buffer = '';
+					if (/^\/subagents(?:\s|$)/i.test(command)) onCommand(command);
+					else if (!command) onKey?.(key);
+				} else if (key.name === 'escape') {
+					buffer = '';
+					if (S.backgroundMonitorOpen) {
+						S.backgroundMonitorOpen = false;
+						S.backgroundEscapeConsumed = true;
+						paint();
+					}
+					onKey?.(key);
+				} else {
+					onKey?.(key);
+				}
+			}
+		};
+	S.backgroundActive = true;
 	stdin.setRawMode?.(true);
 	stdin.setEncoding('utf8');
 	stdin.resume();
 	stdin.on('data', onData);
 	backgroundCommandStop = () => {
 		stdin.off('data', onData);
-		stdin.setRawMode?.(false);
-		stdin.pause();
-		backgroundCommandStop = null;
-	};
+			stdin.setRawMode?.(false);
+			stdin.pause();
+			S.backgroundActive = false;
+			backgroundCommandStop = null;
+			paint();
+		};
+	paint();
 	return backgroundCommandStop;
+}
+
+export function setBackgroundMonitorOpen(open: boolean): void {
+	S.backgroundMonitorOpen = open;
+	paint();
+}
+
+export function isBackgroundMonitorOpen(): boolean {
+	return S.backgroundMonitorOpen;
+}
+
+/** Returns true once for Escape consumed by the read-only monitor. */
+export function consumeBackgroundMonitorEscape(): boolean {
+	const consumed = S.backgroundEscapeConsumed;
+	S.backgroundEscapeConsumed = false;
+	return consumed;
 }
 
 // =============================================================================
@@ -494,11 +533,13 @@ function popupTopRow(popup: NonNullable<ReturnType<typeof activePopup>>): number
 
 function statusLine(max: number): string {
 	const hint =
-		S.permissionMode === 'auto'
+		S.backgroundActive
+			? '←/→ sub-agents · ↑/↓ select · Enter inspect · Esc cancel'
+			: S.permissionMode === 'auto'
 			? 'AUTO-ACCEPT · /permissions ask to disable'
 			: S.permissionMode === 'files'
 				? 'FILES-AUTO · terminal commands still ask'
-				: 'shift+enter newline · /help · ctrl+c interrupt';
+			: 'shift+enter newline · /help · ctrl+c interrupt';
 
 	// The model name is the most important part of the status line: it is
 	// always shown in full (never truncated) and lower-priority segments are

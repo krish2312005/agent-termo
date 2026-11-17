@@ -48,7 +48,11 @@ import {
 	recordSubAgentActivity,
 	finishSubAgentActivity,
 	printSubAgents,
-	startBackgroundCommandListener,
+	startBackgroundCommandListenerWithKeys,
+	moveSubAgentSelection,
+	printSelectedSubAgent,
+	setBackgroundMonitorOpen,
+	consumeBackgroundMonitorEscape,
 } from './ui/index.js';
 import type { ConversationMessage, ToolCall, ToolResult, ProposedFileChange } from './types/index.js';
 
@@ -203,7 +207,7 @@ function isContinueRequest(input: string): boolean {
 
 function shouldUseTools(input: string, activeAgentName: string, continuing: boolean): boolean {
 	if (continuing || activeAgentName) return true;
-	return /\b(build|code|debug|deploy|edit|file|fix|implement|refactor|review|run|test|write|create|delete|inspect|analy[sz]e)\b/i.test(input);
+	return /\b(build|code|debug|deploy|edit|file|fix|implement|refactor|review|run|test|write|rewrite|create|delete|inspect|analy[sz]e|documentation|docs|architecture|delegate|spawn|specialist|sub-?agent)\b/i.test(input);
 }
 
 /** Build the continuation directive injected when the user says "continue". */
@@ -233,8 +237,9 @@ async function withEscapeCancellation<T>(nimClient: NimClient, operation: () => 
 		rejectCancellation = reject;
 	});
 	const stop = listenKeys((key) => {
-		if (key.name === 'escape' || key.name === 'ctrl+c') {
-			if (cancelled) return;
+			if (key.name === 'escape' || key.name === 'ctrl+c') {
+				if (key.name === 'escape' && consumeBackgroundMonitorEscape()) return;
+				if (cancelled) return;
 			cancelled = true;
 			nimClient.cancelCurrentRequest();
 			printInfo(key.name === 'ctrl+c' ? 'Response interrupted.' : 'Response cancelled.');
@@ -437,8 +442,9 @@ async function runDelegatedAgent(
 				timestamp: new Date(),
 			});
 
-			for (const tc of toolCalls) {
-				const execution = await executeToolWithReview(tc.name, tc.arguments, projectRoot, input, permissionMode, allowedCommands);
+				for (const tc of toolCalls) {
+					recordSubAgentActivity(toolCall.id, `Starting ${tc.name} ${String(tc.arguments.path ?? tc.arguments.command ?? '').slice(0, 120)}`);
+					const execution = await executeToolWithReview(tc.name, tc.arguments, projectRoot, input, permissionMode, allowedCommands);
 				const toolResult = execution.toolResult;
 					const target = String(tc.arguments.path ?? tc.arguments.command ?? task).slice(0, 80);
 					recordSubAgentActivity(toolCall.id, `${tc.name} ${target} — ${toolResult.success ? 'ok' : 'failed'}`);
@@ -1078,9 +1084,28 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				rememberChat(projectRoot, 'User', userInput);
 				void appendToTimeline(projectRoot, activeAgentName || 'Agent-Termo', 'User request', ['Request: ' + userInput.replace(/\s+/g, ' ').slice(0, 700)], []);
 				if (!displayedInput) printUserMessage(userInput);
-				stopBackgroundCommands = startBackgroundCommandListener((command) => {
-					printSubAgents(command.slice('/subagents'.length).trim() || undefined);
-				});
+					let subAgentBrowserOpen = false;
+					stopBackgroundCommands = startBackgroundCommandListenerWithKeys(
+						(command) => {
+							subAgentBrowserOpen = true;
+							setBackgroundMonitorOpen(true);
+							printSubAgents(command.slice('/subagents'.length).trim() || undefined);
+						},
+						(key) => {
+							if (key.name === 'left' || key.name === 'right') {
+								subAgentBrowserOpen = !subAgentBrowserOpen;
+								setBackgroundMonitorOpen(subAgentBrowserOpen);
+								if (subAgentBrowserOpen) printSubAgents();
+								else printInfo('Sub-agent browser closed. Press ← or → to reopen.');
+							} else if (subAgentBrowserOpen && (key.name === 'up' || key.name === 'down')) {
+								moveSubAgentSelection(key.name);
+							} else if (subAgentBrowserOpen && key.name === 'enter') {
+								printSelectedSubAgent();
+							} else if (key.name === 'escape') {
+								subAgentBrowserOpen = false;
+							}
+						},
+					);
 
 				// Plain conversation does not need a large tool schema. Keeping it out of
 				// the request also supports providers/models that reject tool mode.
