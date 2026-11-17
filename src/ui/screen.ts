@@ -81,6 +81,7 @@ const S = {
 	backgroundActive: false,
 	backgroundMonitorOpen: false,
 	backgroundEscapeConsumed: false,
+	backgroundOverlay: [] as string[],
 };
 
 export function setCommands(commands: CommandInfo[]): void {
@@ -131,6 +132,10 @@ function termPanelRows(): number {
 	if (!S.term || !S.termOpen) return 0;
 	const shown = Math.min(TERM_PANEL_LINES, Math.max(1, S.term.lines.length));
 	return shown + 2; // header row + bottom border
+}
+
+function subAgentPanelRows(): number {
+	return S.backgroundMonitorOpen && S.backgroundOverlay.length > 0 ? S.backgroundOverlay.length + 2 : 0;
 }
 
 /** Strip ANSI escapes and fold \r progress-bar rewrites into single lines. */
@@ -279,6 +284,8 @@ export function startBackgroundCommandListenerWithKeys(onCommand: (command: stri
 			stdin.setRawMode?.(false);
 			stdin.pause();
 			S.backgroundActive = false;
+			S.backgroundMonitorOpen = false;
+			S.backgroundOverlay = [];
 			backgroundCommandStop = null;
 			paint();
 		};
@@ -300,6 +307,16 @@ export function consumeBackgroundMonitorEscape(): boolean {
 	const consumed = S.backgroundEscapeConsumed;
 	S.backgroundEscapeConsumed = false;
 	return consumed;
+}
+
+export function setBackgroundOverlay(lines: string[]): void {
+	S.backgroundOverlay = lines.slice(0, 8);
+	paint();
+}
+
+export function clearBackgroundOverlay(): void {
+	S.backgroundOverlay = [];
+	paint();
 }
 
 // =============================================================================
@@ -334,7 +351,7 @@ function visibleLines(): number {
 
 /** Rows pinned to the bottom: borders + input lines + status line (+ panel). */
 function chromeRows(): number {
-	return visibleLines() + 3 + termPanelRows();
+	return visibleLines() + 3 + termPanelRows() + subAgentPanelRows();
 }
 
 /** Horizontal window for one input line so the cursor stays visible. */
@@ -534,7 +551,7 @@ function popupTopRow(popup: NonNullable<ReturnType<typeof activePopup>>): number
 function statusLine(max: number): string {
 	const hint =
 		S.backgroundActive
-			? '←/→ sub-agents · ↑/↓ select · Enter inspect · Esc cancel'
+			? `←/→ sub-agents · ↑/↓ select · Enter inspect · Esc ${S.backgroundMonitorOpen ? 'close' : 'cancel'}`
 			: S.permissionMode === 'auto'
 			? 'AUTO-ACCEPT · /permissions ask to disable'
 			: S.permissionMode === 'files'
@@ -584,9 +601,10 @@ function chromeString(): string {
 	const prompt =
 		S.permissionMode === 'auto' ? c.red.bold('❯') : S.permissionMode === 'files' ? c.yellow.bold('❯') : c.magenta.bold('❯');
 
-	// Terminal panel sits between the input box and the status line.
-	const panel = termPanelRows();
-	const bottomBorderRow = rows - 1 - panel;
+		// Read-only panels sit between the input box and the status line.
+		const termRows = termPanelRows();
+		const monitorRows = subAgentPanelRows();
+		const bottomBorderRow = rows - 1 - termRows - monitorRows;
 	// Input rows sit directly above the bottom border; the top border is one
 	// row above them (it was previously drawn under the first input line and
 	// erased by it, which hid it completely).
@@ -619,10 +637,21 @@ function chromeString(): string {
 
 	parts.push(line(bottomBorderRow, edge('╰' + '─'.repeat(cols - 2) + '╯')));
 
-	// ── Terminal panel: live output of the agent's bash commands ──────────
-	if (S.term && panel > 0) {
-		const shown = panel - 2;
-		const headerRow = rows - panel;
+		// ── Sub-agent monitor: fixed rows, never scrollback ───────────────────
+		if (monitorRows > 0) {
+			const headerRow = rows - termRows - monitorRows;
+			parts.push(line(headerRow, c.cyan('╭─ sub-agents ─ ') + c.dim('↑/↓ select · Enter inspect · Esc close') + c.cyan('─'.repeat(Math.max(1, cols - 50)) + '╮')));
+			for (let i = 0; i < S.backgroundOverlay.length; i++) {
+				const body = clipText(S.backgroundOverlay[i] ?? '', width).padEnd(width);
+				parts.push(line(headerRow + 1 + i, c.cyan('│') + ' ' + body + ' ' + c.cyan('│')));
+			}
+			parts.push(line(headerRow + monitorRows - 1, c.cyan('╰' + '─'.repeat(cols - 2) + '╯')));
+		}
+
+		// ── Terminal panel: live output of the agent's bash commands ──────────
+		if (S.term && termRows > 0) {
+			const shown = termRows - 2;
+			const headerRow = rows - termRows;
 		const status =
 			S.term.exitCode === null
 				? c.yellow('● running')

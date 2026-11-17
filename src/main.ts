@@ -51,7 +51,9 @@ import {
 	startBackgroundCommandListenerWithKeys,
 	moveSubAgentSelection,
 	printSelectedSubAgent,
+	showSubAgentMonitor,
 	setBackgroundMonitorOpen,
+	clearBackgroundOverlay,
 	consumeBackgroundMonitorEscape,
 } from './ui/index.js';
 import type { ConversationMessage, ToolCall, ToolResult, ProposedFileChange } from './types/index.js';
@@ -1089,20 +1091,24 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						(command) => {
 							subAgentBrowserOpen = true;
 							setBackgroundMonitorOpen(true);
-							printSubAgents(command.slice('/subagents'.length).trim() || undefined);
+							showSubAgentMonitor(command.slice('/subagents'.length).trim() || undefined);
 						},
 						(key) => {
 							if (key.name === 'left' || key.name === 'right') {
 								subAgentBrowserOpen = !subAgentBrowserOpen;
 								setBackgroundMonitorOpen(subAgentBrowserOpen);
-								if (subAgentBrowserOpen) printSubAgents();
-								else printInfo('Sub-agent browser closed. Press ← or → to reopen.');
+								if (subAgentBrowserOpen) showSubAgentMonitor();
+								else {
+									clearBackgroundOverlay();
+									printInfo('Sub-agent browser closed. Press ← or → to reopen.');
+								}
 							} else if (subAgentBrowserOpen && (key.name === 'up' || key.name === 'down')) {
 								moveSubAgentSelection(key.name);
 							} else if (subAgentBrowserOpen && key.name === 'enter') {
 								printSelectedSubAgent();
 							} else if (key.name === 'escape') {
 								subAgentBrowserOpen = false;
+								clearBackgroundOverlay();
 							}
 						},
 					);
