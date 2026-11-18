@@ -76,6 +76,35 @@ function writeConfigFile(projectRoot: string, scope: McpConfigScope, servers: Re
 	if (process.platform !== 'win32') chmodSync(path, 0o600);
 }
 
+export function saveMcpServerConfigs(projectRoot: string, configs: Record<string, McpServerConfig>, scope: McpConfigScope = 'project'): void {
+	const servers = readConfigFile(configPath(projectRoot, scope));
+	for (const [name, config] of Object.entries(configs)) {
+		if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) {
+			throw new Error('Invalid MCP server name: "' + name + '".');
+		}
+		validateServerConfig(name, config);
+		for (const field of ['env', 'headers'] as const) {
+			const values = config[field];
+			if (values !== undefined && (!values || typeof values !== 'object' || Array.isArray(values) ||
+				!Object.entries(values).every(([key, value]) => key.length > 0 && typeof value === 'string'))) {
+				throw new Error('MCP server "' + name + '" ' + field + ' must be an object of strings.');
+			}
+		}
+		if (config.cwd !== undefined && typeof config.cwd !== 'string') {
+			throw new Error('MCP server "' + name + '" cwd must be a string.');
+		}
+		if (config.disabled !== undefined && typeof config.disabled !== 'boolean') {
+			throw new Error('MCP server "' + name + '" disabled must be a boolean.');
+		}
+		const unknownFields = Object.keys(config).filter((key) => !['command', 'args', 'env', 'cwd', 'url', 'headers', 'disabled'].includes(key));
+		if (unknownFields.length > 0) {
+			throw new Error('MCP server "' + name + '" has unsupported fields: ' + unknownFields.join(', ') + '.');
+		}
+		servers[name] = config;
+	}
+	writeConfigFile(projectRoot, scope, servers);
+}
+
 export function saveMcpServerConfig(projectRoot: string, name: string, config: McpServerConfig, scope: McpConfigScope = 'project'): void {
 	const servers = readConfigFile(configPath(projectRoot, scope));
 	servers[name] = config;
