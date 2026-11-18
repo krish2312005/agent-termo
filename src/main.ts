@@ -11,6 +11,7 @@ import { resolveProjectRoot, saveNimModel, saveNimThinking, savePermissionMode }
 import { resolve } from 'node:path';
 import { readdirSync, readFileSync } from 'node:fs';
 import { ensureAgentFolder, ensureAgentStructure, loadProjectAgents, loadAgentCommands, type AgentCommand } from './runtime/agent-folder.js';
+import { initializeMcpServers, getMcpToolDefinitions, isMcpToolName, executeMcpTool, shutdownMcpServers } from './runtime/mcp.js';
 import { commandApprovalKey, isCommandApprovalRequired, loadAllowedCommands, saveAllowedCommands } from './runtime/permissions.js';
 import {
 	addSubAgentProgress,
@@ -308,13 +309,17 @@ async function executeToolWithReview(
 		onWaiting?.(false);
 		input.showPrompt();
 		if (decision === 'reject') return { toolResult: { success: false, error: 'Command rejected by user' }, applied: false };
-		if (decision === 'always') {
+		if (decision === 'always' && !toolName.startsWith('mcp_')) {
 			allowedCommands.add(approvalKey);
 			try { saveAllowedCommands(projectRoot, allowedCommands); } catch { printInfo('Command allowed for this session but could not be saved.'); }
+		} else if (decision === 'always') {
+			printInfo('MCP tool approval is per call and will not be saved with its arguments.');
 		}
 	}
 	startSpinner('Running ' + toolName);
-	const toolResult = await executeTool(toolName, args, projectRoot);
+	const toolResult = isMcpToolName(toolName)
+		? await executeMcpTool(toolName, args)
+		: await executeTool(toolName, args, projectRoot);
 	stopSpinner(toolResult.success);
 
 	const proposedChange = extractProposedChange(toolName, toolResult.output ?? '');
@@ -422,7 +427,7 @@ async function runDelegatedAgent(
 	];
 
 	// Sub-agents cannot delegate further; they get every other tool.
-	const delegatedToolDefs = TOOL_DEFINITIONS.filter((t) => t.name !== 'agent:delegate');
+	const delegatedToolDefs = [...TOOL_DEFINITIONS, ...getMcpToolDefinitions()].filter((t) => t.name !== 'agent:delegate');
 	let finalText = '';
 	let lastNarration = '';
 
@@ -583,7 +588,7 @@ async function runToolLoop(
 			startSpinner('Working');
 		let result: { content: string; toolCalls: ToolCall[] };
 			try {
-				const tools = nimClient.buildToolDefs(TOOL_DEFINITIONS);
+				const tools = nimClient.buildToolDefs([...TOOL_DEFINITIONS, ...getMcpToolDefinitions()]);
 				result = await withEscapeCancellation(nimClient, () => completeWithRetry(nimClient, conversation, tools));
 				setScreenStatus({ usage: nimClient.formatUsage() });
 			} catch (err) {
@@ -846,17 +851,27 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 		if (selected) activateAgent(selected, true);
 	};
 
+	let cleanupStarted = false;
 	const cleanup = () => {
+		if (cleanupStarted) return;
+		cleanupStarted = true;
 		input.close();
-		process.stdout.write('\n');
-		console.log(
-			'Session complete. ' +
-			Math.round((Date.now() - session.startedAt.getTime()) / 60000) +
-			' minutes.',
-		);
-		process.exit(0);
+		void shutdownMcpServers().finally(() => {
+			process.stdout.write('\n');
+			console.log(
+				'Session complete. ' +
+				Math.round((Date.now() - session.startedAt.getTime()) / 60000) +
+				' minutes.',
+			);
+			process.exit(0);
+		});
 	};
 	process.on('SIGINT', cleanup);
+		const mcpStatuses = await initializeMcpServers(projectRoot);
+	for (const status of mcpStatuses) {
+		if (status.connected) printSuccess('MCP server connected: ' + status.name + ' (' + status.tools + ' tools)');
+		else if (status.error) printInfo('MCP server unavailable: ' + status.name + ' — ' + status.error);
+	}
 
 	mainLoop: while (true) {
 		try {
@@ -1123,7 +1138,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				// Plain conversation does not need a large tool schema. Keeping it out of
 				// the request also supports providers/models that reject tool mode.
 				const tools = shouldUseTools(userInput, activeAgentName, continuing)
-					? nimClient.buildToolDefs(TOOL_DEFINITIONS)
+					? nimClient.buildToolDefs([...TOOL_DEFINITIONS, ...getMcpToolDefinitions()])
 					: undefined;
 
 				{

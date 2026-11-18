@@ -504,6 +504,10 @@ A delegated agent receives its own task context and tool access, but cannot recu
 
 ---
 
+## MCP Servers
+
+Connect local stdio and remote Streamable HTTP MCP servers. See [MCP setup and CLI commands](./docs/MCP.md).
+
 ## Custom Slash Commands
 
 Custom slash commands let you save repeatable instructions for a project.
