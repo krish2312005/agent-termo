@@ -11,7 +11,7 @@ import { resolveProjectRoot, saveNimModel, saveNimThinking, savePermissionMode }
 import { resolve } from 'node:path';
 import { readdirSync, readFileSync } from 'node:fs';
 import { ensureAgentFolder, ensureAgentStructure, loadProjectAgents, loadAgentCommands, type AgentCommand } from './runtime/agent-folder.js';
-import { initializeMcpServers, getMcpToolDefinitions, isMcpToolName, executeMcpTool, shutdownMcpServers } from './runtime/mcp.js';
+import { initializeMcpServers, getMcpServerStatuses, getMcpToolDefinitions, isMcpToolName, executeMcpTool, shutdownMcpServers } from './runtime/mcp.js';
 import { commandApprovalKey, isCommandApprovalRequired, loadAllowedCommands, saveAllowedCommands } from './runtime/permissions.js';
 import {
 	addSubAgentProgress,
@@ -784,7 +784,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 	});
 	let customCommands: AgentCommand[] = loadAgentCommands(projectRoot);
 	const refreshCommandCompletion = (): void => {
-		setCommands([...COMMANDS, ...customCommands.map((command) => ({ name: '/' + command.name, description: command.description || 'project command' }))]);
+		setCommands([...COMMANDS, { name: '/mcp', description: 'list MCP servers and available tools' }, ...customCommands.map((command) => ({ name: '/' + command.name, description: command.description || 'project command' }))]);
 	};
 	refreshCommandCompletion();
 	let activeAgentName = '';
@@ -938,6 +938,25 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				const cmd = userInput.toLowerCase().trim();
 				printUserMessage(userInput);
 
+				if (cmd === '/mcp') {
+					const statuses = getMcpServerStatuses();
+					const tools = getMcpToolDefinitions();
+					if (statuses.length === 0) {
+						printInfo('No MCP servers configured. Use `agent-termo mcp add` to add one.');
+					} else {
+						printInfo('MCP servers (' + statuses.length + '):');
+						for (const status of statuses) {
+							const serverTools = tools
+								.filter((tool) => tool.description.startsWith('[MCP server: ' + status.name + '] '))
+								.map((tool) => tool.name);
+							const state = status.connected ? 'connected' : 'disconnected';
+							printInfo((status.connected ? '✓ ' : '✗ ') + status.name + ' — ' + state + ' (' + status.tools + ' tools)');
+							for (const toolName of serverTools) printInfo('  • ' + toolName);
+							if (status.error) printInfo('  Error: ' + status.error);
+						}
+					}
+					continue mainLoop;
+				}
 				if (cmd === '/help' || cmd === '/') {
 					printHelp();
 					continue mainLoop;
