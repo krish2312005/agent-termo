@@ -11,6 +11,7 @@ import { resolveProjectRoot, saveNimModel, saveNimThinking, savePermissionMode }
 import { resolve } from 'node:path';
 import { readdirSync, readFileSync } from 'node:fs';
 import { ensureAgentFolder, ensureAgentStructure, loadProjectAgents, loadAgentCommands, type AgentCommand } from './runtime/agent-folder.js';
+import { initializeMcpServers, getMcpServerStatuses, getMcpToolDefinitions, isMcpToolName, executeMcpTool, shutdownMcpServers, saveMcpServerConfigs, type McpServerConfig } from './runtime/mcp.js';
 import { commandApprovalKey, isCommandApprovalRequired, loadAllowedCommands, saveAllowedCommands } from './runtime/permissions.js';
 import {
 	addSubAgentProgress,
@@ -58,6 +59,43 @@ import {
 	startBackgroundCommandListener,
 } from './ui/index.js';
 import type { ConversationMessage, ToolCall, ToolResult, ProposedFileChange } from './types/index.js';
+
+function extractMcpServerConfigs(input: string): Record<string, McpServerConfig> | undefined {
+	const keyIndex = input.indexOf('"mcpServers"');
+	if (keyIndex < 0) return undefined;
+	const start = input.indexOf('{');
+	if (start < 0 || start > keyIndex) throw new Error('Could not find the opening JSON object for mcpServers.');
+
+	let depth = 0;
+	let inString = false;
+	let escaped = false;
+	let end = -1;
+	for (let i = start; i < input.length; i++) {
+		const char = input[i]!;
+		if (inString) {
+			if (escaped) escaped = false;
+			else if (char === '\\') escaped = true;
+			else if (char === '"') inString = false;
+			continue;
+		}
+		if (char === '"') inString = true;
+		else if (char === '{') depth++;
+		else if (char === '}' && --depth === 0) {
+			end = i + 1;
+			break;
+		}
+	}
+	if (end < 0) throw new Error('The MCP JSON is incomplete.');
+	let parsed: unknown;
+	try { parsed = JSON.parse(input.slice(start, end)); }
+	catch (error) { throw new Error('Invalid MCP JSON: ' + (error instanceof Error ? error.message : String(error))); }
+	if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('MCP configuration must be a JSON object.');
+	const servers = (parsed as { mcpServers?: unknown }).mcpServers;
+	if (!servers || typeof servers !== 'object' || Array.isArray(servers) || Object.keys(servers).length === 0) {
+		throw new Error('The "mcpServers" property must contain at least one server configuration.');
+	}
+	return servers as Record<string, McpServerConfig>;
+}
 
 function discoverProjectFiles(projectRoot: string): string[] {
 	const files: string[] = [];
@@ -208,8 +246,8 @@ function isContinueRequest(input: string): boolean {
 	return /^(?:\/)?continue\b/i.test(input.trim()) || input.trim().toLowerCase() === 'c';
 }
 
-function shouldUseTools(input: string, activeAgentName: string, continuing: boolean): boolean {
-	if (continuing || activeAgentName) return true;
+function shouldUseTools(input: string, activeAgentName: string, continuing: boolean, hasMcpTools = false): boolean {
+	if (continuing || activeAgentName || hasMcpTools) return true;
 	return /\b(build|code|debug|deploy|edit|file|fix|implement|refactor|review|run|test|write|rewrite|create|delete|inspect|analy[sz]e|documentation|docs|architecture|delegate|spawn|specialist|sub-?agent)\b/i.test(input);
 }
 
@@ -301,20 +339,25 @@ async function executeToolWithReview(
 ): Promise<{ toolResult: { success: boolean; output?: string; error?: string }; change?: ProposedFileChange; applied: boolean }> {
 	printToolCall(toolName, args);
 	const approvalKey = commandApprovalKey(toolName, args);
-	if (permissionMode !== 'auto' && isCommandApprovalRequired(toolName) && !allowedCommands.has(approvalKey)) {
+	const hasPersistentApproval = !toolName.startsWith('mcp_') && allowedCommands.has(approvalKey);
+	if (permissionMode !== 'auto' && isCommandApprovalRequired(toolName) && !hasPersistentApproval) {
 		input.close();
 		onWaiting?.(true);
 		const decision = await promptCommandApproval(typeof args.command === 'string' ? args.command : approvalKey);
 		onWaiting?.(false);
 		input.showPrompt();
 		if (decision === 'reject') return { toolResult: { success: false, error: 'Command rejected by user' }, applied: false };
-		if (decision === 'always') {
+		if (decision === 'always' && !toolName.startsWith('mcp_')) {
 			allowedCommands.add(approvalKey);
 			try { saveAllowedCommands(projectRoot, allowedCommands); } catch { printInfo('Command allowed for this session but could not be saved.'); }
+		} else if (decision === 'always') {
+			printInfo('MCP tool approval is per call and will not be saved with its arguments.');
 		}
 	}
 	startSpinner('Running ' + toolName);
-	const toolResult = await executeTool(toolName, args, projectRoot);
+	const toolResult = isMcpToolName(toolName)
+		? await executeMcpTool(toolName, args)
+		: await executeTool(toolName, args, projectRoot);
 	stopSpinner(toolResult.success);
 
 	const proposedChange = extractProposedChange(toolName, toolResult.output ?? '');
@@ -422,7 +465,7 @@ async function runDelegatedAgent(
 	];
 
 	// Sub-agents cannot delegate further; they get every other tool.
-	const delegatedToolDefs = TOOL_DEFINITIONS.filter((t) => t.name !== 'agent:delegate');
+	const delegatedToolDefs = [...TOOL_DEFINITIONS, ...getMcpToolDefinitions()].filter((t) => t.name !== 'agent:delegate');
 	let finalText = '';
 	let lastNarration = '';
 
@@ -583,7 +626,7 @@ async function runToolLoop(
 			startSpinner('Working');
 		let result: { content: string; toolCalls: ToolCall[] };
 			try {
-				const tools = nimClient.buildToolDefs(TOOL_DEFINITIONS);
+				const tools = nimClient.buildToolDefs([...TOOL_DEFINITIONS, ...getMcpToolDefinitions()]);
 				result = await withEscapeCancellation(nimClient, () => completeWithRetry(nimClient, conversation, tools));
 				setScreenStatus({ usage: nimClient.formatUsage() });
 			} catch (err) {
@@ -778,7 +821,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 	});
 	let customCommands: AgentCommand[] = loadAgentCommands(projectRoot);
 	const refreshCommandCompletion = (): void => {
-		setCommands([...COMMANDS, ...customCommands.map((command) => ({ name: '/' + command.name, description: command.description || 'project command' }))]);
+		setCommands([...COMMANDS, { name: '/mcp', description: 'list MCP servers and available tools' }, ...customCommands.map((command) => ({ name: '/' + command.name, description: command.description || 'project command' }))]);
 	};
 	refreshCommandCompletion();
 	let activeAgentName = '';
@@ -792,6 +835,11 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 			prompt += '\n\n## Active Task\n' + taskState.goal + '\nStatus: ' + taskState.status + (taskState.reason ? ' (' + taskState.reason + ')' : '');
 		}
 		if (currentGoal) prompt += '\n\n## Current Goal\n' + currentGoal;
+		const mcpTools = getMcpToolDefinitions();
+		if (mcpTools.length > 0) {
+			prompt += '\n\n## Available MCP Tools\nThe following tools are connected through MCP. When a user request can be fulfilled by one of them, call the relevant tool instead of claiming the capability is unavailable. Use the exact tool names and schemas supplied in the tool definitions.\n' +
+				mcpTools.map((tool) => '- ' + tool.name + ': ' + tool.description).join('\n');
+		}
 		return prompt;
 	};
 
@@ -846,17 +894,28 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 		if (selected) activateAgent(selected, true);
 	};
 
+	let cleanupStarted = false;
 	const cleanup = () => {
+		if (cleanupStarted) return;
+		cleanupStarted = true;
 		input.close();
-		process.stdout.write('\n');
-		console.log(
-			'Session complete. ' +
-			Math.round((Date.now() - session.startedAt.getTime()) / 60000) +
-			' minutes.',
-		);
-		process.exit(0);
+		void shutdownMcpServers().finally(() => {
+			process.stdout.write('\n');
+			console.log(
+				'Session complete. ' +
+				Math.round((Date.now() - session.startedAt.getTime()) / 60000) +
+				' minutes.',
+			);
+			process.exit(0);
+		});
 	};
 	process.on('SIGINT', cleanup);
+		const mcpStatuses = await initializeMcpServers(projectRoot);
+	for (const status of mcpStatuses) {
+		if (status.connected) printSuccess('MCP server connected: ' + status.name + ' (' + status.tools + ' tools)');
+		else if (status.error) printInfo('MCP server unavailable: ' + status.name + ' — ' + status.error);
+	}
+	refreshSystemPrompt();
 
 	mainLoop: while (true) {
 		try {
@@ -864,6 +923,39 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				const rawInput = await input.question('');
 				let userInput = rawInput;
 				if (!userInput) continue;
+				if (userInput.includes('"mcpServers"')) {
+					printUserMessage(rawInput);
+					try {
+						const servers = extractMcpServerConfigs(userInput);
+						if (!servers) throw new Error('No mcpServers configuration was found.');
+						printInfo('MCP servers to add:');
+						for (const [name, config] of Object.entries(servers)) {
+							const launch = config.command
+								? [config.command, ...(config.args ?? [])].join(' ')
+								: config.url ?? '(missing command or url)';
+							printInfo('  ' + name + ': ' + launch);
+						}
+						input.close();
+						const decision = await promptAcceptReject('Save and launch these MCP servers? They can execute code or access network resources.');
+						if (decision !== 'accept') {
+							printInfo('MCP import cancelled. No configuration was saved.');
+							continue mainLoop;
+						}
+						saveMcpServerConfigs(projectRoot, servers, 'project');
+						printSuccess('Saved MCP configuration to .agent-termo/mcp.json.');
+						const statuses = await initializeMcpServers(projectRoot);
+						for (const status of statuses) {
+							if (status.connected) printSuccess('Connected ' + status.name + ' and discovered ' + status.tools + ' tools.');
+							else if (status.error) printError('Could not connect to ' + status.name + ': ' + status.error);
+						}
+						refreshSystemPrompt();
+					} catch (error) {
+						printError('MCP import failed: ' + (error instanceof Error ? error.message : String(error)));
+					} finally {
+						input.showPrompt();
+					}
+					continue mainLoop;
+				}
 			if (userInput === 'exit' || userInput === 'quit') {
 				cleanup();
 				break;
@@ -922,6 +1014,25 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				const cmd = userInput.toLowerCase().trim();
 				printUserMessage(userInput);
 
+				if (cmd === '/mcp') {
+					const statuses = getMcpServerStatuses();
+					const tools = getMcpToolDefinitions();
+					if (statuses.length === 0) {
+						printInfo('No MCP servers configured. Use `agent-termo mcp add` to add one.');
+					} else {
+						printInfo('MCP servers (' + statuses.length + '):');
+						for (const status of statuses) {
+							const serverTools = tools
+								.filter((tool) => tool.description.startsWith('[MCP server: ' + status.name + '] '))
+								.map((tool) => tool.name);
+							const state = status.connected ? 'connected' : 'disconnected';
+							printInfo((status.connected ? '✓ ' : '✗ ') + status.name + ' — ' + state + ' (' + status.tools + ' tools)');
+							for (const toolName of serverTools) printInfo('  • ' + toolName);
+							if (status.error) printInfo('  Error: ' + status.error);
+						}
+					}
+					continue mainLoop;
+				}
 				if (cmd === '/help' || cmd === '/') {
 					printHelp();
 					continue mainLoop;
@@ -1122,8 +1233,8 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 
 				// Plain conversation does not need a large tool schema. Keeping it out of
 				// the request also supports providers/models that reject tool mode.
-				const tools = shouldUseTools(userInput, activeAgentName, continuing)
-					? nimClient.buildToolDefs(TOOL_DEFINITIONS)
+				const tools = shouldUseTools(userInput, activeAgentName, continuing, getMcpToolDefinitions().length > 0)
+					? nimClient.buildToolDefs([...TOOL_DEFINITIONS, ...getMcpToolDefinitions()])
 					: undefined;
 
 				{

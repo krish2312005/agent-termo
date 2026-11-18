@@ -7,6 +7,15 @@ import { Command } from 'commander';
 import { runRepl } from './main.js';
 import { saveNimApiKey } from './utils/config.js';
 import { ensureAgentFolder } from './runtime/agent-folder.js';
+import {
+  loadMcpServerConfigs,
+  saveMcpServerConfig,
+  removeMcpServerConfig,
+  setMcpServerEnabled,
+  testMcpServer,
+  type McpServerConfig,
+  type McpConfigScope,
+} from './runtime/mcp.js';
 import pkg from '../package.json' assert { type: 'json' };
 
 const program = new Command();
@@ -129,6 +138,97 @@ program
     console.log(`\n✓ Initialized Agent-Termo in ${resolve(dir)}`);
 		console.log(`  Created: docs/MEMORY.md, docs/TIMELINE.md, .agent-termo/ (agents: ${agentFolder.copiedAgents}, commands: ${agentFolder.copiedCommands})`);
     console.log('  Agent-Termo will ask for your NVIDIA NIM API key the first time you launch it.');
+  });
+
+
+const mcp = program.command('mcp').description('Manage Model Context Protocol servers');
+
+mcp.command('list')
+  .description('List configured MCP servers')
+  .action(() => {
+    const servers = loadMcpServerConfigs(process.cwd());
+    const entries = Object.entries(servers);
+    if (entries.length === 0) {
+      console.log('No MCP servers configured. Use "agent-termo mcp add --help" to add one.');
+      return;
+    }
+    for (const [name, config] of entries) {
+      const transport = config.url ? 'http' : 'stdio';
+      console.log((config.disabled ? '[disabled] ' : '[enabled] ') + name + ' (' + transport + ')');
+    }
+  });
+
+mcp.command('add <name>')
+  .description('Add or update an MCP server in project or user configuration')
+  .option('--command <command>', 'Command to launch a stdio MCP server')
+  .option('--args <json>', 'JSON array of command arguments')
+  .option('--env <json>', 'JSON object of stdio environment variables')
+  .option('--cwd <directory>', 'Working directory for a stdio server')
+  .option('--url <url>', 'Streamable HTTP MCP endpoint')
+  .option('--headers <json>', 'JSON object of HTTP headers')
+  .option('--global', 'Save to user-level configuration instead of this project')
+  .action((name: string, options: {
+    command?: string; args?: string; env?: string; cwd?: string;
+    url?: string; headers?: string; global?: boolean;
+  }) => {
+    if (Boolean(options.command) === Boolean(options.url)) {
+      throw new Error('Provide exactly one of --command (stdio) or --url (Streamable HTTP).');
+    }
+    const parseJson = <T>(value: string | undefined, label: string): T | undefined => {
+      if (!value) return undefined;
+      try { return JSON.parse(value) as T; }
+      catch { throw new Error('Invalid JSON for ' + label + '.'); }
+    };
+    const args = parseJson<unknown>(options.args, '--args');
+    const env = parseJson<unknown>(options.env, '--env');
+    const headers = parseJson<unknown>(options.headers, '--headers');
+    if (args !== undefined && (!Array.isArray(args) || !args.every((value) => typeof value === 'string'))) {
+      throw new Error('--args must be a JSON array of strings.');
+    }
+    const isStringRecord = (value: unknown): value is Record<string, string> =>
+      Boolean(value) && typeof value === 'object' && !Array.isArray(value) &&
+      Object.values(value as Record<string, unknown>).every((item) => typeof item === 'string');
+    if (env !== undefined && !isStringRecord(env)) throw new Error('--env must be a JSON object of strings.');
+    if (headers !== undefined && !isStringRecord(headers)) throw new Error('--headers must be a JSON object of strings.');
+    const config: McpServerConfig = options.url
+      ? { url: options.url, headers: headers as Record<string, string> | undefined }
+      : {
+          command: options.command,
+          args: args as string[] | undefined,
+          env: env as Record<string, string> | undefined,
+          cwd: options.cwd,
+        };
+    const scope: McpConfigScope = options.global ? 'user' : 'project';
+    saveMcpServerConfig(process.cwd(), name, config, scope);
+    console.log('Saved MCP server "' + name + '" to ' + scope + ' configuration.');
+  });
+
+mcp.command('remove <name>')
+  .description('Remove a configured MCP server')
+  .option('--global', 'Remove from user-level configuration')
+  .action((name: string, options: { global?: boolean }) => {
+    const scope: McpConfigScope = options.global ? 'user' : 'project';
+    removeMcpServerConfig(process.cwd(), name, scope);
+    console.log('Removed MCP server "' + name + '" from ' + scope + ' configuration.');
+  });
+
+for (const action of ['enable', 'disable'] as const) {
+  mcp.command(action + ' <name>')
+    .description((action === 'enable' ? 'Enable' : 'Disable') + ' a configured MCP server')
+    .option('--global', 'Change user-level configuration')
+    .action((name: string, options: { global?: boolean }) => {
+      const scope: McpConfigScope = options.global ? 'user' : 'project';
+      setMcpServerEnabled(process.cwd(), name, action === 'enable', scope);
+      console.log((action === 'enable' ? 'Enabled ' : 'Disabled ') + 'MCP server "' + name + '".');
+    });
+}
+
+mcp.command('test <name>')
+  .description('Connect to an MCP server and list its tools')
+  .action(async (name: string) => {
+    const tools = await testMcpServer(process.cwd(), name);
+    console.log('Connected to "' + name + '". Discovered ' + tools.length + ' tools:');
+    for (const tool of tools) console.log('  - ' + tool);
   });
 
 async function main() {

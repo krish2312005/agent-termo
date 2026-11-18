@@ -25,11 +25,13 @@ export function saveAllowedCommands(projectRoot: string, commands: Set<string>):
 }
 
 export function isCommandApprovalRequired(toolName: string): boolean {
-  return toolName === 'bash:execute' || toolName === 'git:commit' || toolName === 'git:push';
+  return toolName.startsWith('mcp_') || toolName === 'bash:execute' || toolName === 'git:commit' || toolName === 'git:push';
 }
 
 export function commandApprovalKey(toolName: string, args: Record<string, unknown>): string {
-  const command = typeof args.command === 'string' ? args.command.trim() : `${toolName}:${String(args.message ?? '').trim()}`;
+  const command = toolName.startsWith('mcp_')
+    ? JSON.stringify(args)
+    : typeof args.command === 'string' ? args.command.trim() : `${toolName}:${String(args.message ?? '').trim()}`;
   return `${toolName}|${command}`;
 }
 
