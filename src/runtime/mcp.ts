@@ -82,6 +82,12 @@ export function saveMcpServerConfigs(projectRoot: string, configs: Record<string
 		if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) {
 			throw new Error('Invalid MCP server name: "' + name + '".');
 		}
+		if (config.command !== undefined && typeof config.command !== 'string') {
+			throw new Error('MCP server "' + name + '" command must be a string.');
+		}
+		if (config.url !== undefined && typeof config.url !== 'string') {
+			throw new Error('MCP server "' + name + '" url must be a string.');
+		}
 		validateServerConfig(name, config);
 		for (const field of ['env', 'headers'] as const) {
 			const values = config[field];
