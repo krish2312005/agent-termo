@@ -7,6 +7,7 @@ import { Command } from 'commander';
 import { runRepl } from './main.js';
 import { saveNimApiKey } from './utils/config.js';
 import { ensureAgentFolder } from './runtime/agent-folder.js';
+import pkg from '../package.json' assert { type: 'json' };
 
 const program = new Command();
 
@@ -101,7 +102,7 @@ async function startAgent(
 program
   .name('agent-termo')
   .description('Terminal AI coding agent with Nvidia NIM APIs')
-	.version('1.0.7')
+	.version(pkg.version)
   .argument('[project]', 'Project directory to operate in', process.cwd())
   .option('-k, --api-key <key>', 'Nvidia NIM API key')
   .option('-m, --model <model>', 'Model name to use')
