@@ -302,7 +302,8 @@ async function executeToolWithReview(
 ): Promise<{ toolResult: { success: boolean; output?: string; error?: string }; change?: ProposedFileChange; applied: boolean }> {
 	printToolCall(toolName, args);
 	const approvalKey = commandApprovalKey(toolName, args);
-	if (permissionMode !== 'auto' && isCommandApprovalRequired(toolName) && !allowedCommands.has(approvalKey)) {
+	const hasPersistentApproval = !toolName.startsWith('mcp_') && allowedCommands.has(approvalKey);
+	if (permissionMode !== 'auto' && isCommandApprovalRequired(toolName) && !hasPersistentApproval) {
 		input.close();
 		onWaiting?.(true);
 		const decision = await promptCommandApproval(typeof args.command === 'string' ? args.command : approvalKey);
