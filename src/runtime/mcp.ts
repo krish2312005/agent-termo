@@ -117,7 +117,7 @@ function toolSlug(value: string): string {
 }
 
 function modelToolName(serverName: string, toolName: string): string {
-	return 'mcp_' + toolSlug(serverName).slice(0, 20) + '_' + toolSlug(toolName).slice(0, 40);
+	return 'mcp_' + toolSlug(serverName).slice(0, 19) + '_' + toolSlug(toolName).slice(0, 40);
 }
 
 function validateServerConfig(name: string, config: McpServerConfig): void {
