@@ -74,7 +74,7 @@ function extractMcpServerConfigs(input: string): Record<string, McpServerConfig>
 		const char = input[i]!;
 		if (inString) {
 			if (escaped) escaped = false;
-			else if (char === '\\\\') escaped = true;
+			else if (char === '\\') escaped = true;
 			else if (char === '"') inString = false;
 			continue;
 		}
@@ -933,7 +933,6 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						const decision = await promptAcceptReject('Save and launch these MCP servers? They can execute code or access network resources.');
 						if (decision !== 'accept') {
 							printInfo('MCP import cancelled. No configuration was saved.');
-							input.showPrompt();
 							continue mainLoop;
 						}
 						saveMcpServerConfigs(projectRoot, servers, 'project');
