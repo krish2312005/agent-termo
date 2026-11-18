@@ -246,8 +246,8 @@ function isContinueRequest(input: string): boolean {
 	return /^(?:\/)?continue\b/i.test(input.trim()) || input.trim().toLowerCase() === 'c';
 }
 
-function shouldUseTools(input: string, activeAgentName: string, continuing: boolean): boolean {
-	if (continuing || activeAgentName) return true;
+function shouldUseTools(input: string, activeAgentName: string, continuing: boolean, hasMcpTools = false): boolean {
+	if (continuing || activeAgentName || hasMcpTools) return true;
 	return /\b(build|code|debug|deploy|edit|file|fix|implement|refactor|review|run|test|write|rewrite|create|delete|inspect|analy[sz]e|documentation|docs|architecture|delegate|spawn|specialist|sub-?agent)\b/i.test(input);
 }
 
@@ -835,6 +835,11 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 			prompt += '\n\n## Active Task\n' + taskState.goal + '\nStatus: ' + taskState.status + (taskState.reason ? ' (' + taskState.reason + ')' : '');
 		}
 		if (currentGoal) prompt += '\n\n## Current Goal\n' + currentGoal;
+		const mcpTools = getMcpToolDefinitions();
+		if (mcpTools.length > 0) {
+			prompt += '\n\n## Available MCP Tools\nThe following tools are connected through MCP. When a user request can be fulfilled by one of them, call the relevant tool instead of claiming the capability is unavailable. Use the exact tool names and schemas supplied in the tool definitions.\n' +
+				mcpTools.map((tool) => '- ' + tool.name + ': ' + tool.description).join('\n');
+		}
 		return prompt;
 	};
 
@@ -910,6 +915,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 		if (status.connected) printSuccess('MCP server connected: ' + status.name + ' (' + status.tools + ' tools)');
 		else if (status.error) printInfo('MCP server unavailable: ' + status.name + ' — ' + status.error);
 	}
+	refreshSystemPrompt();
 
 	mainLoop: while (true) {
 		try {
@@ -942,6 +948,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 							if (status.connected) printSuccess('Connected ' + status.name + ' and discovered ' + status.tools + ' tools.');
 							else if (status.error) printError('Could not connect to ' + status.name + ': ' + status.error);
 						}
+						refreshSystemPrompt();
 					} catch (error) {
 						printError('MCP import failed: ' + (error instanceof Error ? error.message : String(error)));
 					} finally {
@@ -1226,7 +1233,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 
 				// Plain conversation does not need a large tool schema. Keeping it out of
 				// the request also supports providers/models that reject tool mode.
-				const tools = shouldUseTools(userInput, activeAgentName, continuing)
+				const tools = shouldUseTools(userInput, activeAgentName, continuing, getMcpToolDefinitions().length > 0)
 					? nimClient.buildToolDefs([...TOOL_DEFINITIONS, ...getMcpToolDefinitions()])
 					: undefined;
 
