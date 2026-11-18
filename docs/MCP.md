@@ -4,11 +4,11 @@ Agent-Termo connects to Model Context Protocol servers over **stdio** and **Stre
 
 ## Configuration
 
-Project configuration lives in \`.agent-termo/mcp.json\`. User configuration lives in \`~/.agent-termo/mcp.json\`. The project file overrides a user-level entry with the same server name.
+Project configuration lives in `.agent-termo/mcp.json`. User configuration lives in `~/.agent-termo/mcp.json`. The project file overrides a user-level entry with the same server name.
 
 ### stdio server
 
-\`\`\`json
+```json
 {
   "mcpServers": {
     "filesystem": {
@@ -19,11 +19,11 @@ Project configuration lives in \`.agent-termo/mcp.json\`. User configuration liv
     }
   }
 }
-\`\`\`
+```
 
 ### Streamable HTTP server
 
-\`\`\`json
+```json
 {
   "mcpServers": {
     "remote-tools": {
@@ -34,13 +34,13 @@ Project configuration lives in \`.agent-termo/mcp.json\`. User configuration liv
     }
   }
 }
-\`\`\`
+```
 
-Values written as \`\${VARIABLE_NAME}\` are read from the current process environment. Missing variables prevent that server from connecting. Keep credentials in environment variables or user-level configuration; do not commit secrets in project configuration.
+Values written as `\${VARIABLE_NAME}` are read from the current process environment. Missing variables prevent that server from connecting. Keep credentials in environment variables or user-level configuration; do not commit secrets in project configuration.
 
 ## CLI
 
-\`\`\`bash
+```bash
 # Add a local stdio server
 agent-termo mcp add filesystem --command npx --args '["-y","@modelcontextprotocol/server-filesystem","."]'
 
@@ -57,8 +57,8 @@ agent-termo mcp disable filesystem
 agent-termo mcp enable filesystem
 agent-termo mcp remove filesystem
 agent-termo mcp remove github --global
-\`\`\`
+```
 
-Use \`agent-termo mcp add --help\` for all options. After changing configuration, restart Agent-Termo to reconnect and refresh the available tool list.
+Use `agent-termo mcp add --help` for all options. After changing configuration, restart Agent-Termo to reconnect and refresh the available tool list.
 
 MCP server commands are executable programs and remote servers receive the configured headers. Only configure servers you trust. Tool calls go through Agent-Termo's normal approval system; an MCP server's own instructions never grant permission to execute a tool.
