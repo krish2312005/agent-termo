@@ -1,6 +1,6 @@
 {
   "name": "agent-termo",
-  "version": "1.0.14",
+  "version": "1.0.15",
   "description": "Terminal-based AI coding agent that replicates Claude Code experience",
   "type": "module",
   "main": "dist/main.js",
