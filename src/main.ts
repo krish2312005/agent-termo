@@ -55,13 +55,7 @@ import {
 	appendTerminalOutput,
 	finishTerminalPanel,
 	printSubAgents,
-	startBackgroundCommandListenerWithKeys,
-	moveSubAgentSelection,
-	printSelectedSubAgent,
-	showSubAgentMonitor,
-	setBackgroundMonitorOpen,
-	clearBackgroundOverlay,
-	consumeBackgroundMonitorEscape,
+	startBackgroundCommandListener,
 } from './ui/index.js';
 import type { ConversationMessage, ToolCall, ToolResult, ProposedFileChange } from './types/index.js';
 
@@ -246,9 +240,8 @@ async function withEscapeCancellation<T>(nimClient: NimClient, operation: () => 
 		rejectCancellation = reject;
 	});
 	const stop = listenKeys((key) => {
-			if (key.name === 'escape' || key.name === 'ctrl+c') {
-				if (key.name === 'escape' && consumeBackgroundMonitorEscape()) return;
-				if (cancelled) return;
+		if (key.name === 'escape' || key.name === 'ctrl+c') {
+			if (cancelled) return;
 			cancelled = true;
 			nimClient.cancelCurrentRequest();
 			printInfo(key.name === 'ctrl+c' ? 'Response interrupted.' : 'Response cancelled.');
