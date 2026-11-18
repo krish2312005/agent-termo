@@ -53,6 +53,18 @@ const EXTRA_TOOL_ALIASES: Record<string, string> = {
 	terminal: 'bash:execute',
 	delegate: 'agent:delegate',
 	delegate_to_agent: 'agent:delegate',
+	// The bundled agent prompts are written Claude Code-style ("Task: <agent>"),
+	// so models call these names for the same action.
+	task: 'agent:delegate',
+	agent: 'agent:delegate',
+	subagent: 'agent:delegate',
+	spawn_agent: 'agent:delegate',
+	spawn_subagent: 'agent:delegate',
+	delegate_task: 'agent:delegate',
+	run_agent: 'agent:delegate',
+	invoke_agent: 'agent:delegate',
+	call_agent: 'agent:delegate',
+	launch_agent: 'agent:delegate',
 };
 
 const WIRE_TO_CANONICAL: Record<string, string> = {

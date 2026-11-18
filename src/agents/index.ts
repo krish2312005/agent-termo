@@ -92,7 +92,51 @@ AVAILABLE FILES:
 - docs/MEMORY.md — project context
 - docs/TIMELINE.md — recent activity log`;
 
-export function buildSystemPrompt(memory: string, timeline: string, agentDir: string, activeAgentPrompt = ''): string {
+const delegateKey = (name: string): string => name.trim().replace(/^@/, '').toLowerCase().replace(/[\s_.]+/g, '-');
+
+/**
+ * Read an agent:delegate call tolerantly. Models fill the arguments with the
+ * names they know from other tools (subagent_type/prompt, agent_name/…) and
+ * vary the case of agent names, so accept those instead of failing the spawn.
+ */
+export function resolveDelegation(
+	args: Record<string, unknown>,
+	agents: Agent[],
+): { agent: Agent | undefined; requested: string; task: string; context: string } {
+	const first = (...keys: string[]): string => {
+		for (const key of keys) {
+			const value = args[key];
+			if (typeof value === 'string' && value.trim()) return value.trim();
+		}
+		return '';
+	};
+	const requested = first('agent', 'agent_name', 'agentName', 'subagent_type', 'subagent', 'name');
+	const wanted = delegateKey(requested);
+	const agent = agents.find((a) => a.name === requested) ?? (wanted ? agents.find((a) => delegateKey(a.name) === wanted) : undefined);
+	return { agent, requested, task: first('task', 'prompt', 'instructions', 'description'), context: first('context') };
+}
+
+function rosterSection(roster: Array<{ name: string; description: string }>): string {
+	const lines = roster.map((a) => {
+		const description = a.description.replace(/\s+/g, ' ');
+		return `- ${a.name}${description ? ': ' + (description.length > 110 ? description.slice(0, 109) + '…' : description) : ''}`;
+	});
+	return (
+		'\n\n## Available Sub-Agents\n' +
+		'Run one with agent:delegate(agent=<exact name below>, task=<focused task>, context=<optional>). ' +
+		'Agent instructions that say "Task", "invoke" or "launch" an agent mean exactly this tool call — it is the only way to run a sub-agent, so make the call instead of describing it. ' +
+		'Emit independent delegations in the same response so they run in parallel.\n' +
+		lines.join('\n')
+	);
+}
+
+export function buildSystemPrompt(
+	memory: string,
+	timeline: string,
+	agentDir: string,
+	activeAgentPrompt = '',
+	roster: Array<{ name: string; description: string }> = [],
+): string {
 	let prompt = SYSTEM_BASE;
 	prompt += `\n\n## Project Working Directory\n${agentDir}\nAll relative file paths and shell commands must operate inside this directory. Create and modify the user's files here. Never use /tmp, an OS temp directory, the npm package directory, or another workspace for project files.`;
 	prompt += `\n\n## Shell\nbash:execute runs commands with ${shellDescription()}. Use syntax that matches this shell, keep paths relative to the project, and prefer the dedicated file tools for creating and editing files.`;
@@ -100,6 +144,8 @@ export function buildSystemPrompt(memory: string, timeline: string, agentDir: st
 	if (activeAgentPrompt) {
 		prompt += '\n\n## Active Custom Agent Instructions\n' + activeAgentPrompt;
 	}
+
+	if (roster.length > 0) prompt += rosterSection(roster);
 
   if (memory) {
     prompt += '\n\n## Project Memory\n' + memory;

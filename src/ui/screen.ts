@@ -14,6 +14,16 @@
 
 import Chalk from 'chalk';
 import { createInterface } from 'node:readline';
+import { listRunSubAgents, subscribeSubAgents } from '../runtime/subagents.js';
+import {
+	buildInspector,
+	INITIAL_MONITOR,
+	panelBodyRows,
+	reduceMonitorKey,
+	renderPanel,
+	renderStrip,
+	type MonitorState,
+} from './subagent-view.js';
 
 const c: typeof Chalk = Chalk as unknown as typeof Chalk;
 const out = process.stdout;
@@ -33,6 +43,10 @@ const MAX_POPUP_ROWS = 8;
 const TERM_PANEL_LINES = 6;
 /** Key(s) that toggle (close/open) the terminal panel. */
 const TERM_TOGGLE_KEYS = new Set(['ctrl+o', 'ctrl+t']);
+/** Inspector panel height limits (rows) and the output rows that must stay visible. */
+const MON_PANEL_MAX = 16;
+const MON_PANEL_MIN = 7;
+const MIN_OUTPUT_ROWS = 5;
 
 export interface CommandInfo {
 	name: string;
@@ -225,7 +239,7 @@ function syncTermKeyListener(): void {
 	if (want && !termKeyStop) {
 		termKeyStop = listenKeys((key) => {
 			if (TERM_TOGGLE_KEYS.has(key.name)) toggleTerminalPanel();
-		});
+		}, undefined, { background: true });
 	} else if (!want && termKeyStop) {
 		termKeyStop();
 		termKeyStop = null;
@@ -238,10 +252,14 @@ export function layoutSupported(): boolean {
 	);
 }
 
+/** Text typed while the agent runs (invisible, like before); Enter runs it if it is /subagents. */
+let bgTyped = '';
+
 /**
- * Accept read-only slash commands while the main agent request is in flight.
- * The normal line editor is closed during tool execution; this listener fills
- * that gap without consuming Escape, which remains cancellation.
+ * Accept read-only slash commands while the main agent request is in flight,
+ * and mark the run as active for the sub-agent monitor. The normal line editor
+ * is closed during tool execution; this listener fills that gap without
+ * consuming Escape, which remains cancellation.
  */
 export function startBackgroundCommandListener(onCommand: (command: string) => void): () => void {
 	return startBackgroundCommandListenerWithKeys(onCommand);
@@ -249,47 +267,27 @@ export function startBackgroundCommandListener(onCommand: (command: string) => v
 
 export function startBackgroundCommandListenerWithKeys(onCommand: (command: string) => void, onKey?: (key: Key) => void): () => void {
 	if (!process.stdin.isTTY || backgroundCommandStop) return () => undefined;
-	const stdin = process.stdin;
-	const state = { paste: null as string | null };
-	let buffer = '';
-	const onData = (chunk: string | Buffer): void => {
-		for (const key of parseKeys(chunk.toString(), state)) {
-			if (key.name === 'text' || key.name === 'paste') buffer += key.text ?? '';
-			else if (key.name === 'backspace') buffer = buffer.slice(0, -1);
-				else if (key.name === 'enter') {
-					const command = buffer.trim();
-					buffer = '';
-					if (/^\/subagents(?:\s|$)/i.test(command)) onCommand(command);
-					else if (!command) onKey?.(key);
-				} else if (key.name === 'escape') {
-					buffer = '';
-					if (S.backgroundMonitorOpen) {
-						S.backgroundMonitorOpen = false;
-						S.backgroundEscapeConsumed = true;
-						paint();
-					}
-					onKey?.(key);
-				} else {
-					onKey?.(key);
-				}
-			}
-		};
-	S.backgroundActive = true;
-	stdin.setRawMode?.(true);
-	stdin.setEncoding('utf8');
-	stdin.resume();
-	stdin.on('data', onData);
+	bgTyped = '';
+	const stopKeys = listenKeys(
+		(key) => {
+			if (key.name === 'text' || key.name === 'paste') bgTyped += key.text ?? '';
+			else if (key.name === 'backspace') bgTyped = bgTyped.slice(0, -1);
+			else if (key.name === 'enter') {
+				const command = bgTyped.trim();
+				bgTyped = '';
+				if (/^\/subagents(?:\s|$)/i.test(command)) onCommand(command);
+			} else if (key.name === 'escape') bgTyped = '';
+		},
+		undefined,
+		{ background: true },
+	);
 	backgroundCommandStop = () => {
-		stdin.off('data', onData);
-			stdin.setRawMode?.(false);
-			stdin.pause();
-			S.backgroundActive = false;
-			S.backgroundMonitorOpen = false;
-			S.backgroundOverlay = [];
-			backgroundCommandStop = null;
-			paint();
-		};
-	paint();
+		stopKeys();
+		backgroundCommandStop = null;
+		bgTyped = '';
+		monitorRefresh();
+	};
+	monitorRefresh();
 	return backgroundCommandStop;
 }
 
@@ -318,6 +316,111 @@ export function clearBackgroundOverlay(): void {
 	S.backgroundOverlay = [];
 	paint();
 }
+
+// =============================================================================
+// Sub-agent monitor
+//
+// While a run is in flight and sub-agents exist, a one-line indicator sits
+// below the input box (● 3 subagents running | ↑↓ Navigate | Enter Inspect).
+// ↑/↓ pick a sub-agent, Enter opens a live inspector panel under it, Esc closes
+// that panel. It is read-only: it only reads the sub-agent registry and the
+// keys it uses are consumed here, so nothing it does reaches — let alone
+// cancels — a running agent. Esc with the panel closed still cancels, as before.
+// =============================================================================
+
+let monitor: MonitorState = { ...INITIAL_MONITOR };
+let monPaintTimer: ReturnType<typeof setTimeout> | null = null;
+let monTicker: ReturnType<typeof setInterval> | null = null;
+
+/** The monitor shows this run's sub-agents, and only while a run is in flight. */
+function monitorVisible(): boolean {
+	return S.active && !S.editing && backgroundCommandStop !== null && listRunSubAgents().length > 0;
+}
+
+/** Rows an open inspector could take without squeezing the output area. */
+function monitorRoom(): number {
+	return dims().rows - (visibleLines() + 3 + termPanelRows() + 1) - MIN_OUTPUT_ROWS;
+}
+
+function monitorPanelRows(): number {
+	if (!monitor.open || !monitorVisible()) return 0;
+	const room = monitorRoom();
+	return room >= MON_PANEL_MIN ? Math.min(MON_PANEL_MAX, room) : 0;
+}
+
+/** Indicator row (+ inspector rows) pinned below the input box. */
+function monitorRows(): number {
+	return monitorVisible() ? 1 + monitorPanelRows() : 0;
+}
+
+function monitorString(firstRow: number, count: number): string {
+	const { cols } = dims();
+	const list = listRunSubAgents();
+	const selected = Math.min(Math.max(0, monitor.selected), list.length - 1);
+	const panelRows = count - 1;
+	const at = (row: number, text: string): string => `${CSI}${row};1H${CSI}2K${text}`;
+	let result = at(
+		firstRow,
+		' ' + renderStrip(list, { width: cols - 2, open: panelRows > 0, canInspect: monitorRoom() >= MON_PANEL_MIN, selected }),
+	);
+	const target = list[selected];
+	if (panelRows > 0 && target) {
+		const panel = renderPanel(target, { index: selected, count: list.length, width: cols, height: panelRows, scroll: monitor.scroll });
+		panel.rows.forEach((row, i) => {
+			result += at(firstRow + 1 + i, row);
+		});
+	}
+	return result;
+}
+
+/** Offer a key to the monitor; true means it was used and must not reach anyone else. */
+function monitorKeyIntercept(key: Key): boolean {
+	if (!monitorVisible()) return false;
+	const list = listRunSubAgents();
+	const panelRows = monitorPanelRows();
+	const target = list[Math.min(Math.max(0, monitor.selected), list.length - 1)];
+	const bodyRows = panelBodyRows(panelRows);
+	const maxScroll = panelRows > 0 && target ? Math.max(0, buildInspector(target, dims().cols - 4).body.length - bodyRows) : 0;
+	const result = reduceMonitorKey(monitor, key.name, {
+		count: list.length,
+		typing: bgTyped.length > 0,
+		canInspect: monitorRoom() >= MON_PANEL_MIN,
+		page: Math.max(1, bodyRows - 1),
+		maxScroll,
+	});
+	if (!result.consumed) return false;
+	monitor = result.state;
+	paint();
+	return true;
+}
+
+/** Sub-agent events and clock ticks repaint at most every 60 ms. */
+function monitorRefresh(): void {
+	if (!S.active) return;
+	const wantTicker = monitorVisible() && listRunSubAgents().some((a) => a.status === 'running' || a.status === 'waiting');
+	if (wantTicker && !monTicker) {
+		// Durations are the only thing that changes without an event: tick once a second while something runs.
+		monTicker = setInterval(() => {
+			if (monitorVisible()) paint();
+			else monitorRefresh();
+		}, 1000);
+		monTicker.unref?.();
+	} else if (!wantTicker && monTicker) {
+		clearInterval(monTicker);
+		monTicker = null;
+	}
+	if (monPaintTimer) return;
+	monPaintTimer = setTimeout(() => {
+		monPaintTimer = null;
+		paint();
+	}, 60);
+	monPaintTimer.unref?.();
+}
+
+subscribeSubAgents((event) => {
+	if (event.type === 'run') monitor = { ...INITIAL_MONITOR };
+	monitorRefresh();
+});
 
 // =============================================================================
 // Buffer geometry (multi-line aware)
@@ -349,9 +452,9 @@ function visibleLines(): number {
 	return Math.min(bufferLines().length, maxVisibleLines());
 }
 
-/** Rows pinned to the bottom: borders + input lines + status line (+ panel). */
+/** Rows pinned to the bottom: borders + input lines + status line (+ panels). */
 function chromeRows(): number {
-	return visibleLines() + 3 + termPanelRows() + subAgentPanelRows();
+	return visibleLines() + 3 + termPanelRows() + monitorRows();
 }
 
 /** Horizontal window for one input line so the cursor stays visible. */
@@ -601,10 +704,10 @@ function chromeString(): string {
 	const prompt =
 		S.permissionMode === 'auto' ? c.red.bold('❯') : S.permissionMode === 'files' ? c.yellow.bold('❯') : c.magenta.bold('❯');
 
-		// Read-only panels sit between the input box and the status line.
-		const termRows = termPanelRows();
-		const monitorRows = subAgentPanelRows();
-		const bottomBorderRow = rows - 1 - termRows - monitorRows;
+	// Sub-agent monitor and terminal panel sit between the input box and the status line.
+	const panel = termPanelRows();
+	const monitorCount = monitorRows();
+	const bottomBorderRow = rows - 1 - panel - monitorCount;
 	// Input rows sit directly above the bottom border; the top border is one
 	// row above them (it was previously drawn under the first input line and
 	// erased by it, which hid it completely).
@@ -637,21 +740,13 @@ function chromeString(): string {
 
 	parts.push(line(bottomBorderRow, edge('╰' + '─'.repeat(cols - 2) + '╯')));
 
-		// ── Sub-agent monitor: fixed rows, never scrollback ───────────────────
-		if (monitorRows > 0) {
-			const headerRow = rows - termRows - monitorRows;
-			parts.push(line(headerRow, c.cyan('╭─ sub-agents ─ ') + c.dim('↑/↓ select · Enter inspect · Esc close') + c.cyan('─'.repeat(Math.max(1, cols - 50)) + '╮')));
-			for (let i = 0; i < S.backgroundOverlay.length; i++) {
-				const body = clipText(S.backgroundOverlay[i] ?? '', width).padEnd(width);
-				parts.push(line(headerRow + 1 + i, c.cyan('│') + ' ' + body + ' ' + c.cyan('│')));
-			}
-			parts.push(line(headerRow + monitorRows - 1, c.cyan('╰' + '─'.repeat(cols - 2) + '╯')));
-		}
+	// ── Sub-agent monitor: indicator row + optional live inspector ────────
+	if (monitorCount > 0) parts.push(monitorString(bottomBorderRow + 1, monitorCount));
 
-		// ── Terminal panel: live output of the agent's bash commands ──────────
-		if (S.term && termRows > 0) {
-			const shown = termRows - 2;
-			const headerRow = rows - termRows;
+	// ── Terminal panel: live output of the agent's bash commands ──────────
+	if (S.term && panel > 0) {
+		const shown = panel - 2;
+		const headerRow = rows - panel;
 		const status =
 			S.term.exitCode === null
 				? c.yellow('● running')
@@ -687,19 +782,26 @@ function inputCursor(): string {
 	const offset = lineOffset(pos.col, width);
 	// The cursor must sit on the row being edited, which moves with the
 	// number of input lines and the terminal panel below the box.
-	const row = rows - 1 - termPanelRows() - vis + (pos.line - S.topLine);
+	const row = rows - 1 - termPanelRows() - monitorRows() - vis + (pos.line - S.topLine);
 	return `${CSI}${Math.max(1, Math.min(rows, row))};${5 + pos.col - offset}H`;
 }
 
 function paint(): void {
 	if (!S.active) return;
-	syncRegion();
 	if (S.editing) {
+		syncRegion();
 		// The saved slot holds the output position while editing: don't touch it.
 		out.write(CSI + '?25l' + popupClearString() + chromeString() + inputCursor() + CSI + '?25h');
-	} else {
-		out.write(SAVE + popupClearString() + chromeString() + RESTORE);
+		return;
 	}
+	// Setting the scroll region homes the cursor, so save where output continues
+	// first. The monitor and terminal panel open and close mid-run; when the
+	// region shrank its content was scrolled up by the same number of rows.
+	out.write(SAVE);
+	const before = regionBottomRow;
+	syncRegion();
+	const shrunk = Math.max(0, before - regionBottomRow);
+	out.write(popupClearString() + chromeString() + RESTORE + (shrunk > 0 ? `${CSI}${shrunk}A` : ''));
 }
 
 function onResize(): void {
@@ -906,48 +1008,85 @@ export function parseKeys(chunk: string, state: { paste: string | null }): Key[]
 	return keys;
 }
 
-/**
- * Put stdin in raw mode and call `handler` for every key until the returned
- * function is called, which restores the terminal.
- */
-export function listenKeys(handler: (key: Key) => void, onError?: () => void): () => void {
-	const stdin = process.stdin;
-	const state = { paste: null as string | null };
-	let stopped = false;
-	const stop = (): void => {
-		if (stopped) return;
-		stopped = true;
-		stdin.off('data', onData);
-		if (out.isTTY) out.write(`${CSI}?2004l${CSI}<u${CSI}>4;0m`);
-		stdin.setRawMode?.(false);
-		stdin.pause();
-	};
-	const onData = (chunk: string | Buffer): void => {
-		try {
-			for (const key of parseKeys(chunk.toString(), state)) handler(key);
-		} catch {
-			// Always release raw mode if a UI handler throws. The REPL can recover
-			// on its next prompt instead of leaving the terminal permanently stuck.
-			stop();
-			onError?.();
+interface KeySub {
+	handler: (key: Key) => void;
+	onError?: () => void;
+	/** Run-time listeners (cancel, terminal toggle, /subagents) as opposed to prompts that own the keyboard. */
+	background: boolean;
+}
+
+const keySubs = new Set<KeySub>();
+const pumpState = { paste: null as string | null };
+let pumping = false;
+/** Gets first refusal on each key, but only while every attached listener is a background one. */
+let keyInterceptor: ((key: Key) => boolean) | null = monitorKeyIntercept;
+
+/** Replace the key interceptor (null disables it). The sub-agent monitor is the default. */
+export function setKeyInterceptor(interceptor: ((key: Key) => boolean) | null): void {
+	keyInterceptor = interceptor;
+}
+
+function onStdinData(chunk: string | Buffer): void {
+	for (const key of parseKeys(chunk.toString(), pumpState)) {
+		const subs = [...keySubs];
+		if (keyInterceptor && subs.length > 0 && subs.every((sub) => sub.background) && keyInterceptor(key)) continue;
+		for (const sub of subs) {
+			if (!keySubs.has(sub)) continue; // stopped by an earlier handler for this same key
+			try {
+				sub.handler(key);
+			} catch {
+				// Always release raw mode if a UI handler throws. The REPL can recover
+				// on its next prompt instead of leaving the terminal permanently stuck.
+				removeKeySub(sub);
+				sub.onError?.();
+			}
 		}
-	};
-
-	stdin.setRawMode?.(true);
-	stdin.resume();
-	stdin.setEncoding('utf8');
-	if (out.isTTY) {
-		// Bracketed paste + kitty keyboard flags (the same negotiation opencode
-		// uses). The kitty push makes supporting terminals report Shift+Enter
-		// distinctly (CSI 13;2u) and the Esc key as CSI 27u. Terminals without
-		// kitty support fall back to xterm modifyOtherKeys (mode 1), which also
-		// encodes Shift+Enter as CSI 13;2u; terminals with neither simply ignore
-		// both sequences and keep their legacy encoding.
-		out.write(`${CSI}?2004h${CSI}>1u${CSI}>4;1m`);
 	}
-	stdin.on('data', onData);
+}
 
-	return stop;
+function removeKeySub(sub: KeySub): void {
+	if (!keySubs.delete(sub) || keySubs.size > 0 || !pumping) return;
+	pumping = false;
+	const stdin = process.stdin;
+	stdin.off('data', onStdinData);
+	if (out.isTTY) out.write(`${CSI}?2004l${CSI}<u${CSI}>4;0m`);
+	stdin.setRawMode?.(false);
+	stdin.pause();
+}
+
+/**
+ * Call `handler` for every key until the returned function is called. All
+ * listeners share one stdin reader, and raw mode is released only when the
+ * last one stops — so concurrent listeners (a prompt, the Esc-to-cancel of each
+ * parallel sub-agent request, the /subagents listener) cannot switch each
+ * other's keyboard off.
+ */
+export function listenKeys(
+	handler: (key: Key) => void,
+	onError?: () => void,
+	opts: { background?: boolean } = {},
+): () => void {
+	const sub: KeySub = { handler, onError, background: opts.background === true };
+	keySubs.add(sub);
+	if (!pumping) {
+		pumping = true;
+		pumpState.paste = null;
+		const stdin = process.stdin;
+		stdin.setRawMode?.(true);
+		stdin.resume();
+		stdin.setEncoding('utf8');
+		if (out.isTTY) {
+			// Bracketed paste + kitty keyboard flags (the same negotiation opencode
+			// uses). The kitty push makes supporting terminals report Shift+Enter
+			// distinctly (CSI 13;2u) and the Esc key as CSI 27u. Terminals without
+			// kitty support fall back to xterm modifyOtherKeys (mode 1), which also
+			// encodes Shift+Enter as CSI 13;2u; terminals with neither simply ignore
+			// both sequences and keep their legacy encoding.
+			out.write(`${CSI}?2004h${CSI}>1u${CSI}>4;1m`);
+		}
+		stdin.on('data', onStdinData);
+	}
+	return () => removeKeySub(sub);
 }
 
 // =============================================================================
