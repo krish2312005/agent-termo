@@ -121,12 +121,17 @@ function modelToolName(serverName: string, toolName: string): string {
 }
 
 function validateServerConfig(name: string, config: McpServerConfig): void {
-	if (config.url) {
-		const url = new URL(expandEnvironment(config.url));
+	if (!config || typeof config !== 'object' || Array.isArray(config)) {
+		throw new Error('MCP server "' + name + '" must be a configuration object.');
+	}
+	const hasHttp = typeof config.url === 'string' && config.url.trim().length > 0;
+	const hasStdio = typeof config.command === 'string' && config.command.trim().length > 0;
+	if (hasHttp === hasStdio) throw new Error('MCP server "' + name + '" must define exactly one of url or command.');
+	if (hasHttp) {
+		const url = new URL(expandEnvironment(config.url!));
 		if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('MCP server "' + name + '" URL must use HTTP or HTTPS.');
 		return;
 	}
-	if (!config.command?.trim()) throw new Error('MCP server "' + name + '" needs either a command or a URL.');
 	if (config.args !== undefined && (!Array.isArray(config.args) || !config.args.every((arg) => typeof arg === 'string'))) {
 		throw new Error('MCP server "' + name + '" args must be an array of strings.');
 	}
@@ -155,13 +160,25 @@ async function connectServer(projectRoot: string, name: string, config: McpServe
 		});
 	}
 
+	let timer: ReturnType<typeof setTimeout> | undefined;
 	try {
-		await client.connect(transport);
-		const result = await client.listTools();
-		return { client, transport, tools: result.tools as Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }> };
+		const connection = (async () => {
+			await client.connect(transport);
+			const result = await client.listTools();
+			return { client, transport, tools: result.tools as Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }> };
+		})();
+		const timeout = new Promise<never>((_resolve, reject) => {
+			timer = setTimeout(() => {
+				void client.close().catch(() => undefined);
+				reject(new Error('MCP server "' + name + '" did not initialize within 15 seconds.'));
+			}, 15_000);
+		});
+		return await Promise.race([connection, timeout]);
 	} catch (error) {
 		try { await client.close(); } catch { /* connection may not have opened */ }
 		throw error;
+	} finally {
+		if (timer) clearTimeout(timer);
 	}
 }
 
@@ -191,11 +208,12 @@ export async function initializeMcpServers(projectRoot: string): Promise<ServerS
 	}
 
 	for (const [name, config] of Object.entries(configs)) {
-		if (config.disabled) continue;
 		const status: ServerStatus = { name, connected: false, tools: 0 };
 		serverStatuses.set(name, status);
 		let pendingConnection: ActiveServer | undefined;
 		try {
+			if (config?.disabled === true) continue;
+			validateServerConfig(name, config);
 			const connected = await connectServer(projectRoot, name, config);
 			const connection: ActiveServer = { name, client: connected.client, transport: connected.transport };
 			pendingConnection = connection;
