@@ -11,7 +11,7 @@ import { resolveProjectRoot, saveNimModel, saveNimThinking, savePermissionMode }
 import { resolve } from 'node:path';
 import { readdirSync, readFileSync } from 'node:fs';
 import { ensureAgentFolder, ensureAgentStructure, loadProjectAgents, loadAgentCommands, type AgentCommand } from './runtime/agent-folder.js';
-import { initializeMcpServers, getMcpServerStatuses, getMcpToolDefinitions, isMcpToolName, executeMcpTool, shutdownMcpServers } from './runtime/mcp.js';
+import { initializeMcpServers, getMcpServerStatuses, getMcpToolDefinitions, isMcpToolName, executeMcpTool, shutdownMcpServers, saveMcpServerConfigs, type McpServerConfig } from './runtime/mcp.js';
 import { commandApprovalKey, isCommandApprovalRequired, loadAllowedCommands, saveAllowedCommands } from './runtime/permissions.js';
 import {
 	addSubAgentProgress,
@@ -59,6 +59,43 @@ import {
 	startBackgroundCommandListener,
 } from './ui/index.js';
 import type { ConversationMessage, ToolCall, ToolResult, ProposedFileChange } from './types/index.js';
+
+function extractMcpServerConfigs(input: string): Record<string, McpServerConfig> | undefined {
+	const keyIndex = input.indexOf('"mcpServers"');
+	if (keyIndex < 0) return undefined;
+	const start = input.indexOf('{');
+	if (start < 0 || start > keyIndex) throw new Error('Could not find the opening JSON object for mcpServers.');
+
+	let depth = 0;
+	let inString = false;
+	let escaped = false;
+	let end = -1;
+	for (let i = start; i < input.length; i++) {
+		const char = input[i]!;
+		if (inString) {
+			if (escaped) escaped = false;
+			else if (char === '\\\\') escaped = true;
+			else if (char === '"') inString = false;
+			continue;
+		}
+		if (char === '"') inString = true;
+		else if (char === '{') depth++;
+		else if (char === '}' && --depth === 0) {
+			end = i + 1;
+			break;
+		}
+	}
+	if (end < 0) throw new Error('The MCP JSON is incomplete.');
+	let parsed: unknown;
+	try { parsed = JSON.parse(input.slice(start, end)); }
+	catch (error) { throw new Error('Invalid MCP JSON: ' + (error instanceof Error ? error.message : String(error))); }
+	if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('MCP configuration must be a JSON object.');
+	const servers = (parsed as { mcpServers?: unknown }).mcpServers;
+	if (!servers || typeof servers !== 'object' || Array.isArray(servers) || Object.keys(servers).length === 0) {
+		throw new Error('The "mcpServers" property must contain at least one server configuration.');
+	}
+	return servers as Record<string, McpServerConfig>;
+}
 
 function discoverProjectFiles(projectRoot: string): string[] {
 	const files: string[] = [];
@@ -880,6 +917,39 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				const rawInput = await input.question('');
 				let userInput = rawInput;
 				if (!userInput) continue;
+				if (userInput.includes('"mcpServers"')) {
+					printUserMessage(rawInput);
+					try {
+						const servers = extractMcpServerConfigs(userInput);
+						if (!servers) throw new Error('No mcpServers configuration was found.');
+						printInfo('MCP servers to add:');
+						for (const [name, config] of Object.entries(servers)) {
+							const launch = config.command
+								? [config.command, ...(config.args ?? [])].join(' ')
+								: config.url ?? '(missing command or url)';
+							printInfo('  ' + name + ': ' + launch);
+						}
+						input.close();
+						const decision = await promptAcceptReject('Save and launch these MCP servers? They can execute code or access network resources.');
+						if (decision !== 'accept') {
+							printInfo('MCP import cancelled. No configuration was saved.');
+							input.showPrompt();
+							continue mainLoop;
+						}
+						saveMcpServerConfigs(projectRoot, servers, 'project');
+						printSuccess('Saved MCP configuration to .agent-termo/mcp.json.');
+						const statuses = await initializeMcpServers(projectRoot);
+						for (const status of statuses) {
+							if (status.connected) printSuccess('Connected ' + status.name + ' and discovered ' + status.tools + ' tools.');
+							else if (status.error) printError('Could not connect to ' + status.name + ': ' + status.error);
+						}
+					} catch (error) {
+						printError('MCP import failed: ' + (error instanceof Error ? error.message : String(error)));
+					} finally {
+						input.showPrompt();
+					}
+					continue mainLoop;
+				}
 			if (userInput === 'exit' || userInput === 'quit') {
 				cleanup();
 				break;
