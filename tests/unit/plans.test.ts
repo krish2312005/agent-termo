@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseTaskPlan, updatePlanStep } from '../../src/runtime/plans.js';
+import { formatTaskPlanMarkdown, parseTaskPlan, updatePlanStep } from '../../src/runtime/plans.js';
 
 const validPlan = JSON.stringify({
   title: 'Add feature',
@@ -19,6 +19,20 @@ describe('execution plans', () => {
     expect(plan.steps.map((step) => step.number)).toEqual([1, 2]);
     expect(plan.steps[1]?.dependsOn).toEqual([1]);
     expect(plan.steps[0]?.affectedFiles).toEqual(['src/main.ts']);
+  });
+
+
+  it('formats plans as readable Markdown with status, progress, and grouped details', () => {
+    const plan = parseTaskPlan(validPlan, 'Add the feature');
+    const markdown = formatTaskPlanMarkdown(plan);
+    expect(markdown).toContain('# Add feature');
+    expect(markdown).toContain('**Status:** draft · **Progress:** 0/2 steps');
+    expect(markdown).toContain('1. ○ **Inspect**');
+    expect(markdown).toContain('- **Files:** `src/main.ts`');
+    expect(markdown).toContain('- **Depends on:** steps 1');
+    expect(markdown).toContain('## Overall risks');
+    plan.steps[0]!.status = 'completed';
+    expect(formatTaskPlanMarkdown(plan)).toContain('**Progress:** 1/2 steps');
   });
 
   it('rejects invalid or forward dependencies', () => {
