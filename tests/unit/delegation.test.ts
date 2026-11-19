@@ -48,6 +48,8 @@ describe('delegation', () => {
     expect(prompt).toContain('code-reviewer');
     expect(prompt).toContain('Repeat up to three repair rounds');
     expect(prompt).toContain('Never make checks green by deleting tests');
+    expect(prompt).toContain('parent agent/project-manager owns the independent final quality gate');
+    expect(prompt).toContain('Delegated implementation agents must not attempt nested delegation');
   });
 
   it('lists the available agents in the system prompt', () => {
