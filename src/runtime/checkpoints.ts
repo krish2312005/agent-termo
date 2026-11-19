@@ -34,11 +34,11 @@ function checkpointDirectory(projectRoot: string): string {
   return agentTermoCheckpointsDir(projectRoot);
 }
 function checkpointPath(projectRoot: string, id: string): string {
-  if (!/^\\d{3,}$/.test(id)) throw new Error('Invalid checkpoint ID.');
+  if (!/^\d{3,}$/.test(id)) throw new Error('Invalid checkpoint ID.');
   return resolve(checkpointDirectory(projectRoot), id + '.json');
 }
 function hashState(exists: boolean, content = '', mode = 0): string {
-  return createHash('sha256').update(exists ? String(mode) + '\\0' + content : 'missing').digest('hex');
+  return createHash('sha256').update(exists ? String(mode) + '\0' + content : 'missing').digest('hex');
 }
 function validateState(value: unknown): value is FileState {
   if (!value || typeof value !== 'object') return false;
@@ -50,7 +50,7 @@ function parseCheckpoint(value: unknown): Checkpoint | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const item = value as Record<string, unknown>;
   if (
-    typeof item.id !== 'string' || !/^\\d{3,}$/.test(item.id) ||
+    typeof item.id !== 'string' || !/^\d{3,}$/.test(item.id) ||
     typeof item.label !== 'string' ||
     !['automatic', 'manual', 'plan'].includes(String(item.kind)) ||
     !['active', 'applied', 'undone'].includes(String(item.status)) ||
@@ -80,7 +80,7 @@ function saveCheckpoint(projectRoot: string, checkpoint: Checkpoint): void {
     const now = Date.now();
     const previousUpdate = Date.parse(checkpoint.updatedAt) || 0;
     checkpoint.updatedAt = new Date(Math.max(now, previousUpdate + 1)).toISOString();
-    writeFileSync(temporary, JSON.stringify(checkpoint, null, 2) + '\\n', { encoding: 'utf-8', mode: 0o600 });
+    writeFileSync(temporary, JSON.stringify(checkpoint, null, 2) + '\n', { encoding: 'utf-8', mode: 0o600 });
     renameSync(temporary, target);
   } catch (error) {
     try { unlinkSync(temporary); } catch { /* Temporary file may not exist. */ }
@@ -99,7 +99,7 @@ export function listCheckpoints(projectRoot: string): Checkpoint[] {
   if (!existsSync(directory)) return [];
   const checkpoints: Checkpoint[] = [];
   for (const file of readdirSync(directory)) {
-    if (!/^\\d{3,}\\.json$/.test(file)) continue;
+    if (!/^\d{3,}\.json$/.test(file)) continue;
     const checkpoint = getCheckpoint(projectRoot, file.slice(0, -5));
     if (checkpoint) checkpoints.push(checkpoint);
   }
@@ -110,7 +110,7 @@ export function createCheckpoint(projectRoot: string, label: string, kind: Check
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   let highest = 0;
   for (const file of readdirSync(directory)) {
-    const match = /^(\\d{3,})\\.json$/.exec(file);
+    const match = /^(\d{3,})\.json$/.exec(file);
     if (match) highest = Math.max(highest, Number(match[1]));
   }
   const now = new Date().toISOString();

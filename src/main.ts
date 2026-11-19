@@ -409,7 +409,7 @@ async function applyWithCheckpoint(
     try {
       recordCheckpointAfter(projectRoot, id, change.path);
     } catch (error) {
-      result.output = (result.output ? result.output + '\\n' : '') +
+      result.output = (result.output ? result.output + '\n' : '') +
         'WARNING: file operation finished, but checkpoint #' + id + ' could not record its final state: ' +
         (error instanceof Error ? error.message : String(error));
     }
