@@ -116,7 +116,9 @@ describe('packaged-project runtime initialization', () => {
       expect(existsSync(join(projectRoot, '.agent-termo', 'memory.md'))).toBe(false);
       expect(existsSync(join(projectRoot, '.agent-termo', 'timeline.md'))).toBe(false);
       expect(result.root).toBe(join(projectRoot, '.agent-termo'));
-      expect(loadProjectAgents(projectRoot).length).toBe(9);
+      const agents = loadProjectAgents(projectRoot);
+      expect(agents).toHaveLength(10);
+      expect(agents.some((agent) => agent.name === 'code-reviewer')).toBe(true);
     } finally {
       rmSync(projectRoot, { recursive: true, force: true });
     }
