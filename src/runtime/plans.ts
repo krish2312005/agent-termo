@@ -128,6 +128,36 @@ export function parseTaskPlan(content: string, request: string): TaskPlan {
   return normalized;
 }
 
+
+/** Render a plan as readable Markdown for the terminal's assistant-message renderer. */
+export function formatTaskPlanMarkdown(plan: TaskPlan): string {
+  const completed = plan.steps.filter((step) => step.status === 'completed').length;
+  const lines = [
+    '# ' + plan.title,
+    '**Status:** ' + plan.status.replace(/_/g, ' ') + ' · **Progress:** ' + completed + '/' + plan.steps.length + ' steps',
+    '',
+    plan.summary,
+    '',
+    '## Steps',
+  ];
+
+  for (const step of plan.steps) {
+    const marker = step.status === 'completed' ? '✓' : step.status === 'in_progress' ? '›' : '○';
+    lines.push('', step.number + '. ' + marker + ' **' + step.title + '**', '   ' + step.description);
+    if (step.affectedFiles.length > 0) {
+      lines.push('   - **Files:** ' + step.affectedFiles.map((file) => '`' + file + '`').join(', '));
+    }
+    if (step.dependsOn.length > 0) lines.push('   - **Depends on:** steps ' + step.dependsOn.join(', '));
+    if (step.risks.length > 0) lines.push('   - **Risks:** ' + step.risks.join('; '));
+    if (step.summary) lines.push('   - **Result:** ' + step.summary);
+  }
+
+  if (plan.risks.length > 0) {
+    lines.push('', '## Overall risks', ...plan.risks.map((risk) => '- ' + risk));
+  }
+  return lines.join('\n');
+}
+
 export function updatePlanStep(
   plan: TaskPlan,
   stepNumber: number,
