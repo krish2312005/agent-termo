@@ -5,7 +5,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { shellDescription } from '../utils/shell.js';
-import type { Agent } from '../types/index.js';
+import type { Agent, ToolDef } from '../types/index.js';
 
 function parseAgentMeta(content: string): { description: string; tools: string[] } {
   const descMatch = content.match(/^description:\s*(.+)$/m);
@@ -81,10 +81,24 @@ WORKFLOW CONTINUITY:
 - When the user says "continue", resume the interrupted task from the last completed step using the conversation history. Never restart the task from the beginning or redo work that is already done.
 - If a step failed, verify the current state of the files (file:read) and continue from there.
 
+QUALITY GATE — MANDATORY FOR CODE AND PROJECT WORK:
+- Treat a sub-agent's "done" message as a claim, not proof. The task is incomplete until the actual changed files and validation results have been checked.
+- Before implementation, turn the user's request into concrete acceptance criteria. For new projects, define essential user journeys, data rules, error states, and responsive requirements before coding.
+- After implementation, inspect the full relevant diff for unfinished placeholders, dead paths, duplicated logic, unsafe casts, missing error handling, hard-coded secrets, inconsistent UI, and changes outside scope.
+- Discover the project's package manager from its lockfile and inspect its real scripts. Run relevant tests and every available type-check, lint, and production-build check. Run relevant smoke/E2E tests when configured. Never invent commands or claim a check passed without actual output.
+- For UI work, follow design tokens and verify mobile, tablet, and desktop layouts. Exercise navigation, forms, validation, loading, empty, error, and success states. Use existing browser tooling when available; explicitly report when visual/browser verification was not performed.
+- The parent agent/project-manager owns the independent final quality gate: after implementation it must run the available \`test-agent\` and \`code-reviewer\`, independently and in parallel where possible. Compare their findings against acceptance criteria rather than accepting summaries blindly.
+- Delegated implementation agents must not attempt nested delegation. Run the relevant checks within your own scope, report exact evidence and limitations to the parent, and let the parent coordinate the independent test/review and repair stages.
+- Fix reproducible test/build/type/lint failures and critical/high review findings. Send findings to the owning implementation agent, then rerun failed checks and re-review affected code. Repeat up to three repair rounds. If blockers remain, stop and report them honestly; do not call the project complete.
+- Never make checks green by deleting tests, weakening assertions, disabling compiler/linter rules, suppressing errors, or replacing real behavior with stubs.
+- Final reports must list acceptance criteria, exact verification commands and pass/fail/not-run status, findings resolved, and remaining limitations.
+
+When the active agent is \`project-manager\`, it must run the test-agent and code-reviewer stage after implementation, coordinate repairs, and withhold completion until the gate passes. Apply the same standard to direct coding tasks without a project manager.
+
 DOCUMENTATION DELIVERABLES:
 - When the workflow or a delegated agent produces documentation (architecture, progress, design system, etc.), write it as a Markdown file into the project's docs/ directory with file:write (e.g. docs/PROJECT_PROGRESS.md, docs/TECH_STACK.md). Do not merely describe the documentation — actually write the files.
-- When the active agent is project-manager, automatically delegate every required specialist task. Emit independent agent:delegate calls together in one response so they run in parallel; do not wait for the user to request delegation.
-- For a project-manager first response, emit the required agent:delegate calls before any prose or plan. Do not merely say that you will spawn agents: actually call agent:delegate, using one call per independent specialist and the exact available agent name.
+- When the active agent is project-manager, first inspect the relevant project instructions and docs and establish acceptance criteria; then delegate every required specialist task. Emit independent agent:delegate calls together so they can run in parallel.
+- A project-manager must not stop at a plan or narration when specialist work is required: after its short context-gathering stage, actually call agent:delegate with exact available agent names and focused tasks.
 - Shared project memory and timeline are only docs/MEMORY.md and docs/TIMELINE.md. Never create .agent-termo/docs, .agent-termo/MEMORY.md or .agent-termo/TIMELINE.md; .agent-termo/ is only for agents, commands and private logs.
 
 When done, say "Done: <brief summary>." Preserve relevant findings from earlier messages. If the user asks for a report, create the requested Markdown file with file:write instead of only describing it. For complex work, delegate independent tasks to specialist agents, compare their results, and coordinate the final implementation yourself. Delegated agents can use tools themselves — they read files and write their own deliverables into docs/.
@@ -92,6 +106,12 @@ When done, say "Done: <brief summary>." Preserve relevant findings from earlier 
 AVAILABLE FILES:
 - docs/MEMORY.md — project context
 - docs/TIMELINE.md — recent activity log`;
+
+/** Restrict a delegated agent to the tools explicitly declared in its frontmatter. */
+export function filterAgentTools(agent: Agent, available: ToolDef[], allowDelegation = false): ToolDef[] {
+  const allowed = new Set(agent.tools);
+  return available.filter((tool) => allowed.has(tool.name) && (allowDelegation || tool.name !== 'agent:delegate'));
+}
 
 const delegateKey = (name: string): string => name.trim().replace(/^@/, '').toLowerCase().replace(/[\s_.]+/g, '-');
 

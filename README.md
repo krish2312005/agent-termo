@@ -531,6 +531,14 @@ A delegated agent receives its own task context and tool access, but cannot recu
 
 ---
 
+## Quality-First Delivery
+
+For non-trivial coding tasks, Agent-Termo's default workflow now defines acceptance criteria, delegates implementation to scoped specialists, and runs an independent test and code-review stage. Confirmed findings are sent back to the owning implementer and affected checks are rerun for up to three repair rounds. Delegated agents that exhaust their tool budget without a final report are marked as failed instead of completed.
+
+The quality gate runs checks that the repository actually provides, including tests, type-checking, linting, production builds, and configured smoke/end-to-end tests. UI tasks also require responsive and interaction-state verification; browser-level checks are reported as not run when no browser tooling is configured.
+
+This improves the chance of catching defects before delivery, but cannot guarantee defect-free software. Final reports must show actual commands and results, along with checks that could not be run and remaining limitations.
+
 ## MCP Servers
 
 Connect local stdio and remote Streamable HTTP MCP servers. See [MCP setup and CLI commands](./docs/MCP.md).

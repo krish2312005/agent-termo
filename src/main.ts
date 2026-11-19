@@ -8,7 +8,7 @@ import { activeManualCheckpointIds, createCheckpoint, findCheckpoint, latestRedo
 import { TOOL_DEFINITIONS } from './llm/tools.js';
 import { executeTool, applyFileChange, setTerminalHooks, killRunningTerminal } from './tools/index.js';
 import { loadMemory, loadTimeline, logToTimeline, logAgentTermoTimeline, appendToSessionLog, appendToTimeline, loadSessionLog } from './memory/index.js';
-import { buildSystemPrompt, resolveDelegation } from './agents/index.js';
+import { buildSystemPrompt, filterAgentTools, resolveDelegation } from './agents/index.js';
 import { resolveProjectRoot, saveNimModel, saveNimThinking, savePermissionMode } from './utils/config.js';
 import { resolve } from 'node:path';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
@@ -64,7 +64,7 @@ import {
 	printSubAgents,
 	startBackgroundCommandListener,
 } from './ui/index.js';
-import type { ConversationMessage, ToolCall, ToolResult, ProposedFileChange } from './types/index.js';
+import type { ConversationMessage, ToolCall, ToolResult, ToolDef, ProposedFileChange } from './types/index.js';
 
 function extractMcpServerConfigs(input: string): Record<string, McpServerConfig> | undefined {
 	const keyIndex = input.indexOf('"mcpServers"');
@@ -494,7 +494,7 @@ async function executeToolWithReview(
 	return { toolResult, applied: false };
 }
 
-const DELEGATED_TOOL_BUDGET = 8;
+const DELEGATED_TOOL_BUDGET = 24;
 
 /** One-line summary of a tool call's arguments for the sub-agent monitor. */
 function describeArgs(args: Record<string, unknown>): string {
@@ -557,7 +557,7 @@ async function runDelegatedAgent(
 	];
 
 	// Sub-agents cannot delegate further; they get every other tool.
-	const delegatedToolDefs = [...TOOL_DEFINITIONS, ...getMcpToolDefinitions()].filter((t) => t.name !== 'agent:delegate');
+	const delegatedToolDefs = filterAgentTools(agent, [...TOOL_DEFINITIONS, ...getMcpToolDefinitions()]);
 	let finalText = '';
 	let lastNarration = '';
 
@@ -624,8 +624,17 @@ async function runDelegatedAgent(
 			}
 		}
 
-		// If the step budget ran out mid-work, report the last thing it said instead of nothing.
-		const output = finalText || lastNarration || `(sub-agent stopped after ${DELEGATED_TOOL_BUDGET} steps without a final report)`;
+		// A delegated agent must return a final report. Reaching the iteration limit
+		// after tool calls is not completion: the parent must see the failure and recover.
+		const output = finalText.trim();
+		if (!output) {
+			const detail =
+				`Sub-agent ${agent.name} exhausted its ${DELEGATED_TOOL_BUDGET}-iteration budget without a final report.` +
+				(lastNarration ? ` Last progress: ${lastNarration.replace(/\s+/g, ' ').slice(0, 500)}` : '');
+			finishSubAgent(subId, 'failed', detail);
+			logAgentTermoTimeline(`Sub-agent ${agent.name} exhausted its budget before completing: ${task.slice(0, 120)}`, projectRoot);
+			return { id: toolCall.id, name: toolCall.name, success: false, error: detail, durationMs: Date.now() - started };
+		}
 		finishSubAgent(subId, 'completed', output);
 		logAgentTermoTimeline(`Sub-agent ${agent.name} completed delegated task: ${task.slice(0, 120)}`, projectRoot);
 		void appendToTimeline(projectRoot, agent.name, 'Delegated task completed', [`Task: ${task.slice(0, 300)}`], [`Summary: ${output.replace(/\s+/g, ' ').slice(0, 400)}`]);
@@ -655,6 +664,7 @@ async function runToolLoop(
 	getCheckpointId: () => string,
 	onConversationChanged: () => void,
 	taskPlan?: TaskPlan,
+	agentToolDefinitions?: ToolDef[],
 ): Promise<string> {
 	let toolCalls = initialToolCalls;
 	let finalText = '';
@@ -736,7 +746,7 @@ async function runToolLoop(
 			startSpinner('Working');
 		let result: { content: string; toolCalls: ToolCall[] };
 			try {
-				const tools = nimClient.buildToolDefs([...TOOL_DEFINITIONS, ...getMcpToolDefinitions(), ...(taskPlan?.status === 'in_progress' ? [PLAN_PROGRESS_TOOL] : [])]);
+				const tools = nimClient.buildToolDefs([...(agentToolDefinitions ?? [...TOOL_DEFINITIONS, ...getMcpToolDefinitions()]), ...(taskPlan?.status === 'in_progress' ? [PLAN_PROGRESS_TOOL] : [])]);
 				const streamed = new MarkdownPrinter(stopSpinner);
 				result = await withEscapeCancellation(nimClient, () => completeWithRetry(nimClient, conversation, tools, (chunk) => { streamed.push(chunk); streamed.flushPartial(); }));
 				streamed.end();
@@ -1934,8 +1944,12 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				// the request also supports providers/models that reject tool mode.
 				
 				refreshSystemPrompt();
+				const selectedAgent = customAgents.find((agent) => agent.name === activeAgentName);
+				const activeAgentToolDefinitions = selectedAgent
+					? filterAgentTools(selectedAgent, [...TOOL_DEFINITIONS, ...getMcpToolDefinitions()], true)
+					: [...TOOL_DEFINITIONS, ...getMcpToolDefinitions()];
 				const tools = shouldUseTools(userInput, activeAgentName, continuing, getMcpToolDefinitions().length > 0, skillInvocation || hasRelevantSkill(userInput, listSkills(projectRoot))) || activePlan?.status === 'in_progress'
-					? nimClient.buildToolDefs([...TOOL_DEFINITIONS, ...getMcpToolDefinitions(), ...(activePlan?.status === 'in_progress' ? [PLAN_PROGRESS_TOOL] : [])])
+					? nimClient.buildToolDefs([...activeAgentToolDefinitions, ...(activePlan?.status === 'in_progress' ? [PLAN_PROGRESS_TOOL] : [])])
 					: undefined;
 
 				{
@@ -1970,7 +1984,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						if (narration && !streamed.printed) printAssistantMessage(narration);
 
 						// Run the tool-call loop: execute tools, feed results back, repeat
-						await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, permissionMode, allowedCommands, taskState, ensureTaskCheckpoint, persistSession, activePlan);
+						await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, permissionMode, allowedCommands, taskState, ensureTaskCheckpoint, persistSession, activePlan, activeAgentToolDefinitions);
 					}
 					} catch (err) {
 						stopSpinner();
@@ -2009,7 +2023,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						if (toolCalls.length > 0) {
 							const narration = (fallback.content ?? '').trim().replace(/^null$/, '').trim();
 							if (narration && !fallbackStream.printed && !narration.includes('"tool_calls"')) printAssistantMessage(narration);
-							await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, permissionMode, allowedCommands, taskState, ensureTaskCheckpoint, persistSession, activePlan);
+							await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, permissionMode, allowedCommands, taskState, ensureTaskCheckpoint, persistSession, activePlan, activeAgentToolDefinitions);
 						} else {
 							const cleanText = (fallback.content ?? '').trim().replace(/^null$/, '').trim();
 							if (cleanText) {
