@@ -18,6 +18,7 @@ export interface SessionTaskState {
   reason: string;
   lastActions: string[];
   completedOperations: string[];
+  checkpointId?: string;
 }
 
 export interface StoredSession {
@@ -116,6 +117,7 @@ function parseSession(projectRoot: string, input: string): StoredSession | undef
           reason: typeof savedTask.reason === 'string' ? savedTask.reason : '',
           lastActions: Array.isArray(savedTask.lastActions) ? savedTask.lastActions.filter((item): item is string => typeof item === 'string') : [],
           completedOperations: Array.isArray(savedTask.completedOperations) ? savedTask.completedOperations.filter((item): item is string => typeof item === 'string') : [],
+          checkpointId: typeof savedTask.checkpointId === 'string' ? savedTask.checkpointId : undefined,
         }
       : undefined;
 
