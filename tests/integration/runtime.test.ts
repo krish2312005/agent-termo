@@ -30,6 +30,12 @@ describe('packaged-project runtime initialization', () => {
       expect(existsSync(join(projectRoot, '.agent-termo', 'agents'))).toBe(true);
       expect(existsSync(join(projectRoot, '.agent-termo', 'commands'))).toBe(true);
       expect(existsSync(join(projectRoot, '.agent-termo', 'logs'))).toBe(true);
+      expect(existsSync(join(projectRoot, '.agent-termo', 'agents', 'project-manager.md'))).toBe(true);
+      expect(existsSync(join(projectRoot, '.agent-termo', 'agents', 'architect.md'))).toBe(true);
+      expect(existsSync(join(projectRoot, '.agent-termo', 'commands', 'build.md'))).toBe(true);
+      expect(existsSync(join(projectRoot, '.agent-termo', 'commands', 'new-agent.md'))).toBe(true);
+      expect(existsSync(join(projectRoot, '.agent-termo', 'templates', 'agent.md'))).toBe(true);
+      expect(existsSync(join(projectRoot, 'TERMO.md'))).toBe(true);
       expect(existsSync(join(projectRoot, '.agent-termo', 'docs'))).toBe(false);
       expect(existsSync(join(projectRoot, '.agent-termo', 'memory.md'))).toBe(false);
       expect(existsSync(join(projectRoot, '.agent-termo', 'timeline.md'))).toBe(false);
@@ -107,6 +113,7 @@ describe('packaged-project runtime initialization', () => {
       expect(existsSync(join(projectRoot, '.agent-termo', 'memory.md'))).toBe(false);
       expect(existsSync(join(projectRoot, '.agent-termo', 'timeline.md'))).toBe(false);
       expect(result.root).toBe(join(projectRoot, '.agent-termo'));
+      expect(loadProjectAgents(projectRoot).length).toBe(9);
     } finally {
       rmSync(projectRoot, { recursive: true, force: true });
     }

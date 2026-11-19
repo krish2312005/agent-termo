@@ -263,7 +263,7 @@ Initialize a specific directory:
 agent-termo init ./my-project
 ~~~
 
-Initialization creates the project memory and timeline files and prepares the .agent-termo/ runtime directories. It also creates a src/ directory if it does not already exist.
+Initialization creates the project memory and timeline files, prepares the .agent-termo/ runtime directories, and installs the bundled default agents and slash commands without overwriting existing project definitions. It also creates a starter TERMO.md (only when one does not already exist) and a src/ directory if needed.
 
 ---
 
@@ -547,6 +547,14 @@ Run the custom command inside Agent-Termo:
 Arguments supplied after the command name are available through $ARGUMENTS or $ARGS.
 
 ---
+
+## Project Instructions (TERMO.md)
+
+Agent-Termo automatically loads persistent instructions from `TERMO.md` files when a session starts. It checks the user-level `~/.agent-termo/TERMO.md`, then project and ancestor `TERMO.md` files, with `TERMO.local.md` files loaded after the matching project instructions. The project can also keep its main instructions at `.agent-termo/TERMO.md`.
+
+Use Markdown headings and concise, concrete rules. Additional files can be imported with `@relative/path.md` or an absolute path. Imports are resolved relative to the file containing the import, can be nested up to four levels, and are skipped inside inline code and fenced code blocks. For safety, imports are limited to the current project and `~/.agent-termo/`.
+
+Run `agent-termo init` or start Agent-Termo in a project to create a starter `TERMO.md` (without overwriting an existing one). The instructions are added to both the main agent and delegated sub-agent prompts.
 
 ## Project Memory and Runtime Files
 

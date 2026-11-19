@@ -10,7 +10,8 @@ import { buildSystemPrompt, resolveDelegation } from './agents/index.js';
 import { resolveProjectRoot, saveNimModel, saveNimThinking, savePermissionMode } from './utils/config.js';
 import { resolve } from 'node:path';
 import { readdirSync, readFileSync } from 'node:fs';
-import { ensureAgentFolder, ensureAgentStructure, loadProjectAgents, loadAgentCommands, type AgentCommand } from './runtime/agent-folder.js';
+import { ensureAgentFolder, loadProjectAgents, loadAgentCommands, type AgentCommand } from './runtime/agent-folder.js';
+import { loadTermoInstructions } from './runtime/termo-md.js';
 import { initializeMcpServers, getMcpServerStatuses, getMcpToolDefinitions, isMcpToolName, executeMcpTool, shutdownMcpServers, saveMcpServerConfigs, type McpServerConfig } from './runtime/mcp.js';
 import { commandApprovalKey, isCommandApprovalRequired, loadAllowedCommands, saveAllowedCommands } from './runtime/permissions.js';
 import {
@@ -452,7 +453,7 @@ async function runDelegatedAgent(
 		loadTimeline(projectRoot),
 	]);
 	const delegatedMessages: ConversationMessage[] = [
-		{ id: crypto.randomUUID(), role: 'system', content: buildSystemPrompt(projectMemory, projectTimeline, projectRoot, agent.systemPrompt), timestamp: new Date(), agent: agent.name },
+		{ id: crypto.randomUUID(), role: 'system', content: buildSystemPrompt(projectMemory, projectTimeline, projectRoot, agent.systemPrompt, [], loadTermoInstructions(projectRoot)), timestamp: new Date(), agent: agent.name },
 		{
 			id: crypto.randomUUID(),
 			role: 'user',
@@ -791,7 +792,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 	// commands and private logs live under .agent-termo/. Older versions also
 	// wrote .agent-termo/memory.md and timeline.md; those are migrated here.
 	try {
-		ensureAgentStructure(projectRoot);
+		ensureAgentFolder(projectRoot);
 	} catch {
 		// Read-only filesystem or similar: tools will surface the error.
 	}
@@ -829,7 +830,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 	let currentGoal = '';
 	const taskState = newTaskState();
 	const buildSessionPrompt = (): string => {
-		let prompt = buildSystemPrompt(memory, '', projectRoot, activeAgentPrompt, customAgents);
+		let prompt = buildSystemPrompt(memory, '', projectRoot, activeAgentPrompt, customAgents, loadTermoInstructions(projectRoot));
 		if (memoryContext) prompt += '\n\n## Recent Session Log (previous sessions, may include interrupted tasks)\n' + memoryContext;
 		if (taskState.goal && taskState.status !== 'idle') {
 			prompt += '\n\n## Active Task\n' + taskState.goal + '\nStatus: ' + taskState.status + (taskState.reason ? ' (' + taskState.reason + ')' : '');

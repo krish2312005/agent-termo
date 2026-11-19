@@ -136,10 +136,15 @@ export function buildSystemPrompt(
 	agentDir: string,
 	activeAgentPrompt = '',
 	roster: Array<{ name: string; description: string }> = [],
+	termoInstructions = '',
 ): string {
 	let prompt = SYSTEM_BASE;
 	prompt += `\n\n## Project Working Directory\n${agentDir}\nAll relative file paths and shell commands must operate inside this directory. Create and modify the user's files here. Never use /tmp, an OS temp directory, the npm package directory, or another workspace for project files.`;
 	prompt += `\n\n## Shell\nbash:execute runs commands with ${shellDescription()}. Use syntax that matches this shell, keep paths relative to the project, and prefer the dedicated file tools for creating and editing files.`;
+
+	if (termoInstructions) {
+		prompt += '\n\n## Project Instructions (TERMO.md)\n' + termoInstructions;
+	}
 
 	if (activeAgentPrompt) {
 		prompt += '\n\n## Active Custom Agent Instructions\n' + activeAgentPrompt;

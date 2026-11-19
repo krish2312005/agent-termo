@@ -44,4 +44,7 @@ if (existsSync('.claude')) {
   console.log('Copied .claude to dist/');
 }
 
+await copy('src/runtime/defaults', 'dist/.agent-termo-defaults');
+console.log('Copied Agent-Termo default agents and commands to dist/');
+
 console.log('Build complete: dist/cli.js, dist/main.js');
