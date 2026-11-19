@@ -12,6 +12,7 @@ import {
   saveSession,
 } from '../../src/runtime/sessions.js';
 import type { ConversationMessage } from '../../src/types/index.js';
+import { createRunJournal } from '../../src/runtime/engine.js';
 
 function message(
   role: ConversationMessage['role'],
@@ -105,6 +106,77 @@ describe('local conversation sessions', () => {
       const loaded = loadSession(projectRoot, session.id);
       expect(loaded?.messages.slice(-2).map((item) => item.id)).toEqual(['call-1', 'call-2']);
       expect(loaded?.messages.at(-1)?.content).toContain('No tool result was saved');
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('restores a durable tool result when the process stopped before saving the transcript', () => {
+    const projectRoot = mkdtempSync(join(tmpdir(), 'agent-termo-durable-session-'));
+    try {
+      const call = { id: 'durable-call', name: 'bash:execute', arguments: { command: 'npm run typecheck' } };
+      const session = createSession(projectRoot, [
+        message('system', 'System prompt'),
+        message('user', 'Fix the compiler errors'),
+        message('assistant', 'I will run the typecheck.', { toolCalls: [call] }),
+      ]);
+      saveSession(projectRoot, session);
+
+      const journal = createRunJournal(projectRoot, session.id);
+      journal.startRun('Fix the compiler errors');
+      journal.assistantCompleted('I will run the typecheck.', [call]);
+      journal.toolCalled(call);
+      journal.toolStarted(call.id);
+      journal.toolFinished(call.id, {
+        id: call.id,
+        name: call.name,
+        success: false,
+        command: 'npm run typecheck',
+        cwd: projectRoot,
+        exitCode: 2,
+        stdout: '',
+        stderr: 'src/index.ts: error TS2307: Cannot find module',
+        error: 'Typecheck failed',
+        durationMs: 25,
+      });
+
+      // Simulate a crash after the event was committed but before the transcript was updated.
+      const restored = loadSession(projectRoot, session.id);
+      const result = restored?.messages.find((item) => item.role === 'tool' && item.id === call.id);
+      expect(result?.content).toContain('Status: failure');
+      expect(result?.content).toContain('Exit code: 2');
+      expect(result?.content).toContain('TS2307');
+      expect(restored?.messages.filter((item) => item.role === 'tool')).toHaveLength(1);
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('restores partial output and marks a tool interrupted after a process restart', () => {
+    const projectRoot = mkdtempSync(join(tmpdir(), 'agent-termo-interrupted-output-'));
+    try {
+      const call = { id: 'partial-call', name: 'bash:execute', arguments: { command: 'npm run build' } };
+      const session = createSession(projectRoot, [
+        message('system', 'System prompt'),
+        message('user', 'Build the project'),
+        message('assistant', 'Running the build.', { toolCalls: [call] }),
+      ]);
+      saveSession(projectRoot, session);
+
+      const first = createRunJournal(projectRoot, session.id);
+      first.startRun('Build the project');
+      first.assistantCompleted('Running the build.', [call]);
+      first.toolCalled(call);
+      first.toolStarted(call.id);
+      first.toolOutputDelta(call.id, 'stderr', 'src/app.ts: TypeScript error TS2322');
+
+      // Opening the journal after a crash records the in-flight tool as interrupted.
+      createRunJournal(projectRoot, session.id);
+      const restored = loadSession(projectRoot, session.id);
+      const result = restored?.messages.find((item) => item.role === 'tool' && item.id === call.id);
+      expect(result?.content).toContain('Status: interrupted');
+      expect(result?.content).toContain('TS2322');
+      expect(result?.content).toContain('process stopped');
     } finally {
       rmSync(projectRoot, { recursive: true, force: true });
     }

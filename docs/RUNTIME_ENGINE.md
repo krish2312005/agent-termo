@@ -16,11 +16,11 @@ The primary event vocabulary is:
 - `assistant.started`, `assistant.text.delta`, `assistant.completed`
 - `tool.called`, `tool.started`, `tool.output.delta`, `tool.completed`, `tool.failed`, `tool.interrupted`
 
-A tool call keeps its provider `callId` from request through completion. Tool completion retains the command, working directory, exit code, duration, stdout, stderr, output, and error. Output is bounded to prevent an unbounded event log from one noisy process. Text deltas are appended without forcing an fsync for every token; state transitions are synchronously flushed.
+A tool call keeps its provider `callId` from request through completion. Shell stdout/stderr chunks are streamed to the same journal and to the terminal panel while the process runs. Tool completion retains the command, working directory, exit code, duration, stdout, stderr, output, and error. Output is bounded to prevent an unbounded event log from one noisy process. Text/output deltas are appended without forcing an fsync for every token; state transitions are synchronously flushed.
 
 ## Recovery contract
 
-On opening a run journal, Agent-Termo projects the event stream into run and tool state. Any prior run still marked `running`, and any tool still `pending` or `running`, is transitioned to `interrupted` with a durable recovery reason. An interrupted action is never silently marked successful. The model must inspect the current filesystem/process state before retrying it.
+On opening a run journal, Agent-Termo projects the event stream into run and tool state. Any prior run still marked `running`, and any tool still `pending` or `running`, is transitioned to `interrupted` with a durable recovery reason. Partial stdout/stderr captured before the interruption is retained and can be reconstructed into the provider transcript. An interrupted action is never silently marked successful. The model must inspect the current filesystem/process state before retrying it.
 
 The final newline is the JSONL record commit boundary. A torn final record is discarded on read; corruption in a complete record or a broken sequence is reported rather than silently ignored.
 

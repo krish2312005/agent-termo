@@ -15,6 +15,7 @@ function bounded(value: string | undefined): string {
 export class AgentRunJournal {
   private readonly store: SessionEventStore;
   private currentRunId: string | undefined;
+  private readonly streamedOutput = new Map<string, number>();
 
   constructor(projectRoot: string, sessionId: string) {
     this.store = new SessionEventStore(projectRoot, sessionId);
@@ -35,6 +36,8 @@ export class AgentRunJournal {
             callId: tool.callId,
             name: tool.name,
             reason: "The process stopped before a durable tool result was recorded.",
+            stdout: tool.stdout,
+            stderr: tool.stderr,
           });
         }
       }
@@ -82,18 +85,31 @@ export class AgentRunJournal {
     this.store.append(this.requireRun(), "tool.started", { callId });
   }
 
+  toolOutputDelta(callId: string, stream: "stdout" | "stderr", text: string): void {
+    const key = callId + ":" + stream;
+    const stored = this.streamedOutput.get(key) ?? 0;
+    const remaining = Math.max(0, MAX_OUTPUT_CHARS - stored);
+    if (remaining === 0 || !text) return;
+    const chunk = text.slice(0, remaining);
+    this.streamedOutput.set(key, stored + chunk.length);
+    this.store.append(this.requireRun(), "tool.output.delta", { callId, stream, text: chunk }, false);
+  }
+
   toolFinished(callId: string, result: ToolResult): void {
     const output = bounded(result.stdout ?? result.output);
     const stderr = bounded(result.stderr);
-    const appendChunks = (stream: "stdout" | "stderr", value: string): void => {
-      for (let offset = 0; offset < value.length; offset += 8192) {
-        this.store.append(this.requireRun(), "tool.output.delta", {
-          callId, stream, text: value.slice(offset, offset + 8192),
-        }, false);
+    const appendMissingOutput = (stream: "stdout" | "stderr", value: string): void => {
+      const stored = this.streamedOutput.get(callId + ":" + stream) ?? 0;
+      if (stored === 0 && value) {
+        for (let offset = 0; offset < value.length; offset += 8192) {
+          this.store.append(this.requireRun(), "tool.output.delta", {
+            callId, stream, text: value.slice(offset, offset + 8192),
+          }, false);
+        }
       }
     };
-    appendChunks("stdout", output);
-    appendChunks("stderr", stderr);
+    appendMissingOutput("stdout", output);
+    appendMissingOutput("stderr", stderr);
     const data = {
       callId,
       name: result.name,
@@ -108,6 +124,8 @@ export class AgentRunJournal {
       stderr,
     };
     this.store.append(this.requireRun(), result.success ? "tool.completed" : "tool.failed", data);
+    this.streamedOutput.delete(callId + ":stdout");
+    this.streamedOutput.delete(callId + ":stderr");
   }
 
   complete(summary: string): void {

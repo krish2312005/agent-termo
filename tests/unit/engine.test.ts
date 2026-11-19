@@ -28,6 +28,8 @@ describe("durable run engine", () => {
     }]);
     journal.toolCalled({ id: "tool-1", name: "bash:execute", arguments: { command: "npm run typecheck" } });
     journal.toolStarted("tool-1");
+    journal.toolOutputDelta("tool-1", "stdout", "typecheck ");
+    journal.toolOutputDelta("tool-1", "stdout", "passed");
     journal.toolFinished("tool-1", {
       id: "tool-1",
       name: "bash:execute",
@@ -58,11 +60,13 @@ describe("durable run engine", () => {
     first.startRun("Generate a project");
     first.toolCalled({ id: "tool-running", name: "bash:execute", arguments: { command: "npm run build" } });
     first.toolStarted("tool-running");
+    first.toolOutputDelta("tool-running", "stderr", "partial compiler output");
 
     createRunJournal(root, sessionId);
     const [run] = loadRunHistory(root, sessionId);
     expect(run?.status).toBe("interrupted");
     expect(run?.tools[0]?.status).toBe("interrupted");
+    expect(run?.tools[0]?.stderr).toBe("partial compiler output");
     expect(run?.reason).toContain("restarted");
   });
 

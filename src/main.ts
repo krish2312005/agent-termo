@@ -6,7 +6,7 @@ import { NimClient, parseToolCallsFromText, type ThinkingCapacity } from './llm/
 import { buildPlanContext, formatTaskPlanMarkdown, parseTaskPlan, PLAN_PROGRESS_TOOL, updatePlanStep, writeTaskPlanFile, type TaskPlan } from './runtime/plans.js';
 import { activeManualCheckpointIds, createCheckpoint, findCheckpoint, latestRedoableCheckpoint, latestUndoableCheckpoint, listCheckpoints, recordCheckpointAfter, recordCheckpointBefore, redoCheckpoint, undoCheckpoint } from './runtime/checkpoints.js';
 import { TOOL_DEFINITIONS } from './llm/tools.js';
-import { executeTool, applyFileChange, setTerminalHooks, killRunningTerminal } from './tools/index.js';
+import { executeTool, applyFileChange, setTerminalHooks, killRunningTerminal, type ToolOutputHandler } from './tools/index.js';
 import { loadMemory, loadTimeline, logToTimeline, logAgentTermoTimeline, appendToSessionLog, appendToTimeline, loadSessionLog } from './memory/index.js';
 import { buildSystemPrompt, filterAgentTools, resolveDelegation } from './agents/index.js';
 import { resolveProjectRoot, saveNimModel, saveNimThinking, savePermissionMode } from './utils/config.js';
@@ -446,6 +446,7 @@ async function executeToolWithReview(
 	/** Called with true while the user is being asked to approve something (sub-agents show "waiting"). */
 	onWaiting?: (waiting: boolean) => void,
 	getCheckpointId?: () => string,
+	onOutput?: ToolOutputHandler,
 ): Promise<{ toolResult: { success: boolean; output?: string; error?: string }; change?: ProposedFileChange; applied: boolean }> {
 	printToolCall(toolName, args);
 	const approvalKey = commandApprovalKey(toolName, args);
@@ -467,7 +468,7 @@ async function executeToolWithReview(
 	startSpinner('Running ' + toolName);
 	const toolResult = isMcpToolName(toolName)
 		? await executeMcpTool(toolName, args)
-		: await executeTool(toolName, args, projectRoot);
+		: await executeTool(toolName, args, projectRoot, onOutput);
 	stopSpinner(toolResult.success);
 
 	const proposedChange = extractProposedChange(toolName, toolResult.output ?? '');
@@ -538,6 +539,7 @@ async function runDelegatedAgent(
 	allowedCommands: Set<string>,
 	taskState: TaskState,
 	getCheckpointId: () => string,
+	journal?: AgentRunJournal,
 ): Promise<ToolResult> {
 	const started = Date.now();
 	const agents = loadProjectAgents(projectRoot);
@@ -625,10 +627,16 @@ async function runDelegatedAgent(
 				timestamp: new Date(),
 			});
 
-			for (const tc of toolCalls) {
+			for (const [toolIndex, tc] of toolCalls.entries()) {
 				startSubAgentTool(subId, tc.name, describeArgs(tc.arguments) || task);
-				const execution = await executeToolWithReview(tc.name, tc.arguments, projectRoot, input, permissionMode, allowedCommands, (waiting) => setSubAgentWaiting(subId, waiting), getCheckpointId);
+				const journalCallId = String(toolCall.id) + ":" + iteration + ":" + toolIndex + ":" + tc.id;
+				const journalCall = { ...tc, id: journalCallId };
+				journal?.toolCalled(journalCall);
+				journal?.toolStarted(journalCallId);
+				const outputHandler: ToolOutputHandler = (stream, text) => journal?.toolOutputDelta(journalCallId, stream, text);
+				const execution = await executeToolWithReview(tc.name, tc.arguments, projectRoot, input, permissionMode, allowedCommands, (waiting) => setSubAgentWaiting(subId, waiting), getCheckpointId, outputHandler);
 				const toolResult = execution.toolResult;
+				journal?.toolFinished(journalCallId, { ...toolResult, id: journalCallId });
 				if (execution.applied && execution.change) {
 					changedFiles.set(execution.change.path, execution.change.proposedContent);
 					ranCommands.length = 0;
@@ -785,7 +793,7 @@ export async function runToolLoop(
 		if (allDelegations) {
 			executions.push(...await Promise.all(toolCalls.map((tc) => {
 				journal?.toolStarted(tc.id);
-				return runDelegatedAgent(projectRoot, tc, nimClient, input, permissionMode, allowedCommands, taskState, getCheckpointId)
+				return runDelegatedAgent(projectRoot, tc, nimClient, input, permissionMode, allowedCommands, taskState, getCheckpointId, journal)
 					.then((toolResult) => ({ toolResult, applied: false }));
 			})));
 		} else {
@@ -816,8 +824,11 @@ export async function runToolLoop(
 							executions.push({ toolResult: result, applied: false });
 						} else {
 							executions.push(tc.name === 'agent:delegate'
-								? { toolResult: await runDelegatedAgent(projectRoot, tc, nimClient, input, permissionMode, allowedCommands, taskState, getCheckpointId), applied: false }
-								: await executeToolWithReview(tc.name, tc.arguments, projectRoot, input, permissionMode, allowedCommands, undefined, getCheckpointId));
+								? { toolResult: await runDelegatedAgent(projectRoot, tc, nimClient, input, permissionMode, allowedCommands, taskState, getCheckpointId, journal), applied: false }
+								: await executeToolWithReview(
+									tc.name, tc.arguments, projectRoot, input, permissionMode, allowedCommands, undefined,
+									getCheckpointId, (stream, text) => journal?.toolOutputDelta(tc.id, stream, text),
+								));
 						}
 					}
 				}

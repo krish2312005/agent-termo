@@ -11,6 +11,7 @@ import { resolve } from 'node:path';
 import type { ConversationMessage } from '../types/index.js';
 import { normalizeTaskPlan, type TaskPlan } from './plans.js';
 import { agentTermoSessionsDir } from './paths.js';
+import { loadRunHistory } from './engine.js';
 
 export interface SessionTaskState {
   goal: string;
@@ -58,7 +59,67 @@ function sessionTitle(messages: ConversationMessage[]): string {
   return firstRequest ? firstRequest.replace(/\\s+/g, ' ').slice(0, 80) : 'New session';
 }
 
-function repairPendingToolCalls(messages: ConversationMessage[]): ConversationMessage[] {
+function formatPersistedToolResult(tool: {
+  callId: string;
+  name: string;
+  status: 'completed' | 'failed' | 'interrupted';
+  completedAt?: string;
+  result?: Record<string, unknown>;
+}): ConversationMessage {
+  const result = tool.result ?? {};
+  const success = tool.status === 'completed';
+  const stringValue = (value: unknown): string => typeof value === 'string' ? value : '';
+  const stdout = stringValue(result.stdout);
+  const stderr = stringValue(result.stderr);
+  const lines = [
+    `Tool: ${tool.name}`,
+    `Status: ${success ? 'success' : tool.status === 'interrupted' ? 'interrupted' : 'failure'}`,
+    stringValue(result.command) ? `Command: ${stringValue(result.command)}` : '',
+    stringValue(result.cwd) ? `Working directory: ${stringValue(result.cwd)}` : '',
+    result.exitCode !== undefined ? `Exit code: ${String(result.exitCode)}` : '',
+    stdout ? `stdout:\n${stdout}` : '',
+    stderr ? `stderr:\n${stderr}` : '',
+    stringValue(result.output) && !stdout && !stderr ? `Output:\n${stringValue(result.output)}` : '',
+    !success ? `Error:\n${stringValue(result.error) || (tool.status === 'interrupted' ? 'The process stopped before this tool finished.' : 'The tool reported a failure without details.')}` : '',
+  ];
+  return {
+    id: tool.callId,
+    role: 'tool',
+    content: lines.filter(Boolean).join('\n'),
+    timestamp: new Date(tool.completedAt ?? Date.now()),
+  };
+}
+
+function loadPersistedToolResults(projectRoot: string, sessionId: string): Map<string, ConversationMessage> {
+  const results = new Map<string, ConversationMessage>();
+  try {
+    for (const run of loadRunHistory(projectRoot, sessionId)) {
+      for (const tool of run.tools) {
+        if (tool.status !== 'completed' && tool.status !== 'failed' && tool.status !== 'interrupted') continue;
+        results.set(tool.callId, formatPersistedToolResult({
+          callId: tool.callId,
+          name: tool.name,
+          status: tool.status,
+          completedAt: tool.completedAt,
+          result: {
+            ...(tool.result ?? {}),
+            stdout: typeof tool.result?.stdout === 'string' ? tool.result.stdout : tool.stdout,
+            stderr: typeof tool.result?.stderr === 'string' ? tool.result.stderr : tool.stderr,
+            error: tool.result?.error ?? tool.result?.reason,
+          },
+        }));
+      }
+    }
+  } catch {
+    // A corrupt journal must not make the last valid session snapshot unusable.
+  }
+  return results;
+}
+
+function repairPendingToolCalls(
+  messages: ConversationMessage[],
+  persistedResults: ReadonlyMap<string, ConversationMessage> = new Map(),
+): ConversationMessage[] {
   const repaired: ConversationMessage[] = [];
   for (let index = 0; index < messages.length; index++) {
     const message = messages[index]!;
@@ -72,7 +133,7 @@ function repairPendingToolCalls(messages: ConversationMessage[]): ConversationMe
       next++;
     }
     for (const call of message.toolCalls) {
-      repaired.push(savedResults.get(call.id) ?? {
+      repaired.push(savedResults.get(call.id) ?? persistedResults.get(call.id) ?? {
         id: call.id,
         role: 'tool',
         content: "No tool result was saved before the session stopped. Verify the action's current state before attempting it again.",
@@ -128,7 +189,7 @@ function parseSession(projectRoot: string, input: string): StoredSession | undef
       createdAt: value.createdAt,
       updatedAt: value.updatedAt,
       parentId: typeof value.parentId === 'string' ? value.parentId : undefined,
-      messages: repairPendingToolCalls(messages),
+      messages: repairPendingToolCalls(messages, loadPersistedToolResults(projectRoot, value.id)),
       currentGoal: typeof value.currentGoal === 'string' ? value.currentGoal : undefined,
       activeAgentName: typeof value.activeAgentName === 'string' ? value.activeAgentName : undefined,
       model: typeof value.model === 'string' ? value.model : undefined,

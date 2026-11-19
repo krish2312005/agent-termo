@@ -20,6 +20,9 @@ const MAX_GREP_MATCHES = 300;
 const MAX_GREP_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_BASH_OUTPUT = 60_000;
 
+export type ToolOutputStream = 'stdout' | 'stderr';
+export type ToolOutputHandler = (stream: ToolOutputStream, text: string) => void;
+
 interface ReadCacheEntry { mtimeMs: number; size: number; output: string }
 const readCache = new Map<string, ReadCacheEntry>();
 const globCache = new Map<string, string>();
@@ -143,6 +146,7 @@ export async function executeTool(
 	name: string,
 	args: Record<string, unknown>,
 	projectRoot: string,
+	onOutput?: ToolOutputHandler,
 ): Promise<ToolResult> {
 	const start = Date.now();
 	const id = crypto.randomUUID();
@@ -170,7 +174,7 @@ export async function executeTool(
 		if (!fn) {
 			return { id, name, success: false, error: 'Unknown tool: ' + name, durationMs: Date.now() - start };
 		}
-			const result = await fn(toolArgs, projectRoot);
+			const result = await fn(toolArgs, projectRoot, onOutput);
 			if (result.success && fromWireToolName(name) === 'bash:execute') invalidateToolCache(projectRoot);
 			return result;
 	} catch (err) {
@@ -549,7 +553,7 @@ const DANGEROUS_PATTERNS = [
 	/:\s*\(\)\s*\{\s*:\|:&?\s*\};?\s*:/i,
 ];
 
-async function toolBash(args: Record<string, unknown>, projectRoot: string): Promise<ToolResult> {
+async function toolBash(args: Record<string, unknown>, projectRoot: string, onOutput?: ToolOutputHandler): Promise<ToolResult> {
 	if (typeof args.command !== 'string' || !args.command.trim()) {
 		return { id: '', name: 'bash:execute', success: false, error: 'command must be a non-empty string. Do not pass an object or shell syntax in another field.', durationMs: 0 };
 	}
@@ -624,8 +628,9 @@ async function toolBash(args: Record<string, unknown>, projectRoot: string): Pro
 		child.on('close', releaseChild);
 		child.on('error', releaseChild);
 
-			const capture = (stream: 'stdout' | 'stderr') => (chunk: Buffer | string): void => {
+			const capture = (stream: ToolOutputStream) => (chunk: Buffer | string): void => {
 				const text = chunk.toString();
+				onOutput?.(stream, text);
 				// Keep the tail: build errors are usually at the end of the output.
 				if (stream === 'stdout') stdout = (stdout + text).slice(-MAX_BASH_OUTPUT);
 				else stderr = (stderr + text).slice(-MAX_BASH_OUTPUT);
