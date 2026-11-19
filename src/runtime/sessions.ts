@@ -72,7 +72,7 @@ function repairPendingToolCalls(messages: ConversationMessage[]): ConversationMe
       repaired.push(savedResults.get(call.id) ?? {
         id: call.id,
         role: 'tool',
-        content: 'No tool result was saved before the session stopped. Verify the action current state before attempting it again.',
+        content: "No tool result was saved before the session stopped. Verify the action's current state before attempting it again.",
         timestamp: new Date(),
       });
     }
