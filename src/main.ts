@@ -3,14 +3,15 @@
 // =============================================================================
 
 import { NimClient, parseToolCallsFromText, type ThinkingCapacity } from './llm/client.js';
-import { buildPlanContext, formatTaskPlanMarkdown, parseTaskPlan, PLAN_PROGRESS_TOOL, updatePlanStep, type TaskPlan } from './runtime/plans.js';
+import { buildPlanContext, formatTaskPlanMarkdown, parseTaskPlan, PLAN_PROGRESS_TOOL, updatePlanStep, writeTaskPlanFile, type TaskPlan } from './runtime/plans.js';
+import { activeManualCheckpointIds, createCheckpoint, findCheckpoint, latestRedoableCheckpoint, latestUndoableCheckpoint, listCheckpoints, recordCheckpointAfter, recordCheckpointBefore, redoCheckpoint, undoCheckpoint } from './runtime/checkpoints.js';
 import { TOOL_DEFINITIONS } from './llm/tools.js';
 import { executeTool, applyFileChange, setTerminalHooks, killRunningTerminal } from './tools/index.js';
 import { loadMemory, loadTimeline, logToTimeline, logAgentTermoTimeline, appendToSessionLog, appendToTimeline, loadSessionLog } from './memory/index.js';
 import { buildSystemPrompt, resolveDelegation } from './agents/index.js';
 import { resolveProjectRoot, saveNimModel, saveNimThinking, savePermissionMode } from './utils/config.js';
 import { resolve } from 'node:path';
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { ensureAgentFolder, loadProjectAgents, loadAgentCommands, type AgentCommand } from './runtime/agent-folder.js';
 import { loadTermoInstructions } from './runtime/termo-md.js';
 import { createSkill, deleteSkill, importSkill, listSkills, loadSkillCatalogPrompt, loadSkillInstructions, readSkillFile, type SkillDefinition, type SkillScope } from './runtime/skills.js';
@@ -255,6 +256,7 @@ interface TaskState {
 	reason: string;
 	lastActions: string[];
 	completedOperations?: Set<string>;
+	checkpointId?: string;
 }
 
 function newTaskState(): TaskState {
@@ -384,6 +386,37 @@ interface InputController {
 	showPrompt(): void;
 }
 
+async function applyWithCheckpoint(
+  change: ProposedFileChange,
+  projectRoot: string,
+  getCheckpointId?: () => string,
+): Promise<ToolResult> {
+  const ids = [...new Set([
+    ...(getCheckpointId ? [getCheckpointId()] : []),
+    ...activeManualCheckpointIds(projectRoot),
+  ])];
+  try {
+    for (const id of ids) recordCheckpointBefore(projectRoot, id, change.path);
+  } catch (error) {
+    return {
+      id: '', name: 'checkpoint', success: false,
+      error: 'File was not changed because its rollback snapshot could not be saved: ' + (error instanceof Error ? error.message : String(error)),
+      durationMs: 0,
+    };
+  }
+  const result = await applyFileChange(change, projectRoot);
+  for (const id of ids) {
+    try {
+      recordCheckpointAfter(projectRoot, id, change.path);
+    } catch (error) {
+      result.output = (result.output ? result.output + '\n' : '') +
+        'WARNING: file operation finished, but checkpoint #' + id + ' could not record its final state: ' +
+        (error instanceof Error ? error.message : String(error));
+    }
+  }
+  return result;
+}
+
 async function executeToolWithReview(
 	toolName: string,
 	args: Record<string, unknown>,
@@ -393,6 +426,7 @@ async function executeToolWithReview(
 	allowedCommands: Set<string>,
 	/** Called with true while the user is being asked to approve something (sub-agents show "waiting"). */
 	onWaiting?: (waiting: boolean) => void,
+	getCheckpointId?: () => string,
 ): Promise<{ toolResult: { success: boolean; output?: string; error?: string }; change?: ProposedFileChange; applied: boolean }> {
 	printToolCall(toolName, args);
 	const approvalKey = commandApprovalKey(toolName, args);
@@ -421,7 +455,7 @@ async function executeToolWithReview(
 
 	if (proposedChange) {
 		if (permissionMode === 'auto' || permissionMode === 'files') {
-			const applyResult = await applyFileChange(proposedChange, projectRoot);
+			const applyResult = await applyWithCheckpoint(proposedChange, projectRoot, getCheckpointId);
 			if (applyResult.success) printSuccess('Auto-applied: ' + (applyResult.output ?? proposedChange.path));
 			else printError(applyResult.error ?? 'Failed to auto-apply change');
 			return { toolResult: applyResult, change: proposedChange, applied: applyResult.success };
@@ -441,7 +475,7 @@ async function executeToolWithReview(
 
 		if (decision === 'accept') {
 			startSpinner('Writing to disk');
-			const applyResult = await applyFileChange(proposedChange, projectRoot);
+			const applyResult = await applyWithCheckpoint(proposedChange, projectRoot, getCheckpointId);
 			stopSpinner(applyResult.success);
 			if (applyResult.success) {
 				printSuccess(applyResult.output ?? 'Change applied');
@@ -484,6 +518,7 @@ async function runDelegatedAgent(
 	permissionMode: PermissionMode,
 	allowedCommands: Set<string>,
 	taskState: TaskState,
+	getCheckpointId: () => string,
 ): Promise<ToolResult> {
 	const started = Date.now();
 	const agents = loadProjectAgents(projectRoot);
@@ -568,7 +603,7 @@ async function runDelegatedAgent(
 
 			for (const tc of toolCalls) {
 				startSubAgentTool(subId, tc.name, describeArgs(tc.arguments) || task);
-				const execution = await executeToolWithReview(tc.name, tc.arguments, projectRoot, input, permissionMode, allowedCommands, (waiting) => setSubAgentWaiting(subId, waiting));
+				const execution = await executeToolWithReview(tc.name, tc.arguments, projectRoot, input, permissionMode, allowedCommands, (waiting) => setSubAgentWaiting(subId, waiting), getCheckpointId);
 				const toolResult = execution.toolResult;
 				const target = String(tc.arguments.path ?? tc.arguments.command ?? task).slice(0, 80);
 				endSubAgentTool(
@@ -617,6 +652,7 @@ async function runToolLoop(
 	permissionMode: PermissionMode,
 	allowedCommands: Set<string>,
 	taskState: TaskState,
+	getCheckpointId: () => string,
 	onConversationChanged: () => void,
 	taskPlan?: TaskPlan,
 ): Promise<string> {
@@ -643,7 +679,7 @@ async function runToolLoop(
 					const allDelegations = shouldRunDelegationsInParallel(toolCalls) && !toolCalls.some((tc) => completedOperations.has(toolOperationKey(tc)));
 					const executions: Array<{ toolResult: { success: boolean; output?: string; error?: string }; applied: boolean; change?: ProposedFileChange }> = [];
 				if (allDelegations) {
-					executions.push(...await Promise.all(toolCalls.map((tc) => runDelegatedAgent(projectRoot, tc, nimClient, input, permissionMode, allowedCommands, taskState).then((toolResult) => ({ toolResult, applied: false })) )));
+					executions.push(...await Promise.all(toolCalls.map((tc) => runDelegatedAgent(projectRoot, tc, nimClient, input, permissionMode, allowedCommands, taskState, getCheckpointId).then((toolResult) => ({ toolResult, applied: false })) )));
 				} else {
 					for (const tc of toolCalls) {
 						if (completedOperations.has(toolOperationKey(tc))) {
@@ -662,8 +698,8 @@ async function runToolLoop(
 							executions.push({ toolResult: result, applied: false });
 						} else {
 							executions.push(tc.name === 'agent:delegate'
-								? { toolResult: await runDelegatedAgent(projectRoot, tc, nimClient, input, permissionMode, allowedCommands, taskState), applied: false }
-								: await executeToolWithReview(tc.name, tc.arguments, projectRoot, input, permissionMode, allowedCommands));
+								? { toolResult: await runDelegatedAgent(projectRoot, tc, nimClient, input, permissionMode, allowedCommands, taskState, getCheckpointId), applied: false }
+								: await executeToolWithReview(tc.name, tc.arguments, projectRoot, input, permissionMode, allowedCommands, undefined, getCheckpointId));
 						}
 					}
 				}
@@ -914,7 +950,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 	});
 	let customCommands: AgentCommand[] = loadAgentCommands(projectRoot);
 	const refreshCommandCompletion = (): void => {
-		setCommands([...COMMANDS, { name: '/mcp', description: 'list MCP servers and available tools' }, ...customCommands.filter((command) => !['skill', 'sessions', 'resume', 'fork', 'plan'].includes(command.name.toLowerCase())).map((command) => ({ name: '/' + command.name, description: command.description || 'project command' }))]);
+		setCommands([...COMMANDS, { name: '/mcp', description: 'list MCP servers and available tools' }, ...customCommands.filter((command) => !['skill', 'sessions', 'resume', 'fork', 'plan', 'checkpoint', 'checkpoints', 'undo', 'redo'].includes(command.name.toLowerCase())).map((command) => ({ name: '/' + command.name, description: command.description || 'project command' }))]);
 	};
 	refreshCommandCompletion();
 	let activeAgentName = '';
@@ -942,6 +978,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 			reason: session.taskState.status === 'running' ? 'Agent-Termo restarted before the task finished.' : session.taskState.reason,
 			lastActions: [...session.taskState.lastActions],
 			completedOperations: new Set(session.taskState.completedOperations),
+			checkpointId: session.taskState.checkpointId,
 		};
 	}
 	// If approval was saved just before a restart, keep the plan resumable.
@@ -954,7 +991,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 			prompt += '\n\n## Active Task\n' + taskState.goal + '\nStatus: ' + taskState.status + (taskState.reason ? ' (' + taskState.reason + ')' : '');
 		}
 		if (currentGoal) prompt += '\n\n## Current Goal\n' + currentGoal;
-		if (activePlan && (activePlan.status === 'approved' || activePlan.status === 'in_progress')) prompt += '\n\n' + buildPlanContext(activePlan);
+		if (activePlan?.status === 'in_progress') prompt += '\n\n' + buildPlanContext(activePlan);
 		const mcpTools = getMcpToolDefinitions();
 		if (mcpTools.length > 0) {
 			prompt += '\n\n## Available MCP Tools\nThe following tools are connected through MCP. When a user request can be fulfilled by one of them, call the relevant tool instead of claiming the capability is unavailable. Use the exact tool names and schemas supplied in the tool definitions.\n' +
@@ -989,6 +1026,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 			reason: taskState.reason,
 			lastActions: [...taskState.lastActions],
 			completedOperations: [...(taskState.completedOperations ?? [])],
+			checkpointId: taskState.checkpointId,
 		};
 		session.taskPlan = activePlan;
 		try {
@@ -999,6 +1037,22 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				printError('Could not save this session: ' + (error instanceof Error ? error.message : String(error)));
 			}
 		}
+	};
+
+
+	const ensureTaskCheckpoint = (): string => {
+		if (taskState.checkpointId) return taskState.checkpointId;
+		const isPlan = activePlan?.status === 'in_progress' && activePlan.request === taskState.goal;
+		printInfo('◆ Agent-Termo is creating a checkpoint…');
+		const checkpoint = createCheckpoint(
+			projectRoot,
+			isPlan ? 'Plan: ' + activePlan!.title : taskState.goal || 'Agent-Termo task',
+			isPlan ? 'plan' : 'automatic',
+		);
+		taskState.checkpointId = checkpoint.id;
+		persistSession();
+		printSuccess('Checkpoint created: #' + checkpoint.id);
+		return checkpoint.id;
 	};
 
 	const restoreSession = (selected: StoredSession): void => {
@@ -1019,6 +1073,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 			reason: selected.taskState.status === 'running' ? 'Agent-Termo restarted before the task finished.' : selected.taskState.reason,
 			lastActions: [...selected.taskState.lastActions],
 			completedOperations: new Set(selected.taskState.completedOperations),
+			checkpointId: selected.taskState.checkpointId,
 		} : newTaskState();
 		if (activePlan?.status === 'approved' && taskState.status === 'interrupted') activePlan.status = 'in_progress';
 		if (selected.model) nimClient.setModel(selected.model);
@@ -1145,13 +1200,10 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 	}
 	refreshSystemPrompt();
 
-	let pendingExecutionInput: string | undefined;
 	mainLoop: while (true) {
 		try {
 			let stopBackgroundCommands: () => void = () => undefined;
-				const queuedInput = pendingExecutionInput;
-				pendingExecutionInput = undefined;
-				const rawInput = queuedInput ?? await input.question('');
+				const rawInput = await input.question('');
 				let userInput = rawInput;
 				if (!userInput) continue;
 				if (userInput.includes('"mcpServers"')) {
@@ -1250,14 +1302,30 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					const argument = userInput.trim().slice('/plan'.length).trim();
 					const action = argument.toLowerCase();
 					if (action === 'approve') {
-						if (!activePlan || (activePlan.status !== 'draft' && activePlan.status !== 'approved')) {
+						if (!activePlan || !['draft', 'approved', 'saved'].includes(activePlan.status)) {
 							printError('There is no draft plan awaiting approval.', 'Create one with /plan <task>.');
 							continue mainLoop;
 						}
-						activePlan.status = 'approved';
-						persistSession();
-						printSuccess('Plan approved. Starting: ' + activePlan.title);
-						pendingExecutionInput = activePlan.request;
+						const planPath = resolve(projectRoot, 'PLAN.md');
+						if (existsSync(planPath)) {
+							input.close();
+							const decision = await promptAcceptReject('PLAN.md already exists. Overwrite it with this approved plan?');
+							input.showPrompt();
+							if (decision !== 'accept') {
+								printInfo('Plan export cancelled. Existing PLAN.md was not changed.');
+								continue mainLoop;
+							}
+						}
+						try {
+							writeTaskPlanFile(projectRoot, activePlan);
+							activePlan.status = 'saved';
+							refreshSystemPrompt();
+							persistSession();
+							printSuccess('Approved plan saved to PLAN.md. No implementation was started.');
+							printInfo('Use your own agents to implement the steps in PLAN.md.');
+						} catch (error) {
+							printError('Could not write PLAN.md: ' + (error instanceof Error ? error.message : String(error)));
+						}
 						continue mainLoop;
 					}
 					if (action === 'cancel') {
@@ -1653,6 +1721,85 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						printSuccess(compactConversation(conversation));
 						continue mainLoop;
 					}
+					if (cmd === '/checkpoint' || cmd.startsWith('/checkpoint ')) {
+						const label = userInput.trim().slice('/checkpoint'.length).trim() || 'Manual checkpoint';
+						try {
+							const checkpoint = createCheckpoint(projectRoot, label, 'manual');
+							printSuccess('Manual checkpoint created: #' + checkpoint.id);
+							printInfo('Agent-Termo file changes from now on will be included until this checkpoint is undone.');
+						} catch (error) {
+							printError('Could not create checkpoint: ' + (error instanceof Error ? error.message : String(error)));
+						}
+						continue mainLoop;
+					}
+					if (cmd === '/checkpoints') {
+						const checkpoints = listCheckpoints(projectRoot);
+						if (checkpoints.length === 0) printInfo('No checkpoints yet. Agent-Termo creates one before its first file change in a task.');
+						else {
+							printInfo('Checkpoints (' + checkpoints.length + '):');
+							for (const checkpoint of checkpoints) {
+								const when = new Date(checkpoint.createdAt).toLocaleString();
+								printInfo('#' + checkpoint.id + '  ' + checkpoint.kind + '  ' + checkpoint.status + '  ' + checkpoint.entries.length + ' files  ' + when + '  ' + checkpoint.label);
+							}
+						}
+						continue mainLoop;
+					}
+					if (cmd === '/undo' || cmd.startsWith('/undo ')) {
+						const requested = userInput.trim().slice('/undo'.length).trim();
+						const checkpoint = requested ? findCheckpoint(projectRoot, requested) : latestUndoableCheckpoint(projectRoot);
+						if (!checkpoint || (checkpoint.status !== 'applied' && checkpoint.status !== 'active') || checkpoint.entries.length === 0) {
+							printInfo(requested ? 'No undoable checkpoint found: ' + requested : 'No file changes are available to undo.');
+							continue mainLoop;
+						}
+						printInfo('Checkpoint: #' + checkpoint.id + ' — ' + checkpoint.label);
+						printInfo('Files affected: ' + checkpoint.entries.length);
+						for (const entry of checkpoint.entries) printInfo('  • ' + entry.path);
+						input.close();
+						const decision = await promptAcceptReject('Restore checkpoint #' + checkpoint.id + '?');
+						input.showPrompt();
+						if (decision !== 'accept') {
+							printInfo('Undo cancelled. No files were changed.');
+							continue mainLoop;
+						}
+						try {
+							undoCheckpoint(projectRoot, checkpoint.id);
+							printSuccess('Checkpoint #' + checkpoint.id + ' restored. Previous file contents are back in place.');
+							if (taskState.checkpointId === checkpoint.id) {
+								taskState = newTaskState();
+								if (activePlan?.status === 'in_progress') activePlan.status = 'cancelled';
+								refreshSystemPrompt();
+								persistSession();
+								printInfo('The matching task was closed because its changes were rolled back.');
+							}
+						} catch (error) {
+							printError('Could not undo checkpoint: ' + (error instanceof Error ? error.message : String(error)));
+						}
+						continue mainLoop;
+					}
+					if (cmd === '/redo') {
+						const checkpoint = latestRedoableCheckpoint(projectRoot);
+						if (!checkpoint) {
+							printInfo('There are no undone checkpoint changes to redo.');
+							continue mainLoop;
+						}
+						printInfo('Checkpoint: #' + checkpoint.id + ' — ' + checkpoint.label);
+						printInfo('Files affected: ' + checkpoint.entries.length);
+						for (const entry of checkpoint.entries) printInfo('  • ' + entry.path);
+						input.close();
+						const decision = await promptAcceptReject('Reapply checkpoint #' + checkpoint.id + '?');
+						input.showPrompt();
+						if (decision !== 'accept') {
+							printInfo('Redo cancelled. No files were changed.');
+							continue mainLoop;
+						}
+						try {
+							redoCheckpoint(projectRoot, checkpoint.id);
+							printSuccess('Checkpoint #' + checkpoint.id + ' reapplied.');
+						} catch (error) {
+							printError('Could not redo checkpoint: ' + (error instanceof Error ? error.message : String(error)));
+						}
+						continue mainLoop;
+					}
 					if (cmd === '/sessions') {
 						const saved = listSessions(projectRoot);
 						if (saved.length === 0) printInfo('No saved sessions yet.');
@@ -1763,6 +1910,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					taskState.reason = '';
 					taskState.lastActions = [];
 					taskState.completedOperations = new Set();
+					taskState.checkpointId = undefined;
 					taskState.status = 'running';
 			}
 
@@ -1784,7 +1932,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 
 				// Plain conversation does not need a large tool schema. Keeping it out of
 				// the request also supports providers/models that reject tool mode.
-				if (activePlan?.status === 'approved' && activePlan.request === userInput) activePlan.status = 'in_progress';
+				
 				refreshSystemPrompt();
 				const tools = shouldUseTools(userInput, activeAgentName, continuing, getMcpToolDefinitions().length > 0, skillInvocation || hasRelevantSkill(userInput, listSkills(projectRoot))) || activePlan?.status === 'in_progress'
 					? nimClient.buildToolDefs([...TOOL_DEFINITIONS, ...getMcpToolDefinitions(), ...(activePlan?.status === 'in_progress' ? [PLAN_PROGRESS_TOOL] : [])])
@@ -1822,7 +1970,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						if (narration && !streamed.printed) printAssistantMessage(narration);
 
 						// Run the tool-call loop: execute tools, feed results back, repeat
-						await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, permissionMode, allowedCommands, taskState, persistSession, activePlan);
+						await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, permissionMode, allowedCommands, taskState, ensureTaskCheckpoint, persistSession, activePlan);
 					}
 					} catch (err) {
 						stopSpinner();
@@ -1861,7 +2009,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						if (toolCalls.length > 0) {
 							const narration = (fallback.content ?? '').trim().replace(/^null$/, '').trim();
 							if (narration && !fallbackStream.printed && !narration.includes('"tool_calls"')) printAssistantMessage(narration);
-							await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, permissionMode, allowedCommands, taskState, persistSession, activePlan);
+							await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, permissionMode, allowedCommands, taskState, ensureTaskCheckpoint, persistSession, activePlan);
 						} else {
 							const cleanText = (fallback.content ?? '').trim().replace(/^null$/, '').trim();
 							if (cleanText) {

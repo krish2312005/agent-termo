@@ -69,3 +69,8 @@ export function sessionLogPath(projectRoot: string): string {
 export function runtimeTimelinePath(projectRoot: string): string {
   return resolve(agentTermoLogsDir(projectRoot), 'timeline.md');
 }
+
+/** Private file snapshots used for safe Agent-Termo undo and redo. */
+export function agentTermoCheckpointsDir(projectRoot: string): string {
+  return resolve(agentTermoRoot(projectRoot), 'checkpoints');
+}

@@ -77,6 +77,7 @@ Agent-Termo is designed around a reviewable workflow: file changes can be previe
 | **Project Memory** | Maintain shared project context and a chronological project timeline. |
 | **Task Continuity** | Resume an interrupted task with its conversation and tool history. |
 | **Plan Mode** | Analyze a task, inspect likely affected files, review risks and ordered steps, then approve execution and track progress. |
+| **Checkpoints & Undo** | Snapshot Agent-Termo-managed file changes, restore a checkpoint safely, and redo an undo when files have not changed independently. |
 | **Context Mentions** | Attach discovered project files and activate agents with @ mentions. |
 | **Conversation Tools** | Inspect message history and compact older conversation context. |
 
@@ -410,8 +411,13 @@ Use /help inside Agent-Termo to display the available commands.
 | /fork [id] | Fork the current or a saved conversation into a new session. |
 | /plan <task> | Analyze a task and create an execution plan without changing files. |
 | /plan | Display the current plan and step progress. |
-| /plan approve | Approve the draft plan and start execution. |
+| /plan approve | Approve the draft plan and export it to PLAN.md without executing it. |
 | /plan cancel | Cancel the current draft or execution plan. |
+
+| /checkpoint [label] | Create a manual checkpoint for subsequent Agent-Termo file changes. |
+| /checkpoints | List automatic, plan, and manual checkpoints. |
+| /undo [id] | Preview and restore the latest or selected checkpoint. |
+| /redo | Preview and reapply the most recently undone checkpoint. |
 | /memory | Display shared project memory. |
 | /timeline | Display the shared project timeline. |
 | /model | Open the model picker or switch to a specified model. |
@@ -433,6 +439,18 @@ Use /help inside Agent-Termo to display the available commands.
 | /history [count] | Display recent conversation messages. |
 | /subagents | Show delegated sub-agent activity. |
 | /exit | Exit Agent-Termo. |
+
+### Plan Export
+
+Use `/plan <task>` to create a draft, review it, and run `/plan approve` to write the approved plan to `PLAN.md` in the project root. Approval only exports the document; it does not start implementation. Assign the steps in `PLAN.md` to your own specialist agents. If `PLAN.md` already exists, Agent-Termo asks before replacing it.
+
+### Checkpoints and Rollback
+
+Agent-Termo creates an automatic checkpoint before applying the first file change in a task. Checkpoints preserve the original and resulting contents of files changed through Agent-Termo's file-write, file-edit, and file-delete tools. Manual checkpoints keep collecting those file changes until they are undone. Snapshot data is stored privately in `.agent-termo/checkpoints/`.
+
+Undo and redo first verify that every affected file still matches the expected contents and file mode. If a file was edited independently, the operation stops rather than overwriting that work.
+
+**Scope limitation:** shell commands, scripts, MCP tools, external applications, and other processes that modify files are not captured by this first version. Use Git commits for those changes; an Agent-Termo checkpoint is not a full-project or Git-history backup.
 
 The input completion system also discovers project-defined slash commands from .agent-termo/commands/.
 
