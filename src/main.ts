@@ -974,6 +974,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 		activeAgentName = selected.name;
 		activeAgentPrompt = selected.systemPrompt;
 		refreshSystemPrompt();
+		persistSession();
 		if (seedInput) setNextInput('@' + selected.name + ' ');
 		logAgentTermoTimeline('Active custom agent: ' + selected.name, projectRoot);
 		printSuccess('Active agent: ' + selected.name);
@@ -1211,10 +1212,12 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					if (cmd === '/model' || cmd.startsWith('/model ')) {
 						// Take the argument from the original text: model IDs are case-sensitive.
 						await handleModelCommand(userInput.trim().slice('/model'.length).trim(), nimClient, projectRoot);
+						persistSession();
 						continue mainLoop;
 					}
 						if (cmd === '/thinking' || cmd.startsWith('/thinking ')) {
 						await handleThinkingCommand(userInput.trim().slice('/thinking'.length).trim(), nimClient, projectRoot);
+						persistSession();
 						continue mainLoop;
 					}
 						if (cmd === '/permissions' || cmd.startsWith('/permissions ')) {
@@ -1421,6 +1424,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						if (requested) {
 							currentGoal = requested;
 								refreshSystemPrompt();
+							persistSession();
 							printSuccess('Goal set: ' + currentGoal);
 						} else printInfo(currentGoal ? 'Current goal: ' + currentGoal : 'No goal set. Use /goal <description>.');
 						continue mainLoop;
