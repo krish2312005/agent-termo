@@ -25,6 +25,15 @@ describe('delegation', () => {
     expect(resolveDelegation({}, agents)).toMatchObject({ agent: undefined, task: '' });
   });
 
+  it('includes mandatory verification and repair requirements in every agent prompt', () => {
+    const prompt = buildSystemPrompt('', '', '/workspace', '', agents);
+    expect(prompt).toContain('QUALITY GATE — MANDATORY');
+    expect(prompt).toContain('test-agent');
+    expect(prompt).toContain('code-reviewer');
+    expect(prompt).toContain('Repeat up to three repair rounds');
+    expect(prompt).toContain('Never make checks green by deleting tests');
+  });
+
   it('lists the available agents in the system prompt', () => {
     const prompt = buildSystemPrompt('', '', '/tmp/x', '', agents);
     expect(prompt).toContain('## Available Sub-Agents');

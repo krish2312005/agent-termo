@@ -1,74 +1,69 @@
-# Agent-Termo Default Workflow
+# Agent-Termo Quality-First Workflow
 
-This file defines the default specialist workflow used by the bundled slash commands. Project-specific instructions in `TERMO.md` take precedence when they add constraints.
+This workflow defines the bundled project lifecycle. Project-specific `TERMO.md` requirements may add constraints but must not weaken the quality gate.
 
 ## Agents
-
 | Agent | Responsibility |
 |---|---|
-| `project-manager` | Owns coordination and delegates each stage. |
-| `architect` | Specifies stack, API, data model, auth, and pages. |
-| `uiux-designer` | Specifies visual tokens and UI states. |
-| `backend-expert` | Implements backend and data-layer work. |
-| `frontend-expert` | Implements frontend pages, components, and API integration. |
-| `test-agent` | Creates regression tests and verifies changes. |
-| `security-expert` | Audits security-sensitive changes and deployment readiness. |
-| `deployment-expert` | Verifies local integration and performs explicitly requested deployment work. |
-| `git-manager` | Reviews changes and owns Git write operations. |
+| `project-manager` | Coordination, acceptance criteria, and final quality gate. |
+| `architect` | Application architecture, contracts, and technical risks. |
+| `uiux-designer` | Design tokens, responsive behavior, interaction states, and accessibility. |
+| `backend-expert` | Backend, data, API, and business logic. |
+| `frontend-expert` | Complete frontend journeys and UI verification. |
+| `test-agent` | Regression tests and actual validation commands. |
+| `code-reviewer` | Independent evidence-backed code review; no implementation edits. |
+| `security-expert` | Security-sensitive audits. |
+| `deployment-expert` | Local integration and explicitly requested deployment. |
+| `git-manager` | Final repository review and Git writes. |
 
-## Stage rules
-
-- Delegate only to the exact agent names listed above.
-- Independent implementation stages may run in parallel after their shared specifications are ready.
-- After each stage that changes files, ask `git-manager` to review it before starting the next stage.
-- Do not commit a stage with failing checks, unrelated changes, secrets, or unreviewed changes.
-- Do not deploy to production unless the user explicitly requested it.
-- If a specification is incomplete or contradictory, stop and report the blocker rather than inventing requirements.
-- Keep `docs/MEMORY.md` and `docs/TIMELINE.md` current when the project workflow requires them.
+## Global rules
+- Delegate only to exact agent names listed above.
+- Include scope, acceptance criteria, constraints, and expected evidence in every delegated task.
+- Parallelize only independent tasks with non-overlapping file ownership.
+- An agent's success response is not proof. Inspect actual outputs and verification evidence. Resume/reassign failed or budget-exhausted agents.
+- Never weaken tests/checks or replace real behavior with stubs to appear complete.
+- Do not commit or deploy unfinished work. Production deployment requires explicit user request.
 
 ## Build flow
-
-1. `architect`: choose the stack and write `docs/ARCHITECTURE.md` plus required environment-variable names in `.env.example`.
-2. `uiux-designer`: when the project has a UI, write `docs/DESIGN.md` and establish the theme tokens.
-3. `backend-expert` and `frontend-expert`: implement their respective areas from the approved architecture and design. Run these in parallel when the work is independent; skip an area that the project does not need.
-4. `test-agent`: write and run relevant unit and integration tests, then document coverage and remaining gaps in `docs/TESTING.md`.
-5. `security-expert`: audit security-sensitive functionality and record findings in `docs/SECURITY.md`; critical/high findings must be resolved before deployment.
-6. `deployment-expert`: verify the local application end to end after checks pass. Configure and deploy to production only when the user asks.
+1. `architect`: inspect the stack, define user journeys and acceptance criteria, write `docs/ARCHITECTURE.md` and required environment variable names.
+2. `uiux-designer`: for a UI, define tokens, hierarchy, responsive layouts, accessibility, and interaction states in `docs/DESIGN.md`.
+3. `backend-expert` and `frontend-expert`: implement separate areas only after specifications and ownership boundaries are clear.
+4. Quality gate: run `test-agent` and `code-reviewer` independently after implementation. For UI work, verify responsive behavior and key interactions with existing browser tooling when available.
+5. Repair loop: route findings to the owning implementation agent, rerun failed checks, and re-review changed code. Repeat up to three rounds. Failing required checks or critical/high findings block completion.
+6. `security-expert`: audit security-sensitive work and resolve critical/high findings before ship.
+7. `deployment-expert`: verify local integration; deploy only when explicitly requested.
+8. `git-manager`: final diff review and commit only after the quality gate passes.
 
 ## Feature flow
-
-1. `architect`: update `docs/ARCHITECTURE.md` only when the feature changes the API, data model, authentication, or pages.
-2. `uiux-designer`: update `docs/DESIGN.md` and theme tokens only when the feature changes the UI.
-3. `backend-expert` and/or `frontend-expert`: implement only the affected areas from the approved specification.
-4. `test-agent`: add regression and feature tests, run relevant checks, and update `docs/TESTING.md` when useful.
-5. `security-expert`: audit changes involving authentication, authorization, user data, input handling, or other security-sensitive behavior.
-6. `deployment-expert`: run local integration checks after tests pass; production deployment requires an explicit user request.
+1. `architect` updates architecture only when contracts, routes, data, or system behavior change; define acceptance criteria.
+2. `uiux-designer` updates design tokens/spec when visible behavior changes.
+3. The owning implementation expert(s) make focused changes.
+4. Run `test-agent` and `code-reviewer` in parallel. UI changes also need responsive/interactions checks when possible.
+5. Repair and rerun until required checks pass or three repair rounds are exhausted. Do not report completion with known blockers.
+6. Run `security-expert` for sensitive boundaries; then ask `git-manager` for final review and commit.
 
 ## Fix flow
-
-1. Identify the owning area. Use `backend-expert` for backend/data issues or `frontend-expert` for frontend issues; use `architect` only when the fix requires a specification decision.
-2. `test-agent`: add a regression test that reproduces the bug before the implementation fix.
-3. The owning implementation expert fixes the cause with the smallest focused change.
-4. `test-agent`: run the regression test and relevant suite; report real pass/fail results.
-5. `security-expert`: audit the fix when it touches security-sensitive behavior.
+1. Identify owner and expected behavior; use architect only for ambiguity.
+2. `test-agent` reproduces the bug and adds a failing regression test when practical.
+3. Owning implementation expert fixes the cause with the smallest safe change.
+4. `test-agent` reruns regression/relevant suite; `code-reviewer` reviews actual diff.
+5. Repair/retest up to three rounds; report blockers honestly.
+6. Security review when relevant; final Git review/commit only after checks pass.
 
 ## Deploy flow
-
-1. `test-agent`: run the required test suite and report actual results.
-2. `security-expert`: audit the current code and update `docs/SECURITY.md`. Critical/high findings block deployment.
-3. `deployment-expert`: verify local setup and an end-to-end user flow. Add CI/deploy configuration and deploy only to the target explicitly requested by the user.
-4. `git-manager`: review and commit any approved configuration changes.
+1. `test-agent` runs available tests, type-check, lint, and build.
+2. `code-reviewer` and `security-expert` inspect the current changes; critical/high findings block deployment.
+3. `deployment-expert` verifies the app and key local user journey. Deploy only to the explicitly requested target.
+4. `git-manager` reviews and commits approved configuration.
 
 ## Review flow
-
-1. Select the relevant specialist to inspect the requested area.
-2. `test-agent` verifies any proposed fix or regression behavior.
+1. `code-reviewer` inspects the relevant implementation.
+2. `test-agent` verifies reproducible behavior and runs relevant checks.
 3. `security-expert` reviews security-sensitive findings.
-4. `project-manager` summarizes findings, evidence, and recommended next steps. Do not modify files unless the user asked for fixes.
+4. `project-manager` reports evidence, severity, test results, and next steps; do not edit unless fixes were requested.
 
 ## Add-agent flow
-
-1. Create `.agent-termo/agents/<name>.md` using `.agent-termo/templates/agent.md`.
-2. Give the agent only the tools it needs and define its responsibility, boundaries, and output.
-3. Add the agent to the Agents table and relevant workflow stages in this file.
-4. `git-manager` reviews the workflow and agent definition before commit.
+1. Create `.agent-termo/agents/<name>.md` from the template.
+2. Give the agent minimum necessary tools and define scope, boundaries, outputs.
+3. Add it to the Agents table and relevant workflow stages.
+4. Have `code-reviewer` inspect the new definition and `git-manager` review the final change.

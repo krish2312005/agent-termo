@@ -494,7 +494,7 @@ async function executeToolWithReview(
 	return { toolResult, applied: false };
 }
 
-const DELEGATED_TOOL_BUDGET = 8;
+const DELEGATED_TOOL_BUDGET = 24;
 
 /** One-line summary of a tool call's arguments for the sub-agent monitor. */
 function describeArgs(args: Record<string, unknown>): string {
@@ -624,8 +624,17 @@ async function runDelegatedAgent(
 			}
 		}
 
-		// If the step budget ran out mid-work, report the last thing it said instead of nothing.
-		const output = finalText || lastNarration || `(sub-agent stopped after ${DELEGATED_TOOL_BUDGET} steps without a final report)`;
+		// A delegated agent must return a final report. Reaching the iteration limit
+		// after tool calls is not completion: the parent must see the failure and recover.
+		const output = finalText.trim();
+		if (!output) {
+			const detail =
+				`Sub-agent ${agent.name} exhausted its ${DELEGATED_TOOL_BUDGET}-iteration budget without a final report.` +
+				(lastNarration ? ` Last progress: ${lastNarration.replace(/\s+/g, ' ').slice(0, 500)}` : '');
+			finishSubAgent(subId, 'failed', detail);
+			logAgentTermoTimeline(`Sub-agent ${agent.name} exhausted its budget before completing: ${task.slice(0, 120)}`, projectRoot);
+			return { id: toolCall.id, name: toolCall.name, success: false, error: detail, durationMs: Date.now() - started };
+		}
 		finishSubAgent(subId, 'completed', output);
 		logAgentTermoTimeline(`Sub-agent ${agent.name} completed delegated task: ${task.slice(0, 120)}`, projectRoot);
 		void appendToTimeline(projectRoot, agent.name, 'Delegated task completed', [`Task: ${task.slice(0, 300)}`], [`Summary: ${output.replace(/\s+/g, ' ').slice(0, 400)}`]);
