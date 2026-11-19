@@ -683,7 +683,7 @@ async function runDelegatedAgent(
 		// for any code work the task called for. If the agent didn't run one
 		// itself, run the project's own test/lint/typecheck scripts for real
 		// rather than trust the narration. See runtime/verify.ts, runtime/checks.ts.
-		const verification = await verifyCompletionWithChecks(task, changedFiles, ranCommands, () => runProjectChecks(projectRoot));
+		const verification = await verifyCompletionWithChecks(task, changedFiles, ranCommands, () => runProjectChecks(projectRoot, 180_000, journal));
 		if (!verification.ok) {
 			const detail =
 				`Sub-agent ${agent.name} reported completion, but its own evidence does not support that claim — rejected:\n` +

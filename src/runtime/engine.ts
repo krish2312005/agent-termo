@@ -3,7 +3,13 @@
 
 import { randomUUID } from "node:crypto";
 import type { ToolCall, ToolResult } from "../types/index.js";
-import { projectRunEvents, SessionEventStore, type RunSnapshot } from "./events.js";
+import {
+  projectRunEvents,
+  SessionEventStore,
+  type RunSnapshot,
+  type RuntimeEvent,
+  type RuntimeEventType,
+} from "./events.js";
 
 const MAX_OUTPUT_CHARS = 100_000;
 

@@ -95,17 +95,26 @@ function loadPersistedToolResults(projectRoot: string, sessionId: string): Map<s
   try {
     for (const run of loadRunHistory(projectRoot, sessionId)) {
       for (const tool of run.tools) {
-        if (tool.status !== 'completed' && tool.status !== 'failed' && tool.status !== 'interrupted') continue;
+        const wasInFlight = tool.status === 'pending' || tool.status === 'running';
+        if (wasInFlight && run.status !== 'running') continue;
+        if (!wasInFlight && tool.status !== 'completed' && tool.status !== 'failed' && tool.status !== 'interrupted') continue;
+        const status: 'completed' | 'failed' | 'interrupted' = wasInFlight
+          ? 'interrupted'
+          : tool.status as 'completed' | 'failed' | 'interrupted';
         results.set(tool.callId, formatPersistedToolResult({
           callId: tool.callId,
           name: tool.name,
-          status: tool.status,
+          status,
           completedAt: tool.completedAt,
           result: {
             ...(tool.result ?? {}),
             stdout: typeof tool.result?.stdout === 'string' ? tool.result.stdout : tool.stdout,
             stderr: typeof tool.result?.stderr === 'string' ? tool.result.stderr : tool.stderr,
-            error: tool.result?.error ?? tool.result?.reason,
+            error: tool.result?.error ?? tool.result?.reason ?? (
+              tool.status === 'pending'
+                ? 'The process stopped before this tool started.'
+                : wasInFlight ? 'The process stopped before this tool finished.' : undefined
+            ),
           },
         }));
       }

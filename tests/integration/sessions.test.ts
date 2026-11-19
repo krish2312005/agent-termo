@@ -170,7 +170,13 @@ describe('local conversation sessions', () => {
       first.toolStarted(call.id);
       first.toolOutputDelta(call.id, 'stderr', 'src/app.ts: TypeScript error TS2322');
 
-      // Opening the journal after a crash records the in-flight tool as interrupted.
+      // Session loading can surface the partial result before the journal appends recovery events.
+      const restoredBeforeRecovery = loadSession(projectRoot, session.id);
+      const earlyResult = restoredBeforeRecovery?.messages.find((item) => item.role === 'tool' && item.id === call.id);
+      expect(earlyResult?.content).toContain('Status: interrupted');
+      expect(earlyResult?.content).toContain('TS2322');
+
+      // Opening the run journal writes the interruption transition durably.
       createRunJournal(projectRoot, session.id);
       const restored = loadSession(projectRoot, session.id);
       const result = restored?.messages.find((item) => item.role === 'tool' && item.id === call.id);
