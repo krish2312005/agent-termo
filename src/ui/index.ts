@@ -164,6 +164,10 @@ export class MarkdownPrinter {
 	/** Render the current line immediately, even when the model has not emitted a newline yet. */
 	flushPartial(): void {
 		if (!this.pending) return;
+		// Code lines must remain line-buffered. Rendering every streamed fragment
+		// through render() would prepend a new `│ ` gutter to each fragment, which
+		// corrupts long HTML/JS lines such as `<script type="module" ...>`.
+		if (this.inCode) return;
 		if (this.first) {
 			this.beforeFirstOutput?.();
 			out.write('\n');
@@ -309,11 +313,18 @@ export function printToolResult(
 	// A proposed file change is shown as a diff, then the accept/reject prompt.
 	if (parsedOutput?.needsApproval && parsedOutput.proposedChange) {
 		printDiffViewer(parsedOutput.proposedChange);
-		return;
-	}
+			return;
+		}
 
-	const room = terminalWidth() - 8;
-	if (result.success) {
+		const room = terminalWidth() - 8;
+		if (toolName === 'bash:execute') {
+			const terminalOutput = result.output || (!result.success ? result.error : '') || '(no output)';
+			const lines = terminalOutput.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+			out.write(c.dim('  ⎿  ') + (result.success ? c.green('✓ terminal output') : c.red('✗ terminal output')) + '\n');
+			for (const line of lines) out.write(c.dim('     ') + line + '\n');
+			return;
+		}
+		if (result.success) {
 		// One line of output is shown as-is; longer output (file contents, command
 		// logs) is summarised, since the full text goes to the model.
 		const lines = (result.output ?? '').split('\n').filter((l) => l.trim() !== '');
