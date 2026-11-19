@@ -67,10 +67,9 @@ function readScripts(projectRoot: string): Record<string, string> {
 
 /**
  * Run every real typecheck/lint/test script this project defines (at most
- * one per kind -- the first matching name), in that order, stopping at the
- * first failure so the caller gets one actionable result instead of a wall
- * of cascading errors from a broken build. Returns [] when the project
- * defines none of these scripts at all (nothing invented to fill the gap).
+ * one per kind -- the first matching name), in typecheck/lint/test/build order.
+ * All configured kinds run so independent failures are reported together.
+ * Returns [] when the project defines none of these scripts (nothing invented).
  */
 export async function runProjectChecks(
 	projectRoot: string,

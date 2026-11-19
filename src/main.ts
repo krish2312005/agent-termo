@@ -485,11 +485,11 @@ async function executeToolWithReview(
 		id: 'id' in rawToolResult && typeof rawToolResult.id === 'string' ? rawToolResult.id : '',
 		name: 'name' in rawToolResult && typeof rawToolResult.name === 'string' ? rawToolResult.name : toolName,
 		success: rawToolResult.success, output: rawToolResult.output, error: rawToolResult.error,
-		command: 'command' in rawToolResult ? rawToolResult.command : undefined,
-		cwd: 'cwd' in rawToolResult ? rawToolResult.cwd : undefined,
-		stdout: 'stdout' in rawToolResult ? rawToolResult.stdout : undefined,
-		stderr: 'stderr' in rawToolResult ? rawToolResult.stderr : undefined,
-		exitCode: 'exitCode' in rawToolResult ? rawToolResult.exitCode : undefined,
+		command: 'command' in rawToolResult && typeof rawToolResult.command === 'string' ? rawToolResult.command : undefined,
+		cwd: 'cwd' in rawToolResult && typeof rawToolResult.cwd === 'string' ? rawToolResult.cwd : undefined,
+		stdout: 'stdout' in rawToolResult && typeof rawToolResult.stdout === 'string' ? rawToolResult.stdout : undefined,
+		stderr: 'stderr' in rawToolResult && typeof rawToolResult.stderr === 'string' ? rawToolResult.stderr : undefined,
+		exitCode: 'exitCode' in rawToolResult && (typeof rawToolResult.exitCode === 'number' || rawToolResult.exitCode === null) ? rawToolResult.exitCode : undefined,
 		durationMs: 'durationMs' in rawToolResult && typeof rawToolResult.durationMs === 'number' ? rawToolResult.durationMs : Date.now() - toolStartedAt,
 	};
 	stopSpinner(toolResult.success);
@@ -1020,9 +1020,6 @@ export async function runToolLoop(
 					toolCalls: fallback.toolCalls.length > 0 ? fallback.toolCalls : parseToolCallsFromText(fallback.content),
 				};
 				journal?.assistantCompleted(result.content, result.toolCalls);
-										if (toolCalls.length === 0 && requiresImplementationEvidence(taskState.goal)) {
-							await runToolLoop(conversation, projectRoot, [], input, nimClient, permissionMode, allowedCommands, taskState, ensureTaskCheckpoint, persistSession, activePlan, activeAgentToolDefinitions, session.id);
-						}
 					} catch (err2) {
 					stopSpinner();
 					printError('NVIDIA NIM provider error: ' + providerError(err2));

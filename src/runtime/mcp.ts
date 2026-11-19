@@ -46,6 +46,7 @@ const CLIENT_VERSION = '1.0.15';
 const activeServers = new Map<string, ActiveServer>();
 const serverStatuses = new Map<string, ServerStatus>();
 const discoveredTools = new Map<string, DiscoveredTool>();
+const pendingToolNames = new Set<string>();
 
 function configPath(projectRoot: string, scope: McpConfigScope): string {
 	return scope === 'user'
@@ -79,7 +80,7 @@ function writeConfigFile(projectRoot: string, scope: McpConfigScope, servers: Re
 
 export function saveMcpServerConfigs(projectRoot: string, configs: Record<string, McpServerConfig>, scope: McpConfigScope = 'project'): void {
 	const servers = readConfigFile(configPath(projectRoot, scope));
-	await Promise.all(Object.entries(configs).map(async ([name, config]) => {
+	for (const [name, config] of Object.entries(configs)) {
 		if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) {
 			throw new Error('Invalid MCP server name: "' + name + '".');
 		}
@@ -247,6 +248,7 @@ export async function initializeMcpServers(projectRoot: string): Promise<ServerS
 		const status: ServerStatus = { name, connected: false, tools: 0 };
 		serverStatuses.set(name, status);
 		let pendingConnection: ActiveServer | undefined;
+		let reservedToolNames: string[] = [];
 		try {
 			if (config?.disabled === true) return;
 			validateServerConfig(name, config);
@@ -280,9 +282,18 @@ export async function initializeMcpServers(projectRoot: string): Promise<ServerS
 				}]);
 			}
 
+			const collisions = pending.map(([modelName]) => modelName).filter((modelName) => discoveredTools.has(modelName) || pendingToolNames.has(modelName));
+			if (collisions.length > 0) {
+				throw new Error('MCP tool name collision for "' + collisions[0] + '". Rename the server or tool to make its name unique.');
+			}
+			reservedToolNames = pending.map(([modelName]) => modelName);
+			for (const modelName of reservedToolNames) pendingToolNames.add(modelName);
+
 			activeServers.set(name, connection);
 			pendingConnection = undefined;
 			for (const [modelName, tool] of pending) discoveredTools.set(modelName, tool);
+			for (const modelName of reservedToolNames) pendingToolNames.delete(modelName);
+			reservedToolNames = [];
 			status.connected = true;
 			status.tools = pending.length;
 
@@ -299,6 +310,7 @@ export async function initializeMcpServers(projectRoot: string): Promise<ServerS
 				status.error = error.message;
 			};
 		} catch (error) {
+			for (const modelName of reservedToolNames) pendingToolNames.delete(modelName);
 			if (pendingConnection) await closeConnection(pendingConnection);
 			status.error = error instanceof Error ? error.message : String(error);
 			status.connected = false;

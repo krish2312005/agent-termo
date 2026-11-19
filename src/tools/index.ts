@@ -5,7 +5,7 @@
 import { randomUUID } from 'node:crypto';
 import { readFile as readFileAsync, writeFile as writeFileAsync, unlink as unlinkAsync, mkdir as mkdirAsync, rename as renameAsync } from 'node:fs/promises';
 import { resolve, isAbsolute, relative, dirname } from 'node:path';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { glob as globPromise } from 'glob';
 import { simpleGit } from 'simple-git';
 import { createReadStream, statSync, existsSync, mkdirSync } from 'node:fs';
@@ -293,7 +293,8 @@ export async function applyFileChange(change: ProposedFileChange, projectRoot: s
 
 // ── File Tools ──────────────────────────────────────────────────────────────
 
-async function readFileWindow(path: string, offset: number, requestedLimit: number): Promise<string> {
+async function readFileWindow(path: string, offset: number, requestedLimit: number, projectRoot: string): Promise<string> {
+	if (!isWorkspacePath(projectRoot, path)) throw new Error('Access denied: path escaped the project root before it could be opened.');
 	const lines: string[] = [];
 	const lineLimit = Math.min(requestedLimit > 0 ? requestedLimit : MAX_FILE_READ_LINES, MAX_FILE_READ_LINES);
 	const startLine = Math.max(0, Math.floor(offset));
@@ -377,7 +378,7 @@ async function toolFileRead(args: Record<string, unknown>, projectRoot: string):
 		if (cached && cached.mtimeMs === statResult.mtimeMs && cached.size === statResult.size) {
 			return { id: '', name: 'file:read', success: true, output: cached.output, durationMs: 0 };
 		}
-		const output = await readFileWindow(fullPath, safeOffset, safeLimit);
+		const output = await readFileWindow(fullPath, safeOffset, safeLimit, projectRoot);
 		readCache.set(cacheKey, { mtimeMs: statResult.mtimeMs, size: statResult.size, output });
 		return { id: '', name: 'file:read', success: true, output, durationMs: 0 };
 	} catch (err) {
