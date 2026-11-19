@@ -1074,7 +1074,6 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 			lastActions: [...selected.taskState.lastActions],
 			completedOperations: new Set(selected.taskState.completedOperations),
 			checkpointId: selected.taskState.checkpointId,
-			checkpointId: selected.taskState.checkpointId,
 		} : newTaskState();
 		if (activePlan?.status === 'approved' && taskState.status === 'interrupted') activePlan.status = 'in_progress';
 		if (selected.model) nimClient.setModel(selected.model);

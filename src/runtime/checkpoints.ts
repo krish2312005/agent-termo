@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
-  existsSync, lstatSync, mkdirSync, readdirSync, readFileSync,
+  chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync,
   renameSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
@@ -73,6 +73,7 @@ function parseCheckpoint(value: unknown): Checkpoint | undefined {
 function saveCheckpoint(projectRoot: string, checkpoint: Checkpoint): void {
   const directory = checkpointDirectory(projectRoot);
   mkdirSync(directory, { recursive: true, mode: 0o700 });
+  chmodSync(directory, 0o700);
   const target = checkpointPath(projectRoot, checkpoint.id);
   const temporary = target + '.' + randomUUID() + '.tmp';
   try {
@@ -128,8 +129,9 @@ function safeRelativePath(projectRoot: string, filePath: string): string {
     throw new Error('Checkpoint path must be inside the project: ' + filePath);
   }
   const normalized = rel.split(sep).join('/');
-  if (normalized.split('/')[0]?.toLowerCase() === '.agent-termo') {
-    throw new Error('Agent-Termo runtime files cannot be included in checkpoints.');
+  const rootSegment = normalized.split('/')[0]?.toLowerCase();
+  if (rootSegment === '.agent-termo' || rootSegment === '.git') {
+    throw new Error('Agent-Termo and Git runtime files cannot be included in checkpoints.');
   }
   return normalized;
 }
@@ -253,7 +255,7 @@ function restoreCheckpoint(projectRoot: string, checkpoint: Checkpoint, directio
     }
     throw error;
   }
-  checkpoint.status = direction === 'undo' ? 'undone' : 'applied';
+  checkpoint.status = direction === 'undo' ? 'undone' : checkpoint.kind === 'manual' ? 'active' : 'applied';
   saveCheckpoint(projectRoot, checkpoint);
   try { rebaseActiveManualCheckpoints(projectRoot, checkpoint.entries.map((entry) => entry.path), checkpoint.id); }
   catch { /* The completed restore remains valid if an unrelated manual marker cannot be rebased. */ }
@@ -262,7 +264,7 @@ function restoreCheckpoint(projectRoot: string, checkpoint: Checkpoint, directio
 export function findCheckpoint(projectRoot: string, requestedId: string): Checkpoint | undefined {
   const clean = requestedId.trim().replace(/^#/, '');
   return listCheckpoints(projectRoot).find((checkpoint) =>
-    checkpoint.id === clean || checkpoint.id === clean.padStart(3, '0') || checkpoint.id.startsWith(clean),
+    checkpoint.id === clean || checkpoint.id === clean.padStart(3, '0'),
   );
 }
 export function latestUndoableCheckpoint(projectRoot: string): Checkpoint | undefined {
@@ -271,7 +273,9 @@ export function latestUndoableCheckpoint(projectRoot: string): Checkpoint | unde
   );
 }
 export function latestRedoableCheckpoint(projectRoot: string): Checkpoint | undefined {
-  return listCheckpoints(projectRoot).find((checkpoint) => checkpoint.status === 'undone' && checkpoint.entries.length > 0);
+  return listCheckpoints(projectRoot)
+    .filter((checkpoint) => checkpoint.status === 'undone' && checkpoint.entries.length > 0)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
 }
 export function undoCheckpoint(projectRoot: string, id: string): Checkpoint {
   const checkpoint = getCheckpoint(projectRoot, id);
