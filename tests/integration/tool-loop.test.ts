@@ -68,6 +68,32 @@ describe('agent tool-loop orchestration', () => {
 		}
 	});
 
+	it('pauses after repeated successful read-only discovery without workspace progress', async () => {
+		const projectRoot = mkdtempSync(join(tmpdir(), 'agent-termo-loop-discovery-'));
+		writeFileSync(join(projectRoot, 'fixture.ts'), 'export const value = 1;\\n', 'utf8');
+		let providerCalls = 0;
+		const fakeClient = {
+			buildToolDefs: () => [],
+			async *streamComplete() {
+				providerCalls++;
+				yield { content: '', toolCalls: [{ id: 'read-' + providerCalls, name: 'file:read', arguments: { path: 'fixture.ts' } }] };
+			},
+			complete: async () => ({ content: '', toolCalls: [] }),
+			formatUsage: () => '0 tokens',
+		} as unknown as NimClient;
+		const conversation: ConversationMessage[] = [{ id: 'system', role: 'system', content: 'You are a coding agent.', timestamp: new Date() }];
+		const taskState = { goal: 'Implement a feature in this project.', status: 'running' as const, reason: '', lastActions: [] as string[] };
+		try {
+			await runToolLoop(conversation, projectRoot, [{ id: 'read-initial', name: 'file:read', arguments: { path: 'fixture.ts' } }],
+				{ close() {}, showPrompt() {} }, fakeClient, 'files', new Set(), taskState, () => '', () => undefined);
+			expect(taskState.status).toBe('interrupted');
+			expect(taskState.reason).toContain('ten consecutive read-only');
+			expect(providerCalls).toBe(9);
+		} finally {
+			rmSync(projectRoot, { recursive: true, force: true });
+		}
+	});
+
 	it('pauses instead of executing an unchanged failed call forever', async () => {
 		const projectRoot = mkdtempSync(join(tmpdir(), 'agent-termo-loop-repeat-'));
 		const command = `node -e "console.error('persistent failure'); process.exit(1)"`;
