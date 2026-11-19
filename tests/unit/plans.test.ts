@@ -21,7 +21,6 @@ describe('execution plans', () => {
     expect(plan.steps[0]?.affectedFiles).toEqual(['src/main.ts']);
   });
 
-
   it('formats plans as readable Markdown with status, progress, and grouped details', () => {
     const plan = parseTaskPlan(validPlan, 'Add the feature');
     const markdown = formatTaskPlanMarkdown(plan);
