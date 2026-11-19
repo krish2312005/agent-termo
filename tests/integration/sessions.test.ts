@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -17,7 +18,7 @@ function message(
   content: string,
   extra: Partial<ConversationMessage> = {},
 ): ConversationMessage {
-  return { id: crypto.randomUUID(), role, content, timestamp: new Date(), ...extra };
+  return { id: randomUUID(), role, content, timestamp: new Date(), ...extra };
 }
 
 describe('local conversation sessions', () => {
