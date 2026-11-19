@@ -447,7 +447,7 @@ async function executeToolWithReview(
 	onWaiting?: (waiting: boolean) => void,
 	getCheckpointId?: () => string,
 	onOutput?: ToolOutputHandler,
-): Promise<{ toolResult: { success: boolean; output?: string; error?: string }; change?: ProposedFileChange; applied: boolean }> {
+): Promise<{ toolResult: ToolResult; change?: ProposedFileChange; applied: boolean }> {
 	printToolCall(toolName, args);
 	const approvalKey = commandApprovalKey(toolName, args);
 	const hasPersistentApproval = !toolName.startsWith('mcp_') && allowedCommands.has(approvalKey);
@@ -457,7 +457,10 @@ async function executeToolWithReview(
 		const decision = await promptCommandApproval(typeof args.command === 'string' ? args.command : approvalKey);
 		onWaiting?.(false);
 		input.showPrompt();
-		if (decision === 'reject') return { toolResult: { success: false, error: 'Command rejected by user' }, applied: false };
+		if (decision === 'reject') return {
+			toolResult: { id: '', name: toolName, success: false, error: 'Command rejected by user', durationMs: 0 },
+			applied: false,
+		};
 		if (decision === 'always' && !toolName.startsWith('mcp_')) {
 			allowedCommands.add(approvalKey);
 			try { saveAllowedCommands(projectRoot, allowedCommands); } catch { printInfo('Command allowed for this session but could not be saved.'); }
