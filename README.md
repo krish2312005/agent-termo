@@ -404,6 +404,9 @@ Use /help inside Agent-Termo to display the available commands.
 |---|---|
 | /help | Display available commands. |
 | /clear | Clear the conversation and screen. |
+| /sessions | List saved conversations for the current project. |
+| /resume [id] | Choose or reopen a saved conversation by ID. |
+| /fork [id] | Fork the current or a saved conversation into a new session. |
 | /memory | Display shared project memory. |
 | /timeline | Display the shared project timeline. |
 | /model | Open the model picker or switch to a specified model. |
@@ -670,6 +673,7 @@ project/
     ├── agents/
     ├── commands/
     ├── skills/
+    ├── sessions/          # private conversation snapshots
     ├── logs/
     │   ├── session.md
     │   └── timeline.md
@@ -681,11 +685,26 @@ project/
 | .agent-termo/agents/ | Project-specific agent definitions. |
 | .agent-termo/commands/ | Project-specific slash commands. |
 | .agent-termo/skills/ | Project skills and their supporting files. |
+| .agent-termo/sessions/ | Private, resumable conversation snapshots including tool calls and results. |
 | .agent-termo/logs/session.md | Private session history used for continuity. |
 | .agent-termo/logs/timeline.md | Private runtime activity log. |
 | .agent-termo/permissions.json | Remembered command approvals. |
 
 The shared project memory and timeline remain in docs/. Private session and runtime logs are kept in .agent-termo/logs/.
+
+### Saved Conversations
+
+Each interactive conversation is saved automatically as a private JSON snapshot under `.agent-termo/sessions/`. Snapshots include the conversation transcript, native tool calls and results, selected model, thinking capacity, active agent, current goal, and resumable task state. The most recently updated session for the project is restored automatically at startup.
+
+~~~text
+/sessions
+/resume
+/resume <session-id>
+/fork
+/fork <session-id>
+~~~
+
+`/resume` without an ID opens a picker. `/fork` creates and switches to an independent copy of the current session; `/fork <session-id>` branches another saved session. Use `/sessions` to find IDs. Sessions remain local to the project and are excluded from Git.
 
 ### Resume Interrupted Work
 
