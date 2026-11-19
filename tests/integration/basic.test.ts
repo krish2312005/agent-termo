@@ -86,7 +86,7 @@ describe('executeTool', () => {
 	it('reads only the requested bounded line window', async () => {
 		const path = '.test-bounded-read.txt';
 		const absolutePath = resolve(PROJECT_ROOT, path);
-		writeFileSync(absolutePath, Array.from({ length: 2100 }, (_, index) => 'line-' + (index + 1)).join('\\n'), 'utf-8');
+		writeFileSync(absolutePath, Array.from({ length: 2100 }, (_, index) => 'line-' + (index + 1)).join('\n'), 'utf-8');
 		try {
 			const read = await executeTool('file:read', { path, offset: 100, limit: 3 }, PROJECT_ROOT);
 			expect(read.success).toBe(true);

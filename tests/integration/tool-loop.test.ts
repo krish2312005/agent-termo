@@ -12,8 +12,11 @@ describe('agent tool-loop orchestration', () => {
 		const projectRoot = mkdtempSync(join(tmpdir(), 'agent-termo-loop-'));
 		const filePath = 'fixture.ts';
 		const absolutePath = join(projectRoot, filePath);
-		const verificationCommand = `node -e "const fs=require('fs'); const s=fs.readFileSync('${filePath}','utf8'); if (!s.includes('fixed')) { console.error('TS2345: broken'); process.exit(1); }"`;
+		const verificationCommand = 'npm test';
 		writeFileSync(absolutePath, 'const status = "broken";\n', 'utf8');
+		writeFileSync(join(projectRoot, 'package.json'), JSON.stringify({
+			scripts: { test: `node -e "const fs=require('fs'); if (!fs.readFileSync('fixture.ts','utf8').includes('fixed')) process.exit(1)"` },
+		}), 'utf8');
 
 		const responses: Array<{ content: string; toolCalls: ToolCall[] }> = [
 			{ content: '', toolCalls: [{ id: 'read-1', name: 'file:read', arguments: { path: filePath } }] },
