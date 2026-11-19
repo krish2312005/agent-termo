@@ -2353,6 +2353,9 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 								persistSession();
 								if (!requiresImplementationEvidence(taskState.goal)) printAssistantMessage(cleanText);
 							}
+							if (requiresImplementationEvidence(taskState.goal)) {
+								await runToolLoop(conversation, projectRoot, [], input, nimClient, permissionMode, allowedCommands, taskState, ensureTaskCheckpoint, persistSession, activePlan, activeAgentToolDefinitions, session.id);
+							}
 							}
 					} catch (err2) {
 						printError('NVIDIA NIM provider error: ' + providerError(err2));
