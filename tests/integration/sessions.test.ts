@@ -34,7 +34,16 @@ describe('local conversation sessions', () => {
         message('assistant', 'The entry point coordinates the REPL.'),
       ]);
       session.currentGoal = 'Inspect the main entry point';
+      session.activeAgentName = 'code-reviewer';
       session.model = 'test-model';
+      session.thinkingCapacity = 'high';
+      session.taskState = {
+        goal: 'Inspect the main entry point',
+        status: 'interrupted',
+        reason: 'user cancelled',
+        lastActions: ['file:read src/main.ts ok'],
+        completedOperations: ['file:read:src/main.ts'],
+      };
       saveSession(projectRoot, session);
 
       const loaded = loadSession(projectRoot, session.id);
@@ -44,7 +53,11 @@ describe('local conversation sessions', () => {
       expect(loaded?.messages[3]?.content).toBe('File contents');
       expect(loaded?.messages[0]?.timestamp).toBeInstanceOf(Date);
       expect(loaded?.currentGoal).toBe(session.currentGoal);
+      expect(loaded?.activeAgentName).toBe('code-reviewer');
       expect(loaded?.model).toBe('test-model');
+      expect(loaded?.thinkingCapacity).toBe('high');
+      expect(loaded?.taskState?.status).toBe('interrupted');
+      expect(loaded?.taskState?.completedOperations).toEqual(['file:read:src/main.ts']);
       expect(listSessions(projectRoot)[0]?.title).toBe('Inspect the main entry point');
       expect(loadLatestSession(projectRoot)?.id).toBe(session.id);
       expect(existsSync(join(projectRoot, '.agent-termo', 'sessions', session.id + '.json'))).toBe(true);
