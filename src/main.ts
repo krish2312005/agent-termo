@@ -15,6 +15,7 @@ import { loadTermoInstructions } from './runtime/termo-md.js';
 import { createSkill, deleteSkill, importSkill, listSkills, loadSkillCatalogPrompt, loadSkillInstructions, readSkillFile, type SkillDefinition, type SkillScope } from './runtime/skills.js';
 import { initializeMcpServers, getMcpServerStatuses, getMcpToolDefinitions, isMcpToolName, executeMcpTool, shutdownMcpServers, saveMcpServerConfigs, type McpServerConfig } from './runtime/mcp.js';
 import { commandApprovalKey, isCommandApprovalRequired, loadAllowedCommands, saveAllowedCommands } from './runtime/permissions.js';
+import { createSession, forkSession, listSessions, loadLatestSession, loadSession, saveSession, type StoredSession } from './runtime/sessions.js';
 import {
 	addSubAgentProgress,
 	beginSubAgentRun,
@@ -579,6 +580,7 @@ async function runToolLoop(
 	permissionMode: PermissionMode,
 	allowedCommands: Set<string>,
 	taskState: TaskState,
+	onConversationChanged: () => void,
 ): Promise<string> {
 	let toolCalls = initialToolCalls;
 	let finalText = '';
@@ -596,7 +598,8 @@ async function runToolLoop(
 			timestamp: new Date(),
 		});
 
-				// Execute all delegation calls in parallel. Ordinary tools stay sequential
+				// Execute all delegation calls		onConversationChanged();
+ in parallel. Ordinary tools stay sequential
 				// because concurrent writes or terminal commands can race with each other.
 					const completedOperations = taskState.completedOperations ?? (taskState.completedOperations = new Set());
 					const allDelegations = shouldRunDelegationsInParallel(toolCalls) && !toolCalls.some((tc) => completedOperations.has(toolOperationKey(tc)));
@@ -634,6 +637,7 @@ async function runToolLoop(
 				content: (toolResult.success ? 'Result: ' : 'Error: ') + (toolResult.success ? (toolResult.output ?? '') : toolResult.error) + changeNote,
 				timestamp: new Date(),
 			});
+			onConversationChanged();
 
 				logAgentTermoTimeline('Tool: ' + tc.name + ' -- ' + statusText + changeNote, projectRoot);
 				const activity = describeToolActivity(tc.name, tc.arguments, toolResult.output, execution.change, execution.applied, toolResult.success);
@@ -692,6 +696,7 @@ async function runToolLoop(
 						content: finalText.trim(),
 						timestamp: new Date(),
 					});
+					onConversationChanged();
 				}
 			// Narration that comes with more tool calls is shown now; the
 			// final answer (no tool calls) is printed by the caller.
@@ -846,7 +851,30 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 	let activeAgentName = '';
 	let activeAgentPrompt = '';
 	let currentGoal = '';
-	const taskState = newTaskState();
+	let taskState = newTaskState();
+	let session: StoredSession = loadLatestSession(projectRoot) ?? createSession(projectRoot);
+	const sessionStartedAt = Date.now();
+
+	if (session.model) nimClient.setModel(session.model);
+	if (session.thinkingCapacity) nimClient.setThinkingCapacity(session.thinkingCapacity as ThinkingCapacity);
+	currentGoal = session.currentGoal ?? '';
+	if (session.activeAgentName) {
+		const selectedAgent = customAgents.find((agent) => agent.name === session.activeAgentName);
+		if (selectedAgent) {
+			activeAgentName = selectedAgent.name;
+			activeAgentPrompt = selectedAgent.systemPrompt;
+		}
+	}
+	if (session.taskState) {
+		taskState = {
+			goal: session.taskState.goal,
+			status: session.taskState.status === 'running' ? 'interrupted' : session.taskState.status,
+			reason: session.taskState.status === 'running' ? 'Agent-Termo restarted before the task finished.' : session.taskState.reason,
+			lastActions: [...session.taskState.lastActions],
+			completedOperations: new Set(session.taskState.completedOperations),
+		};
+	}
+
 	const buildSessionPrompt = (): string => {
 		let prompt = buildSystemPrompt(memory, '', projectRoot, activeAgentPrompt, customAgents, loadTermoInstructions(projectRoot), loadSkillCatalogPrompt(projectRoot));
 		if (memoryContext) prompt += '\n\n## Recent Session Log (previous sessions, may include interrupted tasks)\n' + memoryContext;
@@ -862,25 +890,77 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 		return prompt;
 	};
 
-	const session = { id: crypto.randomUUID(), projectRoot, startedAt: new Date() };
-
-	const conversation: ConversationMessage[] = [
-		{
-			id: crypto.randomUUID(),
-			role: 'system',
-			content: buildSessionPrompt(),
-			timestamp: new Date(),
-		},
-	];
+	let conversation: ConversationMessage[] = session.messages.length > 0
+		? session.messages.map((message) => ({ ...message, timestamp: new Date(message.timestamp) }))
+		: [];
+	if (conversation.length === 0) {
+		conversation.push({ id: crypto.randomUUID(), role: 'system', content: buildSessionPrompt(), timestamp: new Date() });
+	} else if (conversation[0]?.role !== 'system') {
+		conversation.unshift({ id: crypto.randomUUID(), role: 'system', content: buildSessionPrompt(), timestamp: new Date() });
+	}
 	const refreshSystemPrompt = (): void => {
 		const compacted = conversation[0]?.content.match(/\n\n## Compacted Conversation Context[\s\S]*$/)?.[0] ?? '';
 		conversation[0]!.content = buildSessionPrompt() + compacted;
+	};
+
+	let persistenceWarningShown = false;
+	const persistSession = (): void => {
+		session.messages = conversation;
+		session.currentGoal = currentGoal || undefined;
+		session.activeAgentName = activeAgentName || undefined;
+		session.model = nimClient.getModel();
+		session.thinkingCapacity = nimClient.getThinkingCapacity();
+		session.taskState = {
+			goal: taskState.goal,
+			status: taskState.status,
+			reason: taskState.reason,
+			lastActions: [...taskState.lastActions],
+			completedOperations: [...(taskState.completedOperations ?? [])],
+		};
+		try {
+			session = saveSession(projectRoot, session);
+		} catch (error) {
+			if (!persistenceWarningShown) {
+				persistenceWarningShown = true;
+				printError('Could not save this session: ' + (error instanceof Error ? error.message : String(error)));
+			}
+		}
+	};
+
+	const restoreSession = (selected: StoredSession): void => {
+		session = selected;
+		conversation = selected.messages.map((message) => ({ ...message, timestamp: new Date(message.timestamp) }));
+		currentGoal = selected.currentGoal ?? '';
+		activeAgentName = '';
+		activeAgentPrompt = '';
+		const selectedAgent = customAgents.find((agent) => agent.name === selected.activeAgentName);
+		if (selectedAgent) {
+			activeAgentName = selectedAgent.name;
+			activeAgentPrompt = selectedAgent.systemPrompt;
+		}
+		taskState = selected.taskState ? {
+			goal: selected.taskState.goal,
+			status: selected.taskState.status === 'running' ? 'interrupted' : selected.taskState.status,
+			reason: selected.taskState.status === 'running' ? 'Agent-Termo restarted before the task finished.' : selected.taskState.reason,
+			lastActions: [...selected.taskState.lastActions],
+			completedOperations: new Set(selected.taskState.completedOperations),
+		} : newTaskState();
+		if (selected.model) nimClient.setModel(selected.model);
+		if (selected.thinkingCapacity) nimClient.setThinkingCapacity(selected.thinkingCapacity as ThinkingCapacity);
+		if (conversation.length === 0) conversation.push({ id: crypto.randomUUID(), role: 'system', content: buildSessionPrompt(), timestamp: new Date() });
+		refreshSystemPrompt();
+		persistSession();
 	};
 
 	initScreen({ model: nimClient.getModel(), project: projectRoot, thinking: nimClient.getThinkingCapacity() });
 	setScreenStatus({ usage: nimClient.formatUsage() });
 	setPermissionMode(permissionMode);
 	printWelcome(projectRoot, nimClient.getModel());
+	if (session.messages.some((message) => message.role !== 'system')) {
+		printSuccess('Restored session ' + session.id.slice(0, 8) + ': ' + session.title);
+		if (taskState.status === 'interrupted') printInfo('The previous task was interrupted. Type /continue to resume it.');
+	}
+	persistSession();
 	logAgentTermoTimeline('Agent-Termo session started. Model: ' + nimClient.getModel(), projectRoot);
 	void logToTimeline(projectRoot, 'Agent-Termo session started. Model: ' + nimClient.getModel());
 	logAgentTermoTimeline('Commands: /help /clear /memory /timeline /model /thinking /agents /history', projectRoot);
@@ -968,12 +1048,13 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 	const cleanup = () => {
 		if (cleanupStarted) return;
 		cleanupStarted = true;
+		persistSession();
 		input.close();
 		void shutdownMcpServers().finally(() => {
 			process.stdout.write('\n');
 			console.log(
 				'Session complete. ' +
-				Math.round((Date.now() - session.startedAt.getTime()) / 60000) +
+				Math.round((Date.now() - sessionStartedAt) / 60000) +
 				' minutes.',
 			);
 			process.exit(0);
@@ -1110,6 +1191,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				}
 				if (cmd === '/clear' || cmd === '/cls') {
 					conversation.length = 1;
+					persistSession();
 					clearScreen();
 					printWelcome(projectRoot, nimClient.getModel());
 					printSuccess('Conversation cleared.');
@@ -1392,6 +1474,64 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						printSuccess(compactConversation(conversation));
 						continue mainLoop;
 					}
+					if (cmd === '/sessions') {
+						const saved = listSessions(projectRoot);
+						if (saved.length === 0) printInfo('No saved sessions yet.');
+						else {
+							printInfo('Saved sessions (' + saved.length + '):');
+							for (const item of saved) {
+								const updated = new Date(item.updatedAt).toLocaleString();
+								printInfo('  ' + item.id.slice(0, 8) + '  ' + item.title + '  (' + item.messageCount + ' messages, ' + updated + ')' + (item.parentId ? ' [fork]' : ''));
+							}
+							printInfo('Use /resume <id> to switch sessions, or /fork to branch the current one.');
+						}
+						continue mainLoop;
+					}
+					if (cmd === '/resume' || cmd.startsWith('/resume ')) {
+						const requested = userInput.trim().slice('/resume'.length).trim();
+						let selected: StoredSession | undefined;
+						if (requested) {
+							const matches = listSessions(projectRoot).filter((item) => item.id.startsWith(requested));
+							if (matches.length === 1) selected = loadSession(projectRoot, matches[0]!.id);
+							else if (matches.length > 1) printError('Session ID is ambiguous: ' + requested, 'Use more characters from the session ID.');
+							else printError('Session not found: ' + requested, 'Use /sessions to list saved sessions.');
+						} else {
+							const saved = listSessions(projectRoot);
+							const choice = await pick({
+								title: 'Resume a session',
+								items: saved.map((item) => ({ value: item.id, label: item.id.slice(0, 8) + '  ' + item.title, hint: new Date(item.updatedAt).toLocaleString() + ' · ' + item.messageCount + ' messages' })),
+							});
+							if (choice) selected = loadSession(projectRoot, choice);
+						}
+						if (selected) {
+							persistSession();
+							restoreSession(selected);
+							clearScreen();
+							printWelcome(projectRoot, nimClient.getModel());
+							printSuccess('Resumed session ' + session.id.slice(0, 8) + ': ' + session.title);
+							if (taskState.status === 'interrupted') printInfo('This task was interrupted. Type /continue to pick up where it stopped.');
+						}
+						continue mainLoop;
+					}
+					if (cmd === '/fork' || cmd.startsWith('/fork ')) {
+						const requested = userInput.trim().slice('/fork'.length).trim();
+						let source: StoredSession | undefined = session;
+						if (requested) {
+							const matches = listSessions(projectRoot).filter((item) => item.id.startsWith(requested));
+							if (matches.length === 1) source = loadSession(projectRoot, matches[0]!.id);
+							else {
+								printError(matches.length > 1 ? 'Session ID is ambiguous: ' + requested : 'Session not found: ' + requested);
+								source = undefined;
+							}
+						}
+						if (source) {
+							persistSession();
+							const forked = forkSession(projectRoot, source);
+							restoreSession(forked);
+							printSuccess('Created and switched to fork ' + session.id.slice(0, 8) + ' from ' + (session.parentId ?? '').slice(0, 8) + '.');
+						}
+						continue mainLoop;
+					}
 						if (cmd === '/history' || cmd === '/hist' || cmd.startsWith('/history ')) {
 						const requested = Number.parseInt(userInput.trim().slice('/history'.length).trim() || '12', 10);
 						const count = Number.isFinite(requested) && requested > 0 ? Math.min(requested, 50) : 12;
@@ -1454,6 +1594,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				timestamp: new Date(),
 				};
 				conversation.push(userMsg);
+				persistSession();
 				rememberChat(projectRoot, 'User', userInput);
 				void appendToTimeline(projectRoot, activeAgentName || 'Agent-Termo', 'User request', ['Request: ' + userInput.replace(/\s+/g, ' ').slice(0, 700)], []);
 				if (!displayedInput) printUserMessage(userInput);
@@ -1488,6 +1629,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 								timestamp: new Date(),
 				});
 				rememberChat(projectRoot, 'Assistant', cleanText);
+							persistSession();
 				printAssistantMessage(cleanText);
 						}
 					} else {
@@ -1496,7 +1638,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						if (narration) printAssistantMessage(narration);
 
 						// Run the tool-call loop: execute tools, feed results back, repeat
-						const finalText = await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, permissionMode, allowedCommands, taskState);
+						const finalText = await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, permissionMode, allowedCommands, taskState, persistSession);
 						if (finalText && finalText.trim() && finalText.trim() !== 'null') {
 							printAssistantMessage(finalText.trim());
 						}
@@ -1535,7 +1677,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						if (toolCalls.length > 0) {
 							const narration = (fallback.content ?? '').trim().replace(/^null$/, '').trim();
 							if (narration && !narration.includes('"tool_calls"')) printAssistantMessage(narration);
-							const finalText = await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, permissionMode, allowedCommands, taskState);
+							const finalText = await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, permissionMode, allowedCommands, taskState, persistSession);
 							if (finalText && finalText.trim() && finalText.trim() !== 'null') {
 								rememberChat(projectRoot, 'Assistant', finalText);
 								printAssistantMessage(finalText.trim());
@@ -1544,6 +1686,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 							const cleanText = (fallback.content ?? '').trim().replace(/^null$/, '').trim();
 							if (cleanText) {
 								conversation.push({ id: crypto.randomUUID(), role: 'assistant', content: cleanText, timestamp: new Date() });
+								persistSession();
 								printAssistantMessage(cleanText);
 							}
 							}
@@ -1567,6 +1710,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				// The run reached the end without throwing: the task is complete,
 			// unless it was interrupted and must remain resumable with "continue".
 			finishTaskState(taskState);
+			persistSession();
 
 			if (conversation.length > 42) {
 				compactConversation(conversation);
@@ -1578,6 +1722,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 			if (taskState.status === 'running') {
 				taskState.status = 'interrupted';
 				taskState.reason = err instanceof Error ? err.message : String(err);
+				persistSession();
 				appendToSessionLog('### Interrupted task\n\nGoal: ' + taskState.goal + '\nReason: ' + taskState.reason + '\nLast actions: ' + taskState.lastActions.join('; '), projectRoot);
 				printInfo('The task was interrupted. Type "continue" to resume from where it stopped.');
 			}
