@@ -43,8 +43,10 @@ function hashState(exists: boolean, content = '', mode = 0): string {
 function validateState(value: unknown): value is FileState {
   if (!value || typeof value !== 'object') return false;
   const state = value as Record<string, unknown>;
-  return typeof state.exists === 'boolean' && typeof state.hash === 'string' &&
-    (!state.exists || typeof state.content === 'string');
+  const validMode = state.mode === undefined ||
+    (Number.isInteger(state.mode) && Number(state.mode) >= 0 && Number(state.mode) <= 0o777);
+  return typeof state.exists === 'boolean' && /^[a-f0-9]{64}$/.test(String(state.hash)) &&
+    validMode && (!state.exists || typeof state.content === 'string');
 }
 function parseCheckpoint(value: unknown): Checkpoint | undefined {
   if (!value || typeof value !== 'object') return undefined;

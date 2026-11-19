@@ -1740,6 +1740,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						}
 						printInfo('Checkpoint: #' + checkpoint.id + ' — ' + checkpoint.label);
 						printInfo('Files affected: ' + checkpoint.entries.length);
+						for (const entry of checkpoint.entries) printInfo('  • ' + entry.path);
 						input.close();
 						const decision = await promptAcceptReject('Restore checkpoint #' + checkpoint.id + '?');
 						input.showPrompt();
@@ -1763,6 +1764,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						}
 						printInfo('Checkpoint: #' + checkpoint.id + ' — ' + checkpoint.label);
 						printInfo('Files affected: ' + checkpoint.entries.length);
+						for (const entry of checkpoint.entries) printInfo('  • ' + entry.path);
 						input.close();
 						const decision = await promptAcceptReject('Reapply checkpoint #' + checkpoint.id + '?');
 						input.showPrompt();
