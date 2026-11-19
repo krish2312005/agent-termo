@@ -13,6 +13,7 @@ import {
   writeSync,
 } from "node:fs";
 import { resolve } from "node:path";
+import { agentTermoEventsDir } from "./paths.js";
 import { randomUUID } from "node:crypto";
 
 export type RuntimeEventType =
@@ -76,7 +77,7 @@ const VALID_TYPES = new Set<RuntimeEventType>([
 
 function eventPath(projectRoot: string, sessionId: string): string {
   if (!SESSION_ID_PATTERN.test(sessionId)) throw new Error("Invalid session ID for event journal.");
-  return resolve(projectRoot, ".agent-termo", "events", sessionId + ".jsonl");
+  return resolve(agentTermoEventsDir(projectRoot), sessionId + ".jsonl");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

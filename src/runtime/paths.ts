@@ -60,6 +60,11 @@ export function agentTermoSessionsDir(projectRoot: string): string {
   return resolve(agentTermoRoot(projectRoot), 'sessions');
 }
 
+/** Private, append-only runtime event journals. */
+export function agentTermoEventsDir(projectRoot: string): string {
+  return resolve(agentTermoRoot(projectRoot), 'events');
+}
+
 /** Private chat/session history. Not a project document. */
 export function sessionLogPath(projectRoot: string): string {
   return resolve(agentTermoLogsDir(projectRoot), 'session.md');
