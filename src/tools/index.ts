@@ -18,6 +18,7 @@ import type { ToolResult, ProposedFileChange } from '../types/index.js';
 import { readSkillFile } from '../runtime/skills.js';
 import { isWorkspacePath } from '../runtime/workspace.js';
 import { validateJsonSchema } from '../runtime/tool-validation.js';
+import { ProcessManager } from '../runtime/process-manager.js';
 import { TOOL_DEFINITIONS } from '../llm/tools.js';
 
 const MAX_GLOB_RESULTS = 500;
@@ -119,37 +120,14 @@ export function setTerminalHooks(hooks: TerminalHooks): void {
 	terminalHooks = hooks;
 }
 
-/** All shell processes owned by the runtime, including concurrent delegated runs. */
-const activeBashChildren = new Set<ChildProcess>();
+/** Process handles are owned and cancelled by the runtime, not by a single global child slot. */
+const processManager = new ProcessManager();
 
-/** Kill a shell and the commands it started (npm/node grandchildren on Windows). */
-function killProcessTree(child: ChildProcess): void {
-	if (process.platform === 'win32' && child.pid) {
-		try {
-			spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true });
-			return;
-		} catch {
-			// Fall through to the direct kill below.
-		}
-	}
-	try {
-		if (child.pid && process.platform !== 'win32') {
-			process.kill(-child.pid, 'SIGKILL');
-			return;
-		}
-		child.kill('SIGKILL');
-	} catch {
-		// The process may have exited between the ownership check and signal.
-	}
-}
-
-/** Kill every shell invocation currently owned by this runtime. */
+/** Kill all active shell invocations and their descendants. */
 export function killRunningTerminal(): boolean {
-	const children = [...activeBashChildren];
-	if (children.length === 0) return false;
-	for (const child of children) killProcessTree(child);
-	terminalHooks.onEnd?.(null);
-	return true;
+	const killed = processManager.killAll();
+	if (killed) terminalHooks.onEnd?.(null);
+	return killed;
 }
 
 // ── Public API ──────────────────────────────────────────────────────────────
@@ -707,9 +685,9 @@ async function toolBash(args: Record<string, unknown>, projectRoot: string, onOu
 			detached: process.platform !== 'win32',
 			env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' },
 		});
-		activeBashChildren.add(child);
+		const processId = processManager.register(child);
 		const releaseChild = (): void => {
-			activeBashChildren.delete(child);
+			processManager.unregister(processId);
 		};
 		child.on('close', releaseChild);
 		child.on('error', releaseChild);
