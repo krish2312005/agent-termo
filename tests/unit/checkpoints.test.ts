@@ -75,10 +75,10 @@ describe('checkpoints', () => {
     writeFileSync(resolve(root, 'app.txt'), 'original', 'utf-8');
     const manual = createCheckpoint(root, 'Before experiment', 'manual');
     expect(activeManualCheckpointIds(root)).toEqual([manual.id]);
+    recordCheckpointBefore(root, manual.id, 'app.txt');
 
     const task = createCheckpoint(root, 'Agent task', 'automatic');
     applyRecordedChange(root, task.id, 'app.txt', 'task change');
-    recordCheckpointBefore(root, manual.id, 'app.txt');
     recordCheckpointAfter(root, manual.id, 'app.txt');
 
     undoCheckpoint(root, manual.id);
@@ -87,6 +87,24 @@ describe('checkpoints', () => {
     redoCheckpoint(root, manual.id);
     expect(readFileSync(resolve(root, 'app.txt'), 'utf-8')).toBe('task change');
     expect(activeManualCheckpointIds(root)).toEqual([manual.id]);
+  });
+
+  it('redos multiple undos in reverse undo order', () => {
+    const root = project();
+    writeFileSync(resolve(root, 'app.txt'), 'initial', 'utf-8');
+    const first = createCheckpoint(root, 'First task');
+    applyRecordedChange(root, first.id, 'app.txt', 'first');
+    const second = createCheckpoint(root, 'Second task');
+    applyRecordedChange(root, second.id, 'app.txt', 'second');
+
+    undoCheckpoint(root, second.id);
+    undoCheckpoint(root, first.id);
+    expect(latestRedoableCheckpoint(root)?.id).toBe(first.id);
+    redoCheckpoint(root, first.id);
+    expect(readFileSync(resolve(root, 'app.txt'), 'utf-8')).toBe('first');
+    expect(latestRedoableCheckpoint(root)?.id).toBe(second.id);
+    redoCheckpoint(root, second.id);
+    expect(readFileSync(resolve(root, 'app.txt'), 'utf-8')).toBe('second');
   });
 
   it('does not overwrite files changed independently after the checkpoint', () => {

@@ -77,7 +77,9 @@ function saveCheckpoint(projectRoot: string, checkpoint: Checkpoint): void {
   const target = checkpointPath(projectRoot, checkpoint.id);
   const temporary = target + '.' + randomUUID() + '.tmp';
   try {
-    checkpoint.updatedAt = new Date().toISOString();
+    const now = Date.now();
+    const previousUpdate = Date.parse(checkpoint.updatedAt) || 0;
+    checkpoint.updatedAt = new Date(Math.max(now, previousUpdate + 1)).toISOString();
     writeFileSync(temporary, JSON.stringify(checkpoint, null, 2) + '\\n', { encoding: 'utf-8', mode: 0o600 });
     renameSync(temporary, target);
   } catch (error) {
