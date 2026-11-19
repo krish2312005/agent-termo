@@ -1194,6 +1194,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					persistSession();
 					conversation.length = 1;
 					taskState = newTaskState();
+					refreshSystemPrompt();
 					session = createSession(projectRoot, conversation);
 					persistSession();
 					clearScreen();
