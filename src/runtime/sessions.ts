@@ -56,7 +56,7 @@ function sessionPath(projectRoot: string, id: string): string {
 
 function sessionTitle(messages: ConversationMessage[]): string {
   const firstRequest = messages.find((message) => message.role === 'user')?.content?.trim();
-  return firstRequest ? firstRequest.replace(/\\s+/g, ' ').slice(0, 80) : 'New session';
+  return firstRequest ? firstRequest.replace(/\s+/g, ' ').slice(0, 80) : 'New session';
 }
 
 function formatPersistedToolResult(tool: {

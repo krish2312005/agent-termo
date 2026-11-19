@@ -20,20 +20,54 @@ function getProjectRoot(): string {
 }
 
 // Load .env files at startup
+function parseEnvValue(raw: string): string {
+  const value = raw.trim();
+  if (value.startsWith('"') || value.startsWith("'")) {
+    const quote = value[0]!;
+    const closing = value.lastIndexOf(quote);
+    const inner = closing > 0 ? value.slice(1, closing) : value.slice(1);
+    return quote === '"'
+      ? inner.replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\t/g, '\t').replace(/\\\\/g, '\\').replace(/\\"/g, '"')
+      : inner;
+  }
+  return value.replace(/\s+#.*$/, '').trim();
+}
+
+/** Parse common dotenv syntax without overriding explicit process environment values. */
 function loadEnvFile(envPath: string): void {
   try {
-    const content = readFileSync(envPath, 'utf-8');
-    for (const line of content.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith('#')) continue;
-      const eqIdx = trimmed.indexOf('=');
-      if (eqIdx === -1 || eqIdx === trimmed.length - 1) continue;
-      const key = trimmed.slice(0, eqIdx).trim();
-      const value = trimmed.slice(eqIdx + 1).trim().replace(/^["']|["']$/g, '');
-      if (!process.env[key]) process.env[key] = value;
+    const lines = readFileSync(envPath, 'utf-8').split(/\r?\n/);
+    for (let index = 0; index < lines.length; index++) {
+      let line = lines[index]!.trim();
+      if (!line || line.startsWith('#')) continue;
+      line = line.replace(/^export\s+/, '');
+      const separator = line.indexOf('=');
+      if (separator < 1) continue;
+      const key = line.slice(0, separator).trim();
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || process.env[key] !== undefined) continue;
+
+      let raw = line.slice(separator + 1).trim();
+      const quote = raw[0];
+      if ((quote === '"' || quote === "'") && raw.lastIndexOf(quote) === 0) {
+        const value = [raw.slice(1)];
+        let closed = false;
+        while (++index < lines.length) {
+          const next = lines[index]!;
+          const closing = next.lastIndexOf(quote);
+          if (closing >= 0) {
+            value.push(next.slice(0, closing));
+            closed = true;
+            break;
+          }
+          value.push(next);
+        }
+        if (!closed) continue;
+        raw = quote + value.join('\n') + quote;
+      }
+      process.env[key] = parseEnvValue(raw);
     }
   } catch {
-    // file not found — continue silently
+    // Missing .env files are optional; process.env remains authoritative.
   }
 }
 
@@ -140,7 +174,7 @@ export function getConfig(projectRoot: string): AppConfig {
     nimApiKey: process.env.NIM_API_KEY ?? '',
     nimBaseUrl: process.env.NIM_BASE_URL ?? 'https://integrate.api.nvidia.com/v1',
     nimModel: process.env.NIM_MODEL ?? 'stepfun-ai/step-3.7-flash',
-    agentTermoDir: process.env.AGENT_TERMO_DIR ?? '.claude',
+    agentTermoDir: getAgentTermoDir(),
     logLevel: (process.env.LOG_LEVEL as AppConfig['logLevel']) || 'info',
     confirmDestructive: process.env.CONFIRM_DESTRUCTIVE !== 'false',
     allowedCommands: (

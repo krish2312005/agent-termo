@@ -230,7 +230,7 @@ export function updatePlanStep(
   const step = plan.steps[stepNumber - 1]!;
   if (status === 'in_progress') {
     if (step.status === 'completed') return 'Step ' + stepNumber + ' is already complete.';
-    const prerequisites = [...new Set([...step.dependsOn, ...plan.steps.slice(0, stepNumber - 1).map((previous) => previous.number)])];
+    const prerequisites = [...new Set(step.dependsOn)];
     const blocked = prerequisites.find((dependency) => plan.steps[dependency - 1]?.status !== 'completed');
     if (blocked) throw new Error('Complete step ' + blocked + ' before starting step ' + stepNumber + '.');
     step.status = 'in_progress';
