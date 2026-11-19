@@ -17,7 +17,8 @@ import { loadTermoInstructions } from './runtime/termo-md.js';
 import { createSkill, deleteSkill, importSkill, listSkills, loadSkillCatalogPrompt, loadSkillInstructions, readSkillFile, type SkillDefinition, type SkillScope } from './runtime/skills.js';
 import { initializeMcpServers, getMcpServerStatuses, getMcpToolDefinitions, isMcpToolName, executeMcpTool, shutdownMcpServers, saveMcpServerConfigs, type McpServerConfig } from './runtime/mcp.js';
 import { commandApprovalKey, isCommandApprovalRequired, loadAllowedCommands, saveAllowedCommands } from './runtime/permissions.js';
-import { verifyCompletion, formatIssues } from './runtime/verify.js';
+import { verifyCompletionWithChecks, formatIssues } from './runtime/verify.js';
+import { runProjectChecks } from './runtime/checks.js';
 import { createSession, forkSession, listSessions, loadLatestSession, loadSession, saveSession, type StoredSession } from './runtime/sessions.js';
 import {
 	addSubAgentProgress,
@@ -646,8 +647,10 @@ async function runDelegatedAgent(
 		// Completion gate: the final report is a claim. Only accept it once the
 		// evidence actually collected during this run (files it wrote, commands
 		// it ran) backs it up — no stub implementations, and a real check command
-		// for any code work the task called for. See runtime/verify.ts.
-		const verification = verifyCompletion(task, changedFiles, ranCommands);
+		// for any code work the task called for. If the agent didn't run one
+		// itself, run the project's own test/lint/typecheck scripts for real
+		// rather than trust the narration. See runtime/verify.ts, runtime/checks.ts.
+		const verification = await verifyCompletionWithChecks(task, changedFiles, ranCommands, () => runProjectChecks(projectRoot));
 		if (!verification.ok) {
 			const detail =
 				`Sub-agent ${agent.name} reported completion, but its own evidence does not support that claim — rejected:\n` +
@@ -853,10 +856,11 @@ async function runToolLoop(
 	}
 
 	// The model's narration above has already streamed to the terminal by the
-	// time we get here, so this can't retract a false "done" — but it can make
-	// sure an unsupported claim doesn't go unchallenged. See runtime/verify.ts.
+	// time we get here, so this can't retract a false "done" — but it can run
+	// the project's own checks for real and make sure an unsupported claim
+	// doesn't go unchallenged. See runtime/verify.ts, runtime/checks.ts.
 	if (changedFiles.size > 0) {
-		const verification = verifyCompletion(taskState.goal || finalText, changedFiles, ranCommands);
+		const verification = await verifyCompletionWithChecks(taskState.goal || finalText, changedFiles, ranCommands, () => runProjectChecks(projectRoot));
 		if (!verification.ok) {
 			printError('Completion check: this turn\'s own evidence does not back up "done" yet.', formatIssues(verification.issues));
 			logAgentTermoTimeline('Evidence gate flagged unresolved issues: ' + formatIssues(verification.issues).replace(/\s+/g, ' ').slice(0, 300), projectRoot);

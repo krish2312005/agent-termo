@@ -12,8 +12,15 @@
 // =============================================================================
 
 export interface VerificationIssue {
-	kind: 'placeholder' | 'unverified';
+	kind: 'placeholder' | 'unverified' | 'check-failed';
 	detail: string;
+}
+
+/** The minimal shape this module needs from runtime/checks.ts's CheckRun. */
+export interface RanCheck {
+	command: string;
+	success: boolean;
+	output: string;
 }
 
 export interface VerificationResult {
@@ -90,4 +97,43 @@ export function verifyCompletion(task: string, changedFiles: ReadonlyMap<string,
 /** Render a VerificationResult's issues as a short bullet list for a report. */
 export function formatIssues(issues: readonly VerificationIssue[]): string {
 	return issues.map((issue) => `- ${issue.detail}`).join('\n');
+}
+
+/**
+ * verifyCompletion(), but when it would otherwise only flag "nothing was run
+ * to check this" (the 'unverified' heuristic), it actually runs the project's
+ * own checks via `runChecks` instead of guessing from the agent's command
+ * history. `runChecks` is injected so the orchestration here stays testable
+ * without spawning real processes; main.ts passes runProjectChecks(projectRoot).
+ *
+ * - The project defines no test/lint/typecheck script at all (`runChecks`
+ *   returns []): nothing to run, so the original heuristic result stands --
+ *   this can still flag that code shipped with zero way to verify it.
+ * - The project's own check fails: that replaces the heuristic with real,
+ *   actionable command output -- the strongest evidence there is that the
+ *   task is not actually done.
+ * - The project's own check passes: the 'unverified' flag is lifted. The
+ *   agent didn't have to remember to run it; the harness ran it for real.
+ */
+export async function verifyCompletionWithChecks(
+	task: string,
+	changedFiles: ReadonlyMap<string, string>,
+	ranCommands: readonly string[],
+	runChecks: () => Promise<readonly RanCheck[]>,
+): Promise<VerificationResult> {
+	const result = verifyCompletion(task, changedFiles, ranCommands);
+	if (!result.issues.some((issue) => issue.kind === 'unverified')) return result;
+
+	const checks = await runChecks();
+	if (checks.length === 0) return result;
+
+	const issues = result.issues.filter((issue) => issue.kind !== 'unverified');
+	const failed = checks.find((check) => !check.success);
+	if (failed) {
+		issues.push({
+			kind: 'check-failed',
+			detail: `\`${failed.command}\` failed:\n${failed.output.replace(/\s+/g, ' ').trim().slice(0, 400)}`,
+		});
+	}
+	return { ok: issues.length === 0, issues };
 }

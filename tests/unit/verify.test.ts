@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatIssues, scanForPlaceholders, verifyCompletion } from '../../src/runtime/verify.js';
+import { formatIssues, scanForPlaceholders, verifyCompletion, verifyCompletionWithChecks } from '../../src/runtime/verify.js';
 
 describe('verify', () => {
   it('flags a stub function that only returns null', () => {
@@ -49,5 +49,48 @@ describe('verify', () => {
     const files = new Map([['docs/NOTES.md', 'some notes']]);
     const result = verifyCompletion('write up notes on the architecture', files, []);
     expect(result.ok).toBe(true);
+  });
+});
+
+describe('verifyCompletionWithChecks', () => {
+  const files = new Map([['src/api.ts', 'export function handler() { return doWork(); }']]);
+
+  it('runs the project\'s own checks instead of just flagging "unverified", and accepts a passing result', async () => {
+    const runChecks = async () => [{ command: 'npm run test', success: true, output: 'ok' }];
+    const result = await verifyCompletionWithChecks('fix the login endpoint bug', files, [], runChecks);
+    expect(result.ok).toBe(true);
+  });
+
+  it('rejects completion with the real command output when the project\'s own check fails', async () => {
+    const runChecks = async () => [{ command: 'npm run test', success: false, output: 'Expected 200, got 500 (login.test.ts:12)' }];
+    const result = await verifyCompletionWithChecks('fix the login endpoint bug', files, [], runChecks);
+    expect(result.ok).toBe(false);
+    expect(result.issues[0]?.kind).toBe('check-failed');
+    expect(result.issues[0]?.detail).toContain('npm run test');
+    expect(result.issues[0]?.detail).toContain('login.test.ts');
+  });
+
+  it('falls back to the heuristic flag when the project defines no checks to run', async () => {
+    const result = await verifyCompletionWithChecks('fix the login endpoint bug', files, [], async () => []);
+    expect(result.ok).toBe(false);
+    expect(result.issues[0]?.kind).toBe('unverified');
+  });
+
+  it('never calls runChecks when the agent already ran a matching command itself', async () => {
+    let called = false;
+    const runChecks = async () => { called = true; return []; };
+    const result = await verifyCompletionWithChecks('fix the login endpoint bug', files, ['npm run test'], runChecks);
+    expect(called).toBe(false);
+    expect(result.ok).toBe(true);
+  });
+
+  it('never calls runChecks for a placeholder-only failure (nothing to re-verify by running tests)', async () => {
+    let called = false;
+    const stubFiles = new Map([['src/Budgets.tsx', 'export function Budgets() { return null; }']]);
+    const runChecks = async () => { called = true; return []; };
+    const result = await verifyCompletionWithChecks('implement the budgets component', stubFiles, ['npm run test'], runChecks);
+    expect(called).toBe(false);
+    expect(result.ok).toBe(false);
+    expect(result.issues[0]?.kind).toBe('placeholder');
   });
 });
