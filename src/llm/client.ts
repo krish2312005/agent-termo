@@ -393,9 +393,10 @@ export class NimClient {
 						insideMarkupCall = true;
 						continue;
 					}
-					const held = Math.min(startTag.length - 1, pending.length);
+					let held = Math.min(startTag.length - 1, pending.length);
+					while (held > 0 && !startTag.startsWith(pending.slice(-held))) held--;
 					if (pending.length > held) emitVisible(pending.slice(0, pending.length - held));
-					pendingText = pending.slice(pending.length - held);
+					pendingText = held > 0 ? pending.slice(-held) : '';
 					return;
 				}
 			};

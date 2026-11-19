@@ -208,6 +208,10 @@ function isStreamingUnsupportedError(error: unknown): boolean {
 	return /\b400\b|\b501\b|stream(?:ing)?.*(?:not supported|unsupported|disabled)|unsupported.*stream/i.test(providerError(error));
 }
 
+function isPartialStreamFailure(error: unknown): boolean {
+	return !!error && typeof error === 'object' && (error as { retryable?: boolean }).retryable === false;
+}
+
 async function completeWithRetry(
 	nimClient: NimClient,
 	messages: ConversationMessage[],
@@ -712,7 +716,11 @@ async function runToolLoop(
 				const streamed = new MarkdownPrinter(stopSpinner);
 				result = await withEscapeCancellation(nimClient, () => completeWithRetry(nimClient, conversation, tools, (chunk) => { streamed.push(chunk); streamed.flushPartial(); }));
 				streamed.end();
-				if (!streamed.printed) stopSpinner();
+				if (!streamed.printed) {
+					stopSpinner();
+					const fallbackText = result.content.trim().replace(/^null$/, '').trim();
+					if (fallbackText && !fallbackText.includes('"tool_calls"') && !fallbackText.includes('<tool_call>')) printAssistantMessage(fallbackText);
+				}
 				setScreenStatus({ usage: nimClient.formatUsage() });
 			} catch (err) {
 				if (isRequestCancelled(err)) {
@@ -723,7 +731,15 @@ async function runToolLoop(
 					printInfo('Task paused. Type "continue" to resume from where it stopped.');
 					return '';
 				}
-					// and parse any JSON tool calls emitted in the content.
+									if (isPartialStreamFailure(err)) {
+					stopSpinner();
+					printError('The response stream stopped after partial output: ' + providerError(err));
+					taskState.status = 'interrupted';
+					taskState.reason = providerError(err);
+					printInfo('The task is paused. Type "continue" to resume without replaying the partial response.');
+					return '';
+				}
+// and parse any JSON tool calls emitted in the content.
 					try {
 						const fallbackStream = new MarkdownPrinter(stopSpinner);
 					const fallback = await withEscapeCancellation(nimClient, () => completeWithRetry(nimClient, conversation, undefined, (chunk) => { fallbackStream.push(chunk); fallbackStream.flushPartial(); }));
@@ -1810,7 +1826,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 								stopBackgroundCommands();
 									continue mainLoop;
 							}
-							if (!tools || isTransientError(err)) {
+							if (!tools || isTransientError(err) || isPartialStreamFailure(err)) {
 								printError('NVIDIA NIM provider error: ' + providerError(err), 'Try /model to select an available model, then retry.');
 								if (taskState.status === 'running') {
 									taskState.status = 'interrupted';
