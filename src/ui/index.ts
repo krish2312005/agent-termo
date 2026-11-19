@@ -46,6 +46,9 @@ const out = process.stdout;
 export const COMMANDS: CommandInfo[] = [
 	{ name: '/help', description: 'show all commands' },
 	{ name: '/clear', description: 'clear conversation & screen' },
+	{ name: '/sessions', description: 'browse saved conversations' },
+	{ name: '/resume', description: 'restore a saved conversation' },
+	{ name: '/fork', description: 'branch a conversation from a saved session' },
 	{ name: '/memory', description: 'view project memory (docs/MEMORY.md)' },
 	{ name: '/timeline', description: 'view project timeline (docs/TIMELINE.md)' },
 		{ name: '/model', description: 'switch NVIDIA NIM model (or /model <id>)' },
