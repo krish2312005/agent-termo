@@ -13,6 +13,7 @@ import { resolveShell } from '../utils/shell.js';
 import { fromWireToolName } from '../llm/client.js';
 import { computeDiff } from '../diff/index.js';
 import type { ToolResult, ProposedFileChange } from '../types/index.js';
+import { readSkillFile } from '../runtime/skills.js';
 
 const MAX_GLOB_RESULTS = 500;
 const MAX_GREP_MATCHES = 300;
@@ -57,7 +58,26 @@ function normalizeToolArgs(args: Record<string, unknown>): Record<string, unknow
 
 // ── Tool map ────────────────────────────────────────────────────────────────
 
+async function toolSkillRead(args: Record<string, unknown>, projectRoot: string): Promise<ToolResult> {
+	const name = String(args.name ?? '').trim();
+	const path = String(args.path ?? 'SKILL.md');
+	if (!name) return { id: '', name: 'skill:read', success: false, error: 'name is required', durationMs: 0 };
+	try {
+		const output = readSkillFile(projectRoot, name, path);
+		return { id: '', name: 'skill:read', success: true, output, durationMs: 0 };
+	} catch (error) {
+		return {
+			id: '',
+			name: 'skill:read',
+			success: false,
+			error: error instanceof Error ? error.message : String(error),
+			durationMs: 0,
+		};
+	}
+}
+
 const TOOL_MAP: Record<string, (...args: any[]) => Promise<ToolResult>> = {
+	'skill:read': toolSkillRead,
 	'file:read': toolFileRead,
 	'file:write': toolFileWrite,
 	'file:edit': toolFileEdit,

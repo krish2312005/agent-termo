@@ -52,6 +52,7 @@ export const COMMANDS: CommandInfo[] = [
 			{ name: '/thinking', description: 'select NVIDIA reasoning capacity' },
 			{ name: '/permissions', description: 'ask, files, or auto; terminal approvals can be remembered with A' },
 		{ name: '/agents', description: 'list all agents' },
+		{ name: '/skill', description: 'discover, use, create, import, and delete skills' },
 		{ name: '/agent', description: 'select a custom agent' },
 		{ name: '/agent-folder', description: 'create or refresh .agent-termo agents and commands' },
 		{ name: '/goal', description: 'set or show the current goal' },

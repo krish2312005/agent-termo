@@ -410,6 +410,7 @@ Use /help inside Agent-Termo to display the available commands.
 | /thinking | Open the thinking-capacity picker or set a mode. |
 | /permissions | Cycle permission modes or select ask, files, or auto. |
 | /agents | List and select available agents. |
+| /skill | Discover, create, import, use, inspect, and delete skills. |
 | /agent <name> | Activate a named custom agent. |
 | /agent-folder | Create or refresh the project agent and command folders. |
 | /goal <text> | Set the current goal; /goal displays it. |
@@ -548,6 +549,89 @@ Arguments supplied after the command name are available through $ARGUMENTS or $A
 
 ---
 
+## Skills
+
+Agent-Termo supports the standard `SKILL.md` folder format. Skills can contain focused instructions and supporting files such as references, examples, or scripts. The full instructions are loaded only when a skill is selected or the model determines that the skill matches the request.
+
+### Skill locations
+
+New skills created by Agent-Termo use these locations:
+
+```text
+project/
+└── .agent-termo/
+    └── skills/
+        └── api-review/
+            ├── SKILL.md
+            └── references/
+                └── checklist.md
+
+~/.agent-termo/
+└── skills/
+    └── personal-workflow/
+        └── SKILL.md
+```
+
+Agent-Termo also discovers existing skills without moving them from these compatible locations:
+
+| Scope | Agent-Termo | Codex | Claude Code |
+|---|---|---|---|
+| Project | `.agent-termo/skills/` | `.agents/skills/` | `.claude/skills/` |
+| User | `~/.agent-termo/skills/` | `~/.agents/skills/` | `~/.claude/skills/` |
+
+Each skill is a directory containing `SKILL.md`. Its YAML frontmatter should include a name and a concise description. Keep supporting files in the skill folder and refer to them with relative paths.
+
+### Manage skills
+
+Open the interactive manager:
+
+```text
+/skill
+```
+
+Or use a command directly:
+
+| Command | Description |
+|---|---|
+| `/skill list` | List installed project and user skills. Add `--project` or `--global` to filter by scope. |
+| `/skill add api-review` | Create a project skill with a starter `SKILL.md`. |
+| `/skill add personal-workflow --global` | Create a user-level skill available across projects. |
+| `/skill import ./path/to/skill` | Import a local skill folder, including supporting files. |
+| `/skill install ./path/to/skill --global` | Alias for importing into user-level storage. |
+| `/skill show api-review` | Display a skill's `SKILL.md`. |
+| `/skill refresh` | Reload the skill catalog after editing skill files during a session. |
+| `/skill use api-review Review the current API` | Run a request using the selected skill instructions. |
+| `/skill delete api-review` | Delete a selected skill after confirmation. |
+
+Quote import paths that contain spaces. Deletion always asks for confirmation. Imported skills are copied into Agent-Termo's native directory; the original folder is not modified.
+Project skills in `.agent-termo/skills/` are intentionally tracked by Git so a project can share them; other `.agent-termo/` runtime state remains ignored.
+
+### Skill frontmatter
+
+```markdown
+---
+name: api-review
+description: Reviews API contracts, validation, and endpoint security.
+---
+
+# API Review
+
+Inspect the API before making changes. Check request validation, authorization,
+response consistency, and regression tests.
+
+Read supporting references only when they are needed:
+- references/security-checklist.md
+```
+
+The model receives a compact list of skill names and descriptions. When a skill matches a task, it can load `SKILL.md` or a supporting file through the read-only `skill:read` tool. This avoids adding every skill's full text to every prompt.
+
+Two standard frontmatter options are supported:
+
+- `disable-model-invocation: true` hides a skill from automatic model selection while keeping it visible in the manager.
+- `user-invocable: false` prevents the skill from being selected through `/skill use`.
+
+---
+
 ## Project Instructions (TERMO.md)
 
 Agent-Termo automatically loads persistent instructions from `TERMO.md` files when a session starts. It checks the user-level `~/.agent-termo/TERMO.md`, then project and ancestor `TERMO.md` files, with `TERMO.local.md` files loaded after the matching project instructions. The project can also keep its main instructions at `.agent-termo/TERMO.md`.
@@ -585,6 +669,7 @@ project/
 └── .agent-termo/
     ├── agents/
     ├── commands/
+    ├── skills/
     ├── logs/
     │   ├── session.md
     │   └── timeline.md
@@ -595,6 +680,7 @@ project/
 |---|---|
 | .agent-termo/agents/ | Project-specific agent definitions. |
 | .agent-termo/commands/ | Project-specific slash commands. |
+| .agent-termo/skills/ | Project skills and their supporting files. |
 | .agent-termo/logs/session.md | Private session history used for continuity. |
 | .agent-termo/logs/timeline.md | Private runtime activity log. |
 | .agent-termo/permissions.json | Remembered command approvals. |

@@ -12,6 +12,7 @@ import { resolve } from 'node:path';
 import { readdirSync, readFileSync } from 'node:fs';
 import { ensureAgentFolder, loadProjectAgents, loadAgentCommands, type AgentCommand } from './runtime/agent-folder.js';
 import { loadTermoInstructions } from './runtime/termo-md.js';
+import { createSkill, deleteSkill, importSkill, listSkills, loadSkillCatalogPrompt, loadSkillInstructions, readSkillFile, type SkillDefinition, type SkillScope } from './runtime/skills.js';
 import { initializeMcpServers, getMcpServerStatuses, getMcpToolDefinitions, isMcpToolName, executeMcpTool, shutdownMcpServers, saveMcpServerConfigs, type McpServerConfig } from './runtime/mcp.js';
 import { commandApprovalKey, isCommandApprovalRequired, loadAllowedCommands, saveAllowedCommands } from './runtime/permissions.js';
 import {
@@ -247,8 +248,25 @@ function isContinueRequest(input: string): boolean {
 	return /^(?:\/)?continue\b/i.test(input.trim()) || input.trim().toLowerCase() === 'c';
 }
 
-function shouldUseTools(input: string, activeAgentName: string, continuing: boolean, hasMcpTools = false): boolean {
-	if (continuing || activeAgentName || hasMcpTools) return true;
+function splitCommandArgs(value: string): string[] {
+	return (value.match(/"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|\\S+/g) ?? [])
+		.map((part) => part.replace(/^['"]|['"]$/g, ''));
+}
+
+function hasRelevantSkill(input: string, skills: SkillDefinition[]): boolean {
+	const words = new Set(input.toLowerCase().match(/[a-z0-9-]{3,}/g) ?? []);
+	const ignored = new Set(['about', 'after', 'also', 'and', 'application', 'build', 'code', 'from', 'into', 'make', 'need', 'project', 'that', 'this', 'with', 'your']);
+	return skills.some((skill) => {
+		if (skill.disableModelInvocation) return false;
+		if (words.has(skill.name)) return true;
+		const terms = skill.description.toLowerCase().match(/[a-z0-9]{4,}/g) ?? [];
+		const matches = new Set(terms.filter((term) => !ignored.has(term) && words.has(term)));
+		return matches.size >= 2;
+	});
+}
+
+function shouldUseTools(input: string, activeAgentName: string, continuing: boolean, hasMcpTools = false, hasRelevantSkills = false): boolean {
+	if (continuing || activeAgentName || hasMcpTools || hasRelevantSkills) return true;
 	return /\b(build|code|debug|deploy|edit|file|fix|implement|refactor|review|run|test|write|rewrite|create|delete|inspect|analy[sz]e|documentation|docs|architecture|delegate|spawn|specialist|sub-?agent)\b/i.test(input);
 }
 
@@ -453,7 +471,7 @@ async function runDelegatedAgent(
 		loadTimeline(projectRoot),
 	]);
 	const delegatedMessages: ConversationMessage[] = [
-		{ id: crypto.randomUUID(), role: 'system', content: buildSystemPrompt(projectMemory, projectTimeline, projectRoot, agent.systemPrompt, [], loadTermoInstructions(projectRoot)), timestamp: new Date(), agent: agent.name },
+		{ id: crypto.randomUUID(), role: 'system', content: buildSystemPrompt(projectMemory, projectTimeline, projectRoot, agent.systemPrompt, [], loadTermoInstructions(projectRoot), loadSkillCatalogPrompt(projectRoot)), timestamp: new Date(), agent: agent.name },
 		{
 			id: crypto.randomUUID(),
 			role: 'user',
@@ -822,7 +840,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 	});
 	let customCommands: AgentCommand[] = loadAgentCommands(projectRoot);
 	const refreshCommandCompletion = (): void => {
-		setCommands([...COMMANDS, { name: '/mcp', description: 'list MCP servers and available tools' }, ...customCommands.map((command) => ({ name: '/' + command.name, description: command.description || 'project command' }))]);
+		setCommands([...COMMANDS, { name: '/mcp', description: 'list MCP servers and available tools' }, ...customCommands.filter((command) => command.name.toLowerCase() !== 'skill').map((command) => ({ name: '/' + command.name, description: command.description || 'project command' }))]);
 	};
 	refreshCommandCompletion();
 	let activeAgentName = '';
@@ -830,7 +848,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 	let currentGoal = '';
 	const taskState = newTaskState();
 	const buildSessionPrompt = (): string => {
-		let prompt = buildSystemPrompt(memory, '', projectRoot, activeAgentPrompt, customAgents, loadTermoInstructions(projectRoot));
+		let prompt = buildSystemPrompt(memory, '', projectRoot, activeAgentPrompt, customAgents, loadTermoInstructions(projectRoot), loadSkillCatalogPrompt(projectRoot));
 		if (memoryContext) prompt += '\n\n## Recent Session Log (previous sessions, may include interrupted tasks)\n' + memoryContext;
 		if (taskState.goal && taskState.status !== 'idle') {
 			prompt += '\n\n## Active Task\n' + taskState.goal + '\nStatus: ' + taskState.status + (taskState.reason ? ' (' + taskState.reason + ')' : '');
@@ -893,6 +911,57 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 			current: activeAgentName,
 		});
 		if (selected) activateAgent(selected, true);
+	};
+
+	const showSkills = (skills = listSkills(projectRoot)): void => {
+		if (skills.length === 0) {
+			printInfo('No skills found. Create one with /skill add <name> or import one with /skill import <path>.');
+			printInfo('Project skills: ' + resolve(projectRoot, '.agent-termo', 'skills'));
+			printInfo('User skills: ' + resolve(process.env.HOME || process.env.USERPROFILE || '', '.agent-termo', 'skills'));
+			return;
+		}
+		printInfo('Available skills (' + skills.length + '):');
+		for (const skill of skills) {
+			printInfo('  ' + skill.name + ' [' + skill.scope + '/' + skill.source + '] — ' + skill.description);
+		}
+	};
+
+	const chooseSkillEntry = async (skills: SkillDefinition[], title: string): Promise<SkillDefinition | undefined> => {
+		if (skills.length === 0) return undefined;
+		if (skills.length === 1) return skills[0];
+		const selected = await pick({
+			title,
+			items: skills.map((skill, index) => ({
+				value: String(index),
+				label: skill.name + ' (' + skill.scope + ', ' + skill.source + ')',
+				hint: skill.description,
+			})),
+		});
+		return selected === null ? undefined : skills[Number(selected)];
+	};
+
+	const removeSkill = async (name = '', scope?: SkillScope): Promise<void> => {
+		let candidates = listSkills(projectRoot);
+		if (name) candidates = candidates.filter((skill) => skill.name === name);
+		if (scope) candidates = candidates.filter((skill) => skill.scope === scope);
+		if (candidates.length === 0) {
+			printError(name ? 'Skill not found: ' + name : 'No skills are available to delete.');
+			return;
+		}
+		const selected = await chooseSkillEntry(candidates, 'Select a skill to delete');
+		if (!selected) return;
+		const decision = await promptAcceptReject('Permanently delete ' + selected.name + ' (' + selected.scope + '/' + selected.source + ')?');
+		if (decision !== 'accept') {
+			printInfo('Skill deletion cancelled.');
+			return;
+		}
+		try {
+			deleteSkill(projectRoot, selected);
+			refreshSystemPrompt();
+			printSuccess('Deleted skill: ' + selected.name + ' (' + selected.scope + '/' + selected.source + ').');
+		} catch (error) {
+			printError('Could not delete skill: ' + (error instanceof Error ? error.message : String(error)));
+		}
 	};
 
 	let cleanupStarted = false;
@@ -963,9 +1032,10 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 			}
 
 				let displayedInput = false;
+				let skillInvocation = false;
 					const lowerInput = userInput.toLowerCase().trim();
 					const customCommandMatch = /^\/([A-Za-z0-9_-]+)(?:\s+([\s\S]*))?$/.exec(userInput);
-					const customCommand = customCommandMatch
+					const customCommand = customCommandMatch && customCommandMatch[1]!.toLowerCase() !== 'skill'
 						? customCommands.find((command) => command.name.toLowerCase() === customCommandMatch[1]!.toLowerCase())
 						: undefined;
 					if (customCommand) {
@@ -1079,6 +1149,166 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 							printSuccess(permissionMode === 'auto' ? 'Permission mode: AUTO-ACCEPT (files and terminal commands run without prompts).' : permissionMode === 'files' ? 'Permission mode: FILES-AUTO (file changes apply; terminal commands still ask).' : 'Permission mode: ASK before applying changes.');
 							continue mainLoop;
 						}
+
+					if (cmd === '/skill' || cmd.startsWith('/skill ')) {
+						const tokens = splitCommandArgs(userInput.trim().slice('/skill'.length).trim());
+						const first = (tokens[0] ?? '').toLowerCase();
+						const actions = new Set(['list', 'show', 'add', 'create', 'import', 'install', 'delete', 'remove', 'use', 'refresh']);
+						const action = actions.has(first) ? first : first ? 'use' : 'menu';
+						const flags = tokens.filter((token) => token === '--global' || token === '--user' || token === '--project');
+						const values = tokens.filter((token) => !flags.includes(token));
+						const scope: SkillScope = flags.includes('--global') || flags.includes('--user') ? 'user' : 'project';
+						const scopeFilter: SkillScope | undefined = flags.includes('--project') ? 'project' : flags.includes('--global') || flags.includes('--user') ? 'user' : undefined;
+						const name = actions.has(first) ? (values[1] ?? '') : (values[0] ?? '');
+						const task = actions.has(first) ? values.slice(2).join(' ') : values.slice(1).join(' ');
+
+						if (action === 'menu') {
+							const choice = await pick({
+								title: 'Manage skills',
+								items: [
+									{ value: 'list', label: 'List skills', hint: 'See project and user skills' },
+									{ value: 'use', label: 'Use a skill', hint: 'Load a skill for your next task' },
+									{ value: 'add', label: 'Create a skill', hint: 'Scaffold a new SKILL.md' },
+									{ value: 'import', label: 'Import a skill', hint: 'Copy an existing skill folder' },
+									{ value: 'delete', label: 'Delete a skill', hint: 'Remove a skill after confirmation' },
+								],
+							});
+							if (choice === 'list') showSkills();
+							else if (choice === 'add') setNextInput('/skill add ');
+							else if (choice === 'import') setNextInput('/skill import ');
+							else if (choice === 'use') {
+								const available: SkillDefinition[] = [];
+								const seen = new Set<string>();
+								for (const skill of listSkills(projectRoot)) {
+									if (skill.userInvocable && !seen.has(skill.name)) {
+										available.push(skill);
+										seen.add(skill.name);
+									}
+								}
+								const selected = await chooseSkillEntry(available, 'Select a skill to use');
+								if (selected) setNextInput('/skill use ' + selected.name + (selected.scope === 'user' ? ' --global ' : ' --project '));
+							}
+							else if (choice === 'delete') await removeSkill();
+							else if (choice === null) {
+								showSkills();
+								printInfo('Usage: /skill list|use|add|import|show|delete');
+							}
+							continue mainLoop;
+						}
+
+						if (action === 'list') {
+							showSkills(scopeFilter ? listSkills(projectRoot).filter((skill) => skill.scope === scopeFilter) : listSkills(projectRoot));
+							continue mainLoop;
+						}
+
+						if (action === 'refresh') {
+							refreshSystemPrompt();
+							showSkills();
+							printSuccess('Skill catalog refreshed.');
+							continue mainLoop;
+						}
+
+						if (action === 'add' || action === 'create') {
+							if (!name) {
+								setNextInput('/skill add ');
+								printInfo('Enter a lowercase skill name, then press Enter.');
+								continue mainLoop;
+							}
+							try {
+								const path = createSkill(projectRoot, name, scope);
+								refreshSystemPrompt();
+								printSuccess('Created skill: ' + name);
+								printInfo('Edit ' + path + ' and replace its starter description and instructions.');
+							} catch (error) {
+								printError('Could not create skill: ' + (error instanceof Error ? error.message : String(error)));
+							}
+							continue mainLoop;
+						}
+
+						if (action === 'import' || action === 'install') {
+							const sourcePath = values[1] ?? '';
+							if (!sourcePath) {
+								setNextInput('/skill import ');
+								printInfo('Enter a local skill folder or path to its SKILL.md file.');
+								continue mainLoop;
+							}
+							try {
+								const imported = importSkill(projectRoot, sourcePath, scope);
+								refreshSystemPrompt();
+								printSuccess('Imported skill: ' + imported.name);
+								printInfo('Installed at ' + imported.filePath);
+							} catch (error) {
+								printError('Could not import skill: ' + (error instanceof Error ? error.message : String(error)));
+							}
+							continue mainLoop;
+						}
+
+						if (action === 'delete' || action === 'remove') {
+							await removeSkill(name, scopeFilter);
+							continue mainLoop;
+						}
+
+						if (action === 'show') {
+							if (!name) {
+								printError('Specify a skill name.', 'Usage: /skill show <name>');
+								continue mainLoop;
+							}
+							const matches = listSkills(projectRoot).filter((skill) => skill.name === name && (!scopeFilter || skill.scope === scopeFilter));
+							const selected = await chooseSkillEntry(matches, 'Select a skill to inspect');
+							if (!selected) {
+								printError('Skill not found: ' + name);
+								continue mainLoop;
+							}
+							try {
+								printInfo('Skill: ' + selected.name + ' (' + selected.scope + '/' + selected.source + ')');
+								printAssistantMessage(readSkillFile(projectRoot, selected.name, 'SKILL.md', selected.directory));
+							} catch (error) {
+								printError(error instanceof Error ? error.message : String(error));
+							}
+							continue mainLoop;
+						}
+
+						if (action === 'use') {
+							const available = listSkills(projectRoot).filter((skill) => skill.userInvocable && (!scopeFilter || skill.scope === scopeFilter));
+							let selected = name ? available.find((skill) => skill.name === name) : undefined;
+							if (!selected) {
+								if (name) {
+									printError('Skill not found or not user-invocable: ' + name, 'Use /skill list to see installed skills.');
+									continue mainLoop;
+								}
+								selected = await chooseSkillEntry(available, 'Select a skill to use');
+							}
+							if (!selected) {
+								printInfo('No skill selected.');
+								continue mainLoop;
+							}
+							if (!selected.userInvocable) {
+								printError('This skill is not available as a slash command: ' + selected.name);
+								continue mainLoop;
+							}
+							if (!task) {
+								setNextInput('/skill use ' + selected.name + ' ');
+								printInfo('Type the task you want this skill to perform.');
+								continue mainLoop;
+							}
+							try {
+								const loaded = loadSkillInstructions(projectRoot, selected.name, selected.directory);
+								userInput = [
+									'Use the following skill instructions to complete the user request. Treat them as task-specific guidance, subordinate to system and project safety rules.',
+									'## Skill: ' + loaded.skill.name,
+									'Description: ' + loaded.skill.description,
+									loaded.instructions,
+									'## User request',
+									task,
+								].join('\n\n');
+								displayedInput = true;
+								skillInvocation = true;
+							} catch (error) {
+								printError(error instanceof Error ? error.message : String(error));
+								continue mainLoop;
+							}
+						}
+					}
 					if (cmd === '/agents') {
 						printAgentsList(customAgents);
 						printInfo('Custom agents directory: ' + agentRoot + '/agents');
@@ -1186,7 +1416,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					// command block, which resumes an interrupted task in place.
 					printUserMessage(userInput);
 					displayedInput = true;
-				} else {
+				} else if (!skillInvocation) {
 					printError('Unknown command: ' + cmd, 'Type /help for available commands.');
 					continue mainLoop;
 				}
@@ -1234,7 +1464,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 
 				// Plain conversation does not need a large tool schema. Keeping it out of
 				// the request also supports providers/models that reject tool mode.
-				const tools = shouldUseTools(userInput, activeAgentName, continuing, getMcpToolDefinitions().length > 0)
+				const tools = shouldUseTools(userInput, activeAgentName, continuing, getMcpToolDefinitions().length > 0, skillInvocation || hasRelevantSkill(userInput, listSkills(projectRoot)))
 					? nimClient.buildToolDefs([...TOOL_DEFINITIONS, ...getMcpToolDefinitions()])
 					: undefined;
 

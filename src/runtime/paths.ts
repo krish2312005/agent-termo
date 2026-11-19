@@ -6,6 +6,7 @@
 //   <project>/docs/TIMELINE.md        shared project timeline
 //   <project>/.agent-termo/agents     project agent definitions
 //   <project>/.agent-termo/commands   project slash commands
+//   <project>/.agent-termo/skills     project skills
 //   <project>/.agent-termo/logs       private session/runtime logs
 // =============================================================================
 
@@ -44,6 +45,10 @@ export function agentTermoAgentsDir(projectRoot: string): string {
 
 export function agentTermoCommandsDir(projectRoot: string): string {
   return resolve(agentTermoRoot(projectRoot), 'commands');
+}
+
+export function agentTermoSkillsDir(projectRoot: string): string {
+  return resolve(agentTermoRoot(projectRoot), 'skills');
 }
 
 export function agentTermoLogsDir(projectRoot: string): string {

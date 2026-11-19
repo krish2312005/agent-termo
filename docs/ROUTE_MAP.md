@@ -114,6 +114,27 @@ Once inside the REPL, these commands and key bindings are available:
 
 ---
 
+### 2.4 Skills
+
+Skills use the `SKILL.md` folder format and can be managed from the REPL:
+
+| Command | Behavior |
+|---|---|
+| `/skill` | Open the interactive skill manager. |
+| `/skill list [--project|--global]` | List skills in the selected scope. |
+| `/skill add <name> [--global]` | Create a starter skill. |
+| `/skill import <path> [--global]` | Import a local skill folder or its `SKILL.md`. |
+| `/skill show <name>` | Display the skill instructions. |
+| `/skill refresh` | Reload the skill catalog after external edits. |
+| `/skill use <name> <task>` | Run a task with the selected skill instructions. |
+| `/skill delete <name> [--global|--project]` | Delete a skill after confirmation. |
+
+New skills are stored in `.agent-termo/skills/` for the current project or `~/.agent-termo/skills/` for user scope. Existing skills are discovered in Agent-Termo, Codex (`.agents/skills/`), and Claude Code (`.claude/skills/`) directories at both scopes. Each skill is a folder containing `SKILL.md`; supporting files remain beside it.
+
+The model receives skill descriptions in its system prompt and loads the full instructions or supporting references on demand using the read-only `skill:read` tool.
+
+---
+
 ## 3. Environment Variables
 
 Read from `.env` or the shell environment at startup. Values are never logged or printed.
