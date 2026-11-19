@@ -3,7 +3,7 @@
 // =============================================================================
 
 import { NimClient, parseToolCallsFromText, type ThinkingCapacity } from './llm/client.js';
-import { buildPlanContext, parseTaskPlan, PLAN_PROGRESS_TOOL, updatePlanStep, type TaskPlan } from './runtime/plans.js';
+import { buildPlanContext, formatTaskPlanMarkdown, parseTaskPlan, PLAN_PROGRESS_TOOL, updatePlanStep, type TaskPlan } from './runtime/plans.js';
 import { TOOL_DEFINITIONS } from './llm/tools.js';
 import { executeTool, applyFileChange, setTerminalHooks, killRunningTerminal } from './tools/index.js';
 import { loadMemory, loadTimeline, logToTimeline, logAgentTermoTimeline, appendToSessionLog, appendToTimeline, loadSessionLog } from './memory/index.js';
@@ -283,19 +283,7 @@ function isContinueRequest(input: string): boolean {
 
 
 function printTaskPlan(plan: TaskPlan): void {
-	printInfo('Plan: ' + plan.title + ' [' + plan.status + ']');
-	printInfo(plan.summary);
-	for (const step of plan.steps) {
-		const marker = step.status === 'completed' ? '✓' : step.status === 'in_progress' ? '›' : '○';
-		printInfo(marker + ' ' + step.number + '. ' + step.title + ' — ' + step.description);
-		if (step.affectedFiles.length > 0) printInfo('   Files: ' + step.affectedFiles.join(', '));
-		if (step.dependsOn.length > 0) printInfo('   Depends on steps: ' + step.dependsOn.join(', '));
-		if (step.risks.length > 0) printInfo('   Risks: ' + step.risks.join('; '));
-	}
-	if (plan.risks.length > 0) {
-		printInfo('Plan risks:');
-		for (const risk of plan.risks) printInfo('  • ' + risk);
-	}
+	printAssistantMessage(formatTaskPlanMarkdown(plan));
 }
 
 function splitCommandArgs(value: string): string[] {
