@@ -417,7 +417,6 @@ Use /help inside Agent-Termo to display the available commands.
 | /checkpoints | List automatic, plan, and manual checkpoints. |
 | /undo [id] | Preview and restore the latest or selected checkpoint. |
 | /redo | Preview and reapply the most recently undone checkpoint. |
-
 | /memory | Display shared project memory. |
 | /timeline | Display the shared project timeline. |
 | /model | Open the model picker or switch to a specified model. |
