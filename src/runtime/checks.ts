@@ -18,18 +18,18 @@ import { executeTool, type ToolOutputHandler } from '../tools/index.js';
 import type { AgentRunJournal } from './engine.js';
 
 export interface CheckRun {
-	/** Which kind of check this was: 'typecheck' | 'lint' | 'test'. */
 	kind: string;
-	/** The exact command that was run (never invented -- taken from package.json). */
 	command: string;
 	success: boolean;
-	/** Tail of combined stdout/stderr. */
+	exitCode?: number | null;
+	completedAt?: number;
 	output: string;
 }
 
 const LOCKFILE_RUNNER: Array<{ file: string; runner: string }> = [
 	{ file: 'pnpm-lock.yaml', runner: 'pnpm run' },
 	{ file: 'yarn.lock', runner: 'yarn run' },
+	{ file: 'bun.lock', runner: 'bun run' },
 	{ file: 'bun.lockb', runner: 'bun run' },
 	{ file: 'package-lock.json', runner: 'npm run' },
 ];
@@ -39,9 +39,15 @@ const SCRIPT_KINDS: Array<{ kind: string; names: string[] }> = [
 	{ kind: 'typecheck', names: ['typecheck', 'type-check', 'tsc'] },
 	{ kind: 'lint', names: ['lint'] },
 	{ kind: 'test', names: ['test', 'test:unit'] },
+	{ kind: 'build', names: ['build', 'build:prod', 'build:production'] },
 ];
 
 function detectRunner(projectRoot: string): string {
+	try {
+		const pkg = JSON.parse(readFileSync(resolve(projectRoot, 'package.json'), 'utf-8')) as { packageManager?: string };
+		const manager = pkg.packageManager?.split('@')[0];
+		if (manager === 'pnpm' || manager === 'yarn' || manager === 'bun' || manager === 'npm') return manager + ' run';
+	} catch { /* Lockfiles provide the fallback. */ }
 	for (const { file, runner } of LOCKFILE_RUNNER) {
 		if (existsSync(resolve(projectRoot, file))) return runner;
 	}
@@ -88,8 +94,8 @@ export async function runProjectChecks(
 			: undefined;
 		const result = await executeTool('bash:execute', { command, timeout: timeoutMs }, projectRoot, outputHandler);
 		journal?.toolFinished(callId, { ...result, id: callId });
-		runs.push({ kind, command, success: result.success, output: (result.success ? result.output : result.error) ?? '' });
-		if (!result.success) break;
+		runs.push({ kind, command, success: result.success, exitCode: result.exitCode ?? null, completedAt: Date.now(), output: (result.success ? result.output : result.error) ?? '' });
+		// Run all configured kinds to expose independent build blockers as well.
 	}
 	return runs;
 }
