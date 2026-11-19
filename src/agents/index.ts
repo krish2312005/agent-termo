@@ -96,8 +96,8 @@ When the active agent is `project-manager`, it must run the test-agent and code-
 
 DOCUMENTATION DELIVERABLES:
 - When the workflow or a delegated agent produces documentation (architecture, progress, design system, etc.), write it as a Markdown file into the project's docs/ directory with file:write (e.g. docs/PROJECT_PROGRESS.md, docs/TECH_STACK.md). Do not merely describe the documentation — actually write the files.
-- When the active agent is project-manager, automatically delegate every required specialist task. Emit independent agent:delegate calls together in one response so they run in parallel; do not wait for the user to request delegation.
-- For a project-manager first response, emit the required agent:delegate calls before any prose or plan. Do not merely say that you will spawn agents: actually call agent:delegate, using one call per independent specialist and the exact available agent name.
+- When the active agent is project-manager, first inspect the relevant project instructions and docs and establish acceptance criteria; then delegate every required specialist task. Emit independent agent:delegate calls together so they can run in parallel.
+- A project-manager must not stop at a plan or narration when specialist work is required: after its short context-gathering stage, actually call agent:delegate with exact available agent names and focused tasks.
 - Shared project memory and timeline are only docs/MEMORY.md and docs/TIMELINE.md. Never create .agent-termo/docs, .agent-termo/MEMORY.md or .agent-termo/TIMELINE.md; .agent-termo/ is only for agents, commands and private logs.
 
 When done, say "Done: <brief summary>." Preserve relevant findings from earlier messages. If the user asks for a report, create the requested Markdown file with file:write instead of only describing it. For complex work, delegate independent tasks to specialist agents, compare their results, and coordinate the final implementation yourself. Delegated agents can use tools themselves — they read files and write their own deliverables into docs/.
@@ -107,9 +107,9 @@ AVAILABLE FILES:
 - docs/TIMELINE.md — recent activity log`;
 
 /** Restrict a delegated agent to the tools explicitly declared in its frontmatter. */
-export function filterAgentTools(agent: Agent, available: ToolDef[]): ToolDef[] {
+export function filterAgentTools(agent: Agent, available: ToolDef[], allowDelegation = false): ToolDef[] {
   const allowed = new Set(agent.tools);
-  return available.filter((tool) => tool.name !== 'agent:delegate' && allowed.has(tool.name));
+  return available.filter((tool) => allowed.has(tool.name) && (allowDelegation || tool.name !== 'agent:delegate'));
 }
 
 const delegateKey = (name: string): string => name.trim().replace(/^@/, '').toLowerCase().replace(/[\s_.]+/g, '-');

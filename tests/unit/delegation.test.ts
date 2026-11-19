@@ -22,6 +22,11 @@ describe('delegation', () => {
     ];
     const reviewer = { name: 'reviewer', description: '', systemPrompt: '', tools: ['file:read', 'grep'] };
     expect(filterAgentTools(reviewer, available).map((tool) => tool.name)).toEqual(['file:read', 'grep']);
+    expect(filterAgentTools(
+      { ...reviewer, tools: [...reviewer.tools, 'agent:delegate'] },
+      available,
+      true,
+    ).map((tool) => tool.name)).toEqual(['file:read', 'agent:delegate', 'grep']);
   });
 
   it('accepts alternate argument names and loosely written agent names', () => {

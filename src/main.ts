@@ -64,7 +64,7 @@ import {
 	printSubAgents,
 	startBackgroundCommandListener,
 } from './ui/index.js';
-import type { ConversationMessage, ToolCall, ToolResult, ProposedFileChange } from './types/index.js';
+import type { ConversationMessage, ToolCall, ToolResult, ToolDef, ProposedFileChange } from './types/index.js';
 
 function extractMcpServerConfigs(input: string): Record<string, McpServerConfig> | undefined {
 	const keyIndex = input.indexOf('"mcpServers"');
@@ -664,6 +664,7 @@ async function runToolLoop(
 	getCheckpointId: () => string,
 	onConversationChanged: () => void,
 	taskPlan?: TaskPlan,
+	agentToolDefinitions?: ToolDef[],
 ): Promise<string> {
 	let toolCalls = initialToolCalls;
 	let finalText = '';
@@ -745,7 +746,7 @@ async function runToolLoop(
 			startSpinner('Working');
 		let result: { content: string; toolCalls: ToolCall[] };
 			try {
-				const tools = nimClient.buildToolDefs([...TOOL_DEFINITIONS, ...getMcpToolDefinitions(), ...(taskPlan?.status === 'in_progress' ? [PLAN_PROGRESS_TOOL] : [])]);
+				const tools = nimClient.buildToolDefs([...(agentToolDefinitions ?? [...TOOL_DEFINITIONS, ...getMcpToolDefinitions()]), ...(taskPlan?.status === 'in_progress' ? [PLAN_PROGRESS_TOOL] : [])]);
 				const streamed = new MarkdownPrinter(stopSpinner);
 				result = await withEscapeCancellation(nimClient, () => completeWithRetry(nimClient, conversation, tools, (chunk) => { streamed.push(chunk); streamed.flushPartial(); }));
 				streamed.end();
@@ -1943,8 +1944,12 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				// the request also supports providers/models that reject tool mode.
 				
 				refreshSystemPrompt();
+				const selectedAgent = customAgents.find((agent) => agent.name === activeAgentName);
+				const activeAgentToolDefinitions = selectedAgent
+					? filterAgentTools(selectedAgent, [...TOOL_DEFINITIONS, ...getMcpToolDefinitions()], true)
+					: [...TOOL_DEFINITIONS, ...getMcpToolDefinitions()];
 				const tools = shouldUseTools(userInput, activeAgentName, continuing, getMcpToolDefinitions().length > 0, skillInvocation || hasRelevantSkill(userInput, listSkills(projectRoot))) || activePlan?.status === 'in_progress'
-					? nimClient.buildToolDefs([...TOOL_DEFINITIONS, ...getMcpToolDefinitions(), ...(activePlan?.status === 'in_progress' ? [PLAN_PROGRESS_TOOL] : [])])
+					? nimClient.buildToolDefs([...activeAgentToolDefinitions, ...(activePlan?.status === 'in_progress' ? [PLAN_PROGRESS_TOOL] : [])])
 					: undefined;
 
 				{
@@ -1979,7 +1984,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						if (narration && !streamed.printed) printAssistantMessage(narration);
 
 						// Run the tool-call loop: execute tools, feed results back, repeat
-						await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, permissionMode, allowedCommands, taskState, ensureTaskCheckpoint, persistSession, activePlan);
+						await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, permissionMode, allowedCommands, taskState, ensureTaskCheckpoint, persistSession, activePlan, activeAgentToolDefinitions);
 					}
 					} catch (err) {
 						stopSpinner();
@@ -2018,7 +2023,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						if (toolCalls.length > 0) {
 							const narration = (fallback.content ?? '').trim().replace(/^null$/, '').trim();
 							if (narration && !fallbackStream.printed && !narration.includes('"tool_calls"')) printAssistantMessage(narration);
-							await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, permissionMode, allowedCommands, taskState, ensureTaskCheckpoint, persistSession, activePlan);
+							await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, permissionMode, allowedCommands, taskState, ensureTaskCheckpoint, persistSession, activePlan, activeAgentToolDefinitions);
 						} else {
 							const cleanText = (fallback.content ?? '').trim().replace(/^null$/, '').trim();
 							if (cleanText) {
