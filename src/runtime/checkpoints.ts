@@ -83,7 +83,7 @@ function saveCheckpoint(projectRoot: string, checkpoint: Checkpoint): void {
     // timestamps can tie or drift behind newer checkpoints during rapid undo operations.
     let latestUpdate = 0;
     for (const file of readdirSync(directory)) {
-      if (!/^\\d{3,}\\.json$/.test(file)) continue;
+      if (!/^\d{3,}\.json$/.test(file)) continue;
       try {
         const saved = JSON.parse(readFileSync(resolve(directory, file), 'utf-8')) as { updatedAt?: unknown };
         if (typeof saved.updatedAt === 'string') {
