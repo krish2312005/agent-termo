@@ -82,12 +82,21 @@ export function verifyCompletion(task: string, changedFiles: ReadonlyMap<string,
 	}
 
 	const touchedCode = [...changedFiles.keys()].some((path) => CODE_FILE.test(path));
-	if (touchedCode && VERIFIABLE_TASK.test(task) && !ranCommands.some((cmd) => CHECK_COMMAND.test(cmd))) {
+	const latestCheck = [...ranCommands].reverse().find((entry) => {
+		const command = entry.startsWith('FAILED: ') ? entry.slice(8).split('\n', 1)[0] ?? '' : entry;
+		return CHECK_COMMAND.test(command);
+	});
+	if (touchedCode && VERIFIABLE_TASK.test(task) && latestCheck?.startsWith('FAILED: ')) {
+		issues.push({
+			kind: 'check-failed',
+			detail: 'The latest verification command failed after the most recent code change:\n' + latestCheck.slice(8).slice(0, 500),
+		});
+	} else if (touchedCode && VERIFIABLE_TASK.test(task) && !latestCheck) {
 		issues.push({
 			kind: 'unverified',
 			detail:
 				`code was written or edited for a task that implies working functionality ("${task.replace(/\s+/g, ' ').trim().slice(0, 100)}"), ` +
-				'but no test, build, lint or type-check command was recorded during the run.',
+				'but no successful test, build, lint or type-check command was recorded after the latest code change.',
 		});
 	}
 

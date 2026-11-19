@@ -38,11 +38,28 @@ describe('verify', () => {
     expect(result.issues[0]?.kind).toBe('unverified');
   });
 
-  it('accepts completion when a real implementation was written and a check command ran', () => {
+  it('accepts completion when a real implementation was written and a successful check ran', () => {
     const files = new Map([['src/api.ts', 'export function handler() { return doWork(); }']]);
     const result = verifyCompletion('fix the login endpoint bug', files, ['npm run typecheck && npm test']);
     expect(result.ok).toBe(true);
     expect(result.issues).toHaveLength(0);
+  });
+
+  it('does not treat a failed compiler command as verification evidence', () => {
+    const files = new Map([['src/api.ts', 'export function handler() { return doWork(); }']]);
+    const result = verifyCompletion('fix the login endpoint bug', files, ['FAILED: npx tsc --noEmit\\nsrc/api.ts: TS2307 cannot find module']);
+    expect(result.ok).toBe(false);
+    expect(result.issues[0]?.kind).toBe('check-failed');
+    expect(result.issues[0]?.detail).toContain('TS2307');
+  });
+
+  it('uses the latest check result, allowing a successful rerun to supersede an earlier failure', () => {
+    const files = new Map([['src/api.ts', 'export function handler() { return doWork(); }']]);
+    const result = verifyCompletion('fix the login endpoint bug', files, [
+      'FAILED: npx tsc --noEmit\\nTS2307',
+      'npx tsc --noEmit',
+    ]);
+    expect(result.ok).toBe(true);
   });
 
   it('does not require a check command for tasks that are not implementation work', () => {

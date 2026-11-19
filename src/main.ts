@@ -19,6 +19,7 @@ import { initializeMcpServers, getMcpServerStatuses, getMcpToolDefinitions, isMc
 import { commandApprovalKey, isCommandApprovalRequired, loadAllowedCommands, saveAllowedCommands } from './runtime/permissions.js';
 import { verifyCompletionWithChecks, formatIssues } from './runtime/verify.js';
 import { runProjectChecks } from './runtime/checks.js';
+import { createRunJournal, type AgentRunJournal } from './runtime/engine.js';
 import { createSession, forkSession, listSessions, loadLatestSession, loadSession, saveSession, type StoredSession } from './runtime/sessions.js';
 import {
 	addSubAgentProgress,
@@ -628,8 +629,14 @@ async function runDelegatedAgent(
 				startSubAgentTool(subId, tc.name, describeArgs(tc.arguments) || task);
 				const execution = await executeToolWithReview(tc.name, tc.arguments, projectRoot, input, permissionMode, allowedCommands, (waiting) => setSubAgentWaiting(subId, waiting), getCheckpointId);
 				const toolResult = execution.toolResult;
-				if (execution.applied && execution.change) changedFiles.set(execution.change.path, execution.change.proposedContent);
-				if (tc.name === 'bash:execute') ranCommands.push(typeof tc.arguments.command === 'string' ? tc.arguments.command : '[invalid command arguments]');
+				if (execution.applied && execution.change) {
+					changedFiles.set(execution.change.path, execution.change.proposedContent);
+					ranCommands.length = 0;
+				}
+				if (tc.name === 'bash:execute') {
+					const command = typeof tc.arguments.command === 'string' ? tc.arguments.command : '[invalid command arguments]';
+					ranCommands.push(toolResult.success ? command : 'FAILED: ' + command + '\n' + (toolResult.error ?? toolResult.output ?? 'Command failed.'));
+				}
 				const target = String(tc.arguments.path ?? tc.arguments.command ?? task).slice(0, 80);
 				endSubAgentTool(
 					subId,
@@ -693,6 +700,16 @@ async function runDelegatedAgent(
  * Run the tool-call loop: execute tools, feed results back to the LLM,
  * and repeat until the LLM stops issuing tool calls.
  */
+interface ToolLoopRuntime {
+	journal?: AgentRunJournal;
+	changedFiles: Map<string, string>;
+	ranCommands: string[];
+	failedToolCalls: Set<string>;
+	iterations: number;
+	recoveryAttempts: number;
+	initialCallRecorded: boolean;
+}
+
 export async function runToolLoop(
 	conversation: ConversationMessage[],
 	projectRoot: string,
@@ -706,24 +723,35 @@ export async function runToolLoop(
 	onConversationChanged: () => void,
 	taskPlan?: TaskPlan,
 	agentToolDefinitions?: ToolDef[],
+	sessionId?: string,
+	runtimeState?: ToolLoopRuntime,
 ): Promise<string> {
 	const MAX_TOOL_ITERATIONS = 40;
 	let toolCalls = initialToolCalls;
 	let finalText = '';
-	let iterations = 0;
-	const failedToolCalls = new Set<string>();
-	// Same evidence gate as delegated runs (runtime/verify.ts): track what this
-	// turn actually wrote and ran, independent of direct file:write/file:edit
-	// tool calls made without going through agent:delegate at all.
-	const changedFiles = new Map<string, string>();
-	const ranCommands: string[] = [];
+	const runtime: ToolLoopRuntime = runtimeState ?? {
+		journal: sessionId ? createRunJournal(projectRoot, sessionId) : undefined,
+		changedFiles: new Map<string, string>(),
+		ranCommands: [],
+		failedToolCalls: new Set<string>(),
+		iterations: 0,
+		recoveryAttempts: 0,
+		initialCallRecorded: false,
+	};
+	const journal = runtime.journal;
+	if (!runtimeState) journal?.startRun(taskState.goal);
+
+	const changedFiles = runtime.changedFiles;
+	const ranCommands = runtime.ranCommands;
+	const failedToolCalls = runtime.failedToolCalls;
 
 	// Continue looping while the LLM keeps issuing tool calls
 	while (toolCalls.length > 0) {
-		iterations++;
-		if (iterations > MAX_TOOL_ITERATIONS) {
+		runtime.iterations++;
+		if (runtime.iterations > MAX_TOOL_ITERATIONS) {
 			taskState.status = 'interrupted';
 			taskState.reason = `Tool loop stopped after ${MAX_TOOL_ITERATIONS} iterations without reaching a final response.`;
+			journal?.pause(taskState.reason);
 			printError(taskState.reason);
 			onConversationChanged();
 			return '';
@@ -738,8 +766,13 @@ export async function runToolLoop(
 			toolCalls,
 			timestamp: new Date(),
 		});
+		if (!runtime.initialCallRecorded) {
+			journal?.assistantCompleted(finalText || '', toolCalls);
+			for (const call of toolCalls) journal?.toolCalled(call);
+			runtime.initialCallRecorded = true;
+		}
 
-			onConversationChanged();
+		onConversationChanged();
 			// Execute all delegation calls in parallel. Ordinary tools stay sequential
 			// because concurrent writes or terminal commands can race with each other.
 			// Do not use completedOperations as an execution cache: a model is allowed
@@ -750,7 +783,11 @@ export async function runToolLoop(
 		const executions: Array<{ toolResult: { success: boolean; output?: string; error?: string; name?: string }; applied: boolean; change?: ProposedFileChange }> = [];
 		let repeatedFailure = false;
 		if (allDelegations) {
-						executions.push(...await Promise.all(toolCalls.map((tc) => runDelegatedAgent(projectRoot, tc, nimClient, input, permissionMode, allowedCommands, taskState, getCheckpointId).then((toolResult) => ({ toolResult, applied: false })) )));
+			executions.push(...await Promise.all(toolCalls.map((tc) => {
+				journal?.toolStarted(tc.id);
+				return runDelegatedAgent(projectRoot, tc, nimClient, input, permissionMode, allowedCommands, taskState, getCheckpointId)
+					.then((toolResult) => ({ toolResult, applied: false }));
+			})));
 		} else {
 			for (const tc of toolCalls) {
 				const signature = tc.name + ':' + JSON.stringify(tc.arguments);
@@ -766,6 +803,7 @@ export async function runToolLoop(
 					});
 					continue;
 				}
+				journal?.toolStarted(tc.id);
 				if (tc.name === 'plan:update') {
 							let result: { success: boolean; output?: string; error?: string };
 							try {
@@ -790,8 +828,28 @@ export async function runToolLoop(
 		const toolResult = execution.toolResult;
 		if (execution.applied) failedToolCalls.clear();
 		if (!toolResult.success) failedToolCalls.add(tc.name + ':' + JSON.stringify(tc.arguments));
-						if (execution.applied && execution.change) changedFiles.set(execution.change.path, execution.change.proposedContent);
-					if (tc.name === 'bash:execute') ranCommands.push(typeof tc.arguments.command === 'string' ? tc.arguments.command : '[invalid command arguments]');
+		if (execution.applied && execution.change) {
+			changedFiles.set(execution.change.path, execution.change.proposedContent);
+			// Earlier checks are invalidated by every later accepted file change.
+			ranCommands.length = 0;
+		}
+		if (tc.name === 'bash:execute') {
+			const command = typeof tc.arguments.command === 'string' ? tc.arguments.command : '[invalid command arguments]';
+			ranCommands.push(toolResult.success ? command : 'FAILED: ' + command + '\n' + (toolResult.error ?? toolResult.output ?? 'Command failed.'));
+		}
+		journal?.toolFinished(tc.id, {
+			id: tc.id,
+			name: toolResult.name ?? tc.name,
+			success: toolResult.success,
+			output: toolResult.output,
+			error: toolResult.error,
+			command: (toolResult as Partial<ToolResult>).command,
+			cwd: (toolResult as Partial<ToolResult>).cwd,
+			stdout: (toolResult as Partial<ToolResult>).stdout,
+			stderr: (toolResult as Partial<ToolResult>).stderr,
+			exitCode: (toolResult as Partial<ToolResult>).exitCode,
+			durationMs: (toolResult as Partial<ToolResult>).durationMs ?? 0,
+		});
 				// Delegated runs bypass executeToolWithReview, so show their
 				// result explicitly instead of only feeding it to the model.
 				if (tc.name === 'agent:delegate') printToolResult(tc.name, toolResult);
@@ -818,6 +876,7 @@ export async function runToolLoop(
 		if (repeatedFailure) {
 			taskState.status = 'interrupted';
 			taskState.reason = 'The model repeated an unchanged failed tool call. The previous diagnostic must be addressed before continuing.';
+			journal?.pause(taskState.reason);
 			onConversationChanged();
 			printInfo('Task paused: the same failed tool call was requested again. Inspect the diagnostic and type "continue" after correcting the approach.');
 			return '';
@@ -826,11 +885,16 @@ export async function runToolLoop(
 			// Send conversation (including tool results) back to the LLM
 			// The LLM will either produce text or more tool calls
 			startSpinner('Working');
+		journal?.assistantStarted();
 		let result: { content: string; toolCalls: ToolCall[] };
 			try {
 				const tools = nimClient.buildToolDefs([...(agentToolDefinitions ?? [...TOOL_DEFINITIONS, ...getMcpToolDefinitions()]), ...(taskPlan?.status === 'in_progress' ? [PLAN_PROGRESS_TOOL] : [])]);
 				const streamed = new MarkdownPrinter(stopSpinner);
-				result = await withEscapeCancellation(nimClient, () => completeWithRetry(nimClient, conversation, tools, (chunk) => { streamed.push(chunk); streamed.flushPartial(); }));
+				result = await withEscapeCancellation(nimClient, () => completeWithRetry(nimClient, conversation, tools, (chunk) => {
+					journal?.assistantTextDelta(chunk);
+					streamed.push(chunk);
+					streamed.flushPartial();
+				}));
 				streamed.end();
 				if (!streamed.printed) {
 					stopSpinner();
@@ -838,12 +902,14 @@ export async function runToolLoop(
 					if (fallbackText && !fallbackText.includes('"tool_calls"') && !fallbackText.includes('<tool_call>')) printAssistantMessage(fallbackText);
 				}
 				setScreenStatus({ usage: nimClient.formatUsage() });
+				journal?.assistantCompleted(result.content, result.toolCalls);
 			} catch (err) {
 				if (isRequestCancelled(err)) {
 					stopSpinner();
 					// The task can be resumed with "continue".
 					taskState.status = 'interrupted';
 					taskState.reason = 'cancelled by user';
+					journal?.pause(taskState.reason);
 					printInfo('Task paused. Type "continue" to resume from where it stopped.');
 					return '';
 				}
@@ -852,13 +918,19 @@ export async function runToolLoop(
 					printError('The response stream stopped after partial output: ' + providerError(err));
 					taskState.status = 'interrupted';
 					taskState.reason = providerError(err);
+					journal?.pause(taskState.reason);
 					printInfo('The task is paused. Type "continue" to resume without replaying the partial response.');
 					return '';
 				}
 // and parse any JSON tool calls emitted in the content.
 					try {
 						const fallbackStream = new MarkdownPrinter(stopSpinner);
-					const fallback = await withEscapeCancellation(nimClient, () => completeWithRetry(nimClient, conversation, undefined, (chunk) => { fallbackStream.push(chunk); fallbackStream.flushPartial(); }));
+					journal?.assistantStarted();
+					const fallback = await withEscapeCancellation(nimClient, () => completeWithRetry(nimClient, conversation, undefined, (chunk) => {
+						journal?.assistantTextDelta(chunk);
+						fallbackStream.push(chunk);
+						fallbackStream.flushPartial();
+					}));
 					fallbackStream.end();
 					if (!fallbackStream.printed) stopSpinner();
 				setScreenStatus({ usage: nimClient.formatUsage() });
@@ -866,12 +938,14 @@ export async function runToolLoop(
 					content: fallback.content,
 					toolCalls: fallback.toolCalls.length > 0 ? fallback.toolCalls : parseToolCallsFromText(fallback.content),
 				};
+				journal?.assistantCompleted(result.content, result.toolCalls);
 				} catch (err2) {
 					stopSpinner();
 					printError('NVIDIA NIM provider error: ' + providerError(err2));
 					// Keep everything done so far and let "continue" resume the task.
 					taskState.status = 'interrupted';
 					taskState.reason = providerError(err2);
+					journal?.pause(taskState.reason);
 					appendToSessionLog('### Interrupted task\n\nGoal: ' + taskState.goal + '\nReason: ' + taskState.reason + '\nLast actions: ' + taskState.lastActions.join('; '), projectRoot);
 					printInfo('The task was interrupted. Type "continue" to resume from where it stopped.');
 					// Do not return stale narration from an earlier turn; the
@@ -883,6 +957,7 @@ export async function runToolLoop(
 
 		finalText = result.content;
 		toolCalls = dedup(result.toolCalls);
+		for (const call of toolCalls) journal?.toolCalled(call);
 
 		// If the LLM produced text alongside tool calls, save it
 		if (finalText && finalText.trim() && finalText.trim() !== 'null') {
@@ -912,11 +987,66 @@ export async function runToolLoop(
 	if (changedFiles.size > 0) {
 		const verification = await verifyCompletionWithChecks(taskState.goal || finalText, changedFiles, ranCommands, () => runProjectChecks(projectRoot));
 		if (!verification.ok) {
-			printError('Completion check: this turn\'s own evidence does not back up "done" yet.', formatIssues(verification.issues));
-			logAgentTermoTimeline('Evidence gate flagged unresolved issues: ' + formatIssues(verification.issues).replace(/\s+/g, ' ').slice(0, 300), projectRoot);
+			const details = formatIssues(verification.issues);
+			const directive = [
+				'## Completion verification failed — the implementation is not complete.',
+				'This is the runtime verification result, not a suggestion. Do not claim success or repeat the same failed command unchanged.',
+				'',
+				details,
+				'',
+				'Inspect the exact failing source and diagnostic, identify the root cause, make the required code changes, and rerun the relevant check after the final edit.',
+				'Continue using tools until the verification gate passes. If the failure is environmental, explain the blocker and do not claim the project is fixed.',
+			].join('\n');
+			printError('Completion check blocked this run. Sending the diagnostics back for repair.', details);
+			logAgentTermoTimeline('Evidence gate blocked completion: ' + details.replace(/\s+/g, ' ').slice(0, 300), projectRoot);
+			if (runtime.recoveryAttempts >= 2) {
+				taskState.status = 'interrupted';
+				taskState.reason = 'Completion verification is still failing after two automatic repair turns: ' + details;
+				journal?.pause(taskState.reason);
+				onConversationChanged();
+				return finalText;
+			}
+			runtime.recoveryAttempts++;
+			conversation.push({ id: crypto.randomUUID(), role: 'user', content: directive, timestamp: new Date() });
+			onConversationChanged();
+			try {
+				const repairTools = nimClient.buildToolDefs([
+					...(agentToolDefinitions ?? [...TOOL_DEFINITIONS, ...getMcpToolDefinitions()]),
+					...(taskPlan?.status === 'in_progress' ? [PLAN_PROGRESS_TOOL] : []),
+				]);
+				startSpinner('Repairing verification failures');
+				journal?.assistantStarted();
+				const repair = await withEscapeCancellation(nimClient, () => completeWithRetry(nimClient, conversation, repairTools));
+				stopSpinner();
+				journal?.assistantCompleted(repair.content, repair.toolCalls);
+				const repairCalls = dedup(repair.toolCalls);
+				for (const call of repairCalls) journal?.toolCalled(call);
+				if (repairCalls.length > 0) {
+					return runToolLoop(conversation, projectRoot, repairCalls, input, nimClient, permissionMode, allowedCommands,
+						taskState, getCheckpointId, onConversationChanged, taskPlan, agentToolDefinitions, sessionId, runtime);
+				}
+				if (repair.content.trim()) {
+					conversation.push({ id: crypto.randomUUID(), role: 'assistant', content: repair.content.trim(), timestamp: new Date() });
+					onConversationChanged();
+				}
+				taskState.status = 'interrupted';
+				taskState.reason = 'The model did not produce a repair tool call for the failed completion checks.';
+				journal?.pause(taskState.reason);
+				printInfo('The task is paused because the verification failure was not repaired. Type "continue" to resume.');
+				return repair.content.trim() || finalText;
+			} catch (error) {
+				stopSpinner();
+				taskState.status = 'interrupted';
+				taskState.reason = providerError(error);
+				journal?.pause(taskState.reason);
+				onConversationChanged();
+				printError('Could not complete the automatic verification-repair turn: ' + taskState.reason);
+				return '';
+			}
 		}
 	}
 
+	journal?.complete(finalText);
 	return finalText;
 }
 
@@ -2079,7 +2209,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						if (narration && !streamed.printed) printAssistantMessage(narration);
 
 						// Run the tool-call loop: execute tools, feed results back, repeat
-						await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, permissionMode, allowedCommands, taskState, ensureTaskCheckpoint, persistSession, activePlan, activeAgentToolDefinitions);
+						await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, permissionMode, allowedCommands, taskState, ensureTaskCheckpoint, persistSession, activePlan, activeAgentToolDefinitions, session.id);
 					}
 					} catch (err) {
 						stopSpinner();
@@ -2118,7 +2248,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						if (toolCalls.length > 0) {
 							const narration = (fallback.content ?? '').trim().replace(/^null$/, '').trim();
 							if (narration && !fallbackStream.printed && !narration.includes('"tool_calls"')) printAssistantMessage(narration);
-							await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, permissionMode, allowedCommands, taskState, ensureTaskCheckpoint, persistSession, activePlan, activeAgentToolDefinitions);
+							await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, permissionMode, allowedCommands, taskState, ensureTaskCheckpoint, persistSession, activePlan, activeAgentToolDefinitions, session.id);
 						} else {
 							const cleanText = (fallback.content ?? '').trim().replace(/^null$/, '').trim();
 							if (cleanText) {
