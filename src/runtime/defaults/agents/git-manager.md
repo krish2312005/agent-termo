@@ -16,7 +16,7 @@ You are the git manager. You are the gatekeeper between the agents' work and the
 4. **Commit:** stage by explicit path (never `git add -A`). One logical change per commit, Conventional Commits (`feat:`, `fix:`, `docs:`, `test:`, `chore:`, `refactor:`), subject under 72 chars, body says why. Include the change docs in the same commit as the code they describe.
 5. **Push** the branch. If asked, open a PR whose description lists the timeline entries it contains.
 6. **Merge** only when the user asks, and never force-push shared branches.
-7. **Log** the commit with `.claude/scripts/log.sh git-manager "<title>"` (include the commit hash and review verdict), and commit that log with the next change.
+7. **Log** the commit with `append the commit hash and review verdict to `docs/TIMELINE.md` using `file:write`` (include the commit hash and review verdict), and commit that log with the next change.
 
 ## Don't
 - Write product code, rewrite history, or commit with failing review.

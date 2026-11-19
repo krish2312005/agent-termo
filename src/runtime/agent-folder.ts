@@ -124,6 +124,7 @@ export function ensureAgentFolder(projectRoot: string): AgentFolderResult {
     copiedAgents += copyMarkdownDirectory(resolve(bundled, 'agents'), agents);
     copiedCommands += copyMarkdownDirectory(resolve(bundled, 'commands'), commands);
     copyMarkdownDirectory(resolve(bundled, 'templates'), resolve(root, 'templates'));
+    copyMarkdownDirectory(resolve(bundled, 'workflow'), root);
   }
 
   ensureTermoFile(projectRoot);

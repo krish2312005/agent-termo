@@ -263,7 +263,7 @@ Initialize a specific directory:
 agent-termo init ./my-project
 ~~~
 
-Initialization creates the project memory and timeline files, prepares the .agent-termo/ runtime directories, and installs the bundled default agents and slash commands without overwriting existing project definitions. It also creates a starter TERMO.md (only when one does not already exist) and a src/ directory if needed.
+Initialization creates the project memory and timeline files, prepares the .agent-termo/ runtime directories, and installs the bundled default agents, slash commands, workflow, and agent template without overwriting existing project definitions. It also creates a starter TERMO.md (only when one does not already exist) and a src/ directory if needed.
 
 ---
 
@@ -575,6 +575,8 @@ project/
 | docs/TIMELINE.md | Chronological record of project activity. |
 
 These files are shared project documents and can be read or updated by the agent.
+
+The default specialist workflow is installed at `.agent-termo/workflow.md`. Bundled slash commands use this Agent-Termo workflow file rather than requiring a `.claude/workflow.md` file.
 
 ### Agent-Termo Runtime Directory
 
