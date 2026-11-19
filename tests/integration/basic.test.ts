@@ -165,7 +165,7 @@ describe('executeTool', () => {
 			expect(calls[0]?.arguments).toEqual({ path: 'package.json' });
 		});
 
-		it('invalidates cached reads after an approved mutation', async () => {
+	it('invalidates cached reads after an approved mutation', async () => {
 			const path = '.test-cache-invalidation.txt';
 			const absolutePath = resolve(PROJECT_ROOT, path);
 			try {
@@ -182,7 +182,30 @@ describe('executeTool', () => {
 			}
 		});
 
-  it('file:read — reads package.json successfully', async () => {
+		it('executes the same verification command again after a source change', async () => {
+			const path = '.test-repeat-verification.txt';
+			const absolutePath = resolve(PROJECT_ROOT, path);
+			try {
+				writeFileSync(absolutePath, 'before\n', 'utf-8');
+				const first = await executeTool('bash:execute', { command: `cat ${path}` }, PROJECT_ROOT);
+				expect(first.success).toBe(true);
+				expect(first.output).toContain('before');
+
+				const changeResult = await executeTool('file:write', { path, content: 'after\n' }, PROJECT_ROOT);
+				expect(changeResult.success).toBe(true);
+				const change = JSON.parse(changeResult.output ?? '').proposedChange;
+				expect((await applyFileChange(change, PROJECT_ROOT)).success).toBe(true);
+
+				const second = await executeTool('bash:execute', { command: `cat ${path}` }, PROJECT_ROOT);
+				expect(second.success).toBe(true);
+				expect(second.output).toContain('after');
+				expect(second.output).not.toContain('before');
+			} finally {
+				rmSync(absolutePath, { force: true });
+			}
+		});
+
+	  it('file:read — reads package.json successfully', async () => {
     const result = await executeTool('file:read', { path: 'package.json' }, PROJECT_ROOT);
 
     expect(result.success).toBe(true);

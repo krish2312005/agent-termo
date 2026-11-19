@@ -161,10 +161,6 @@ export function shouldRunDelegationsInParallel(toolCalls: ToolCall[]): boolean {
 	return toolCalls.length > 1 && toolCalls.every((toolCall) => toolCall.name === 'agent:delegate');
 }
 
-function toolOperationKey(toolCall: ToolCall): string {
-	return toolCall.name + ':' + JSON.stringify(toolCall.arguments);
-}
-
 class RequestCancelledError extends Error {
 	constructor() {
 		super('Request cancelled');
@@ -700,10 +696,10 @@ async function runToolLoop(
 	const ranCommands: string[] = [];
 
 	// Continue looping while the LLM keeps issuing tool calls
-	while (toolCalls.length > 0) {
-		// OpenAI-compatible APIs require the assistant tool-call message directly
-		// before the corresponding tool results. Without this message, the next
-		// request is rejected and file operations appear not to work.
+		while (toolCalls.length > 0) {
+			// OpenAI-compatible APIs require the assistant tool-call message directly
+			// before the corresponding tool results. Without this message, the next
+			// request is rejected and file operations appear not to work.
 		conversation.push({
 			id: crypto.randomUUID(),
 			role: 'assistant',
@@ -712,21 +708,20 @@ async function runToolLoop(
 			timestamp: new Date(),
 		});
 
-		onConversationChanged();
-				// Execute all delegation calls in parallel. Ordinary tools stay sequential
-				// because concurrent writes or terminal commands can race with each other.
-					const completedOperations = taskState.completedOperations ?? (taskState.completedOperations = new Set());
-					const allDelegations = shouldRunDelegationsInParallel(toolCalls) && !toolCalls.some((tc) => completedOperations.has(toolOperationKey(tc)));
-					const executions: Array<{ toolResult: { success: boolean; output?: string; error?: string }; applied: boolean; change?: ProposedFileChange }> = [];
-				if (allDelegations) {
-					executions.push(...await Promise.all(toolCalls.map((tc) => runDelegatedAgent(projectRoot, tc, nimClient, input, permissionMode, allowedCommands, taskState, getCheckpointId).then((toolResult) => ({ toolResult, applied: false })) )));
-				} else {
-					for (const tc of toolCalls) {
-						if (completedOperations.has(toolOperationKey(tc))) {
-							executions.push({ toolResult: { success: true, output: 'Already completed; skipped duplicate operation.' }, applied: false });
-							continue;
-						}
-						if (tc.name === 'plan:update') {
+			onConversationChanged();
+			// Execute all delegation calls in parallel. Ordinary tools stay sequential
+			// because concurrent writes or terminal commands can race with each other.
+			// Do not use completedOperations as an execution cache: a model is allowed
+			// to re-read a file or re-run a verification command after changing code.
+			// The conversation history is the source of truth for continuation; replay
+			// suppression here makes stale results look like current filesystem state.
+						const allDelegations = shouldRunDelegationsInParallel(toolCalls);
+						const executions: Array<{ toolResult: { success: boolean; output?: string; error?: string }; applied: boolean; change?: ProposedFileChange }> = [];
+					if (allDelegations) {
+						executions.push(...await Promise.all(toolCalls.map((tc) => runDelegatedAgent(projectRoot, tc, nimClient, input, permissionMode, allowedCommands, taskState, getCheckpointId).then((toolResult) => ({ toolResult, applied: false })) )));
+					} else {
+						for (const tc of toolCalls) {
+							if (tc.name === 'plan:update') {
 							let result: { success: boolean; output?: string; error?: string };
 							try {
 								if (!taskPlan) throw new Error('No execution plan is active.');
@@ -745,11 +740,10 @@ async function runToolLoop(
 				}
 
 				for (const [index, tc] of toolCalls.entries()) {
-					const execution = executions[index]!;
+						const execution = executions[index]!;
 
-					const toolResult = execution.toolResult;
-					if (toolResult.success && tc.name !== 'plan:update') completedOperations.add(toolOperationKey(tc));
-					if (execution.applied && execution.change) changedFiles.set(execution.change.path, execution.change.proposedContent);
+						const toolResult = execution.toolResult;
+						if (execution.applied && execution.change) changedFiles.set(execution.change.path, execution.change.proposedContent);
 					if (tc.name === 'bash:execute' && typeof tc.arguments.command === 'string') ranCommands.push(tc.arguments.command);
 				// Delegated runs bypass executeToolWithReview, so show their
 				// result explicitly instead of only feeding it to the model.
