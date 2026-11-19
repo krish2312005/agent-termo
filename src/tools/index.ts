@@ -112,7 +112,7 @@ export function setTerminalHooks(hooks: TerminalHooks): void {
 let activeBashChild: ChildProcess | null = null;
 
 /** Kill a shell and the commands it started (npm/node grandchildren on Windows). */
-function killProcessTree(child: ChildProcess): void {
+export function killProcessTree(child: ChildProcess): void {
 	if (process.platform === 'win32' && child.pid) {
 		try {
 			spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true });

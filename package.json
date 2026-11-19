@@ -3,9 +3,9 @@
   "version": "1.0.20",
   "description": "Terminal-based AI coding agent that replicates Claude Code experience",
   "type": "module",
-  "main": "dist/main.js",
+  "main": "dist/main-new.js",
   "bin": {
-    "agent-termo": "./dist/cli.js"
+    "agent-termo": "./dist/main-new.js"
   },
   "scripts": {
     "dev": "tsx watch src/cli.ts",
