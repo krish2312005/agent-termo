@@ -665,13 +665,15 @@ async function runDelegatedAgent(
 					changedFiles.set(execution.change.path, execution.change.proposedContent);
 					ranCommands.length = 0;
 				}
-				const nextSnapshot = snapshotWorkspaceFiles(projectRoot);
-				const workspaceChanges = collectWorkspaceChanges(workspaceSnapshot, nextSnapshot);
-				if (workspaceChanges.size > 0) {
-					for (const [path, content] of workspaceChanges) changedFiles.set(path, content);
-					ranCommands.length = 0;
+				if (tc.name === 'bash:execute' || tc.name.startsWith('mcp_')) {
+					const nextSnapshot = snapshotWorkspaceFiles(projectRoot);
+					const workspaceChanges = collectWorkspaceChanges(workspaceSnapshot, nextSnapshot);
+					if (workspaceChanges.size > 0) {
+						for (const [path, content] of workspaceChanges) changedFiles.set(path, content);
+						ranCommands.length = 0;
+					}
+					workspaceSnapshot = nextSnapshot;
 				}
-				workspaceSnapshot = nextSnapshot;
 				if (tc.name === 'bash:execute') {
 					const command = typeof tc.arguments.command === 'string' ? tc.arguments.command : '[invalid command arguments]';
 					ranCommands.push({ command, success: toolResult.success, exitCode: toolResult.exitCode ?? null, output: (toolResult.error ?? toolResult.output ?? '').slice(-4000), completedAt: Date.now() });
@@ -844,7 +846,7 @@ export async function runToolLoop(
 			// The conversation history is the source of truth for continuation; replay
 			// suppression here makes stale results look like current filesystem state.
 						const allDelegations = shouldRunDelegationsInParallel(toolCalls);
-		const executions: Array<{ toolResult: { success: boolean; output?: string; error?: string; name?: string }; applied: boolean; change?: ProposedFileChange }> = [];
+		const executions: Array<{ toolResult: Partial<ToolResult> & Pick<ToolResult, 'success'>; applied: boolean; change?: ProposedFileChange }> = [];
 		let repeatedFailure = false;
 		if (allDelegations) {
 			executions.push(...await Promise.all(toolCalls.map((tc) => {
@@ -900,13 +902,15 @@ export async function runToolLoop(
 			// Earlier checks are invalidated by every later accepted file change.
 			ranCommands.length = 0;
 		}
-		const nextSnapshot = snapshotWorkspaceFiles(projectRoot);
-		const workspaceChanges = collectWorkspaceChanges(runtime.workspaceSnapshot, nextSnapshot);
-		if (workspaceChanges.size > 0) {
-			for (const [path, content] of workspaceChanges) changedFiles.set(path, content);
-			ranCommands.length = 0;
+		if (tc.name === 'bash:execute' || tc.name.startsWith('mcp_') || tc.name === 'agent:delegate') {
+			const nextSnapshot = snapshotWorkspaceFiles(projectRoot);
+			const workspaceChanges = collectWorkspaceChanges(runtime.workspaceSnapshot, nextSnapshot);
+			if (workspaceChanges.size > 0) {
+				for (const [path, content] of workspaceChanges) changedFiles.set(path, content);
+				ranCommands.length = 0;
+			}
+			runtime.workspaceSnapshot = nextSnapshot;
 		}
-		runtime.workspaceSnapshot = nextSnapshot;
 		if (tc.name === 'bash:execute') {
 			const command = typeof tc.arguments.command === 'string' ? tc.arguments.command : '[invalid command arguments]';
 			ranCommands.push({ command, success: toolResult.success, exitCode: toolResult.exitCode ?? null, output: (toolResult.error ?? toolResult.output ?? '').slice(-4000), completedAt: Date.now() });
@@ -1016,7 +1020,10 @@ export async function runToolLoop(
 					toolCalls: fallback.toolCalls.length > 0 ? fallback.toolCalls : parseToolCallsFromText(fallback.content),
 				};
 				journal?.assistantCompleted(result.content, result.toolCalls);
-				} catch (err2) {
+										if (toolCalls.length === 0 && requiresImplementationEvidence(taskState.goal)) {
+							await runToolLoop(conversation, projectRoot, [], input, nimClient, permissionMode, allowedCommands, taskState, ensureTaskCheckpoint, persistSession, activePlan, activeAgentToolDefinitions, session.id);
+						}
+					} catch (err2) {
 					stopSpinner();
 					printError('NVIDIA NIM provider error: ' + providerError(err2));
 					// Keep everything done so far and let "continue" resume the task.
@@ -1133,17 +1140,24 @@ function compactConversation(conversation: ConversationMessage[]): string {
 	const prior = conversation.slice(1, -keep);
 	if (prior.length === 0) return 'Nothing to compact yet.';
 	const summary = prior
-		.filter((message) => message.role === 'user' || message.role === 'assistant')
-		.map((message) => `${message.role}: ${message.content.replace(/\s+/g, ' ').slice(0, 500)}`)
+		.map((message) => {
+			if (message.role === 'assistant' && message.toolCalls?.length) {
+				return `assistant tool calls: ${message.toolCalls.map((call) => call.name + ' ' + JSON.stringify(call.arguments).slice(0, 160)).join('; ')}`;
+			}
+			const role = message.role === 'tool' ? 'tool result' : message.role;
+			return `${role}: ${message.content.replace(/\s+/g, ' ').slice(0, 500)}`;
+		})
 		.join('\n');
 	const base = conversation[0];
 	if (base) {
 		base.content = base.content.replace(/\n\n## Compacted Conversation Context[\s\S]*$/, '') + '\n\n## Compacted Conversation Context\n' + summary.slice(0, 6000);
 	}
-	const recent = conversation.slice(-keep).filter((message) => message.role !== 'tool' && !message.toolCalls);
+	let recentStart = Math.max(1, conversation.length - keep);
+	if (conversation[recentStart]?.role === 'tool') recentStart = Math.max(1, recentStart - 1);
+	const recent = conversation.slice(recentStart);
 	conversation.splice(1);
 	conversation.push(...recent);
-	return `Compacted ${prior.length} earlier messages; preserved the latest ${recent.length} messages.`;
+	return `Compacted ${prior.length} earlier messages; preserved the latest ${recent.length} messages including tool results.`;
 }
 
 /**
@@ -2313,24 +2327,20 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					// any JSON tool calls the model may have emitted as plain text.
 						printInfo('NVIDIA NIM tool request failed: ' + providerError(err) + ' — retrying without tools.');
 						try {
-								const fallbackStream = new MarkdownPrinter(stopSpinner);
-					const fallback = await withEscapeCancellation(nimClient, () => completeWithRetry(nimClient, conversation, undefined, (chunk) => { fallbackStream.push(chunk); fallbackStream.flushPartial(); }));
-					fallbackStream.end();
-					if (!fallbackStream.printed) stopSpinner();
+								const fallback = await withEscapeCancellation(nimClient, () => completeWithRetry(nimClient, conversation, undefined));
+						stopSpinner();
 							setScreenStatus({ usage: nimClient.formatUsage() });
 						const toolCalls = dedup(
 							fallback.toolCalls.length > 0 ? fallback.toolCalls : parseToolCallsFromText(fallback.content),
 						);
 						if (toolCalls.length > 0) {
-							const narration = (fallback.content ?? '').trim().replace(/^null$/, '').trim();
-							if (narration && !fallbackStream.printed && !narration.includes('"tool_calls"')) printAssistantMessage(narration);
 							await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, permissionMode, allowedCommands, taskState, ensureTaskCheckpoint, persistSession, activePlan, activeAgentToolDefinitions, session.id);
 						} else {
 							const cleanText = (fallback.content ?? '').trim().replace(/^null$/, '').trim();
 							if (cleanText) {
 								conversation.push({ id: crypto.randomUUID(), role: 'assistant', content: cleanText, timestamp: new Date() });
 								persistSession();
-								if (!fallbackStream.printed) printAssistantMessage(cleanText);
+								if (!requiresImplementationEvidence(taskState.goal)) printAssistantMessage(cleanText);
 							}
 							}
 					} catch (err2) {
