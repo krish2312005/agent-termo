@@ -249,7 +249,7 @@ function isContinueRequest(input: string): boolean {
 }
 
 function splitCommandArgs(value: string): string[] {
-	return (value.match(/"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|\\S+/g) ?? [])
+	return (value.match(/"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|\S+/g) ?? [])
 		.map((part) => part.replace(/^['"]|['"]$/g, ''));
 }
 
