@@ -950,7 +950,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 	});
 	let customCommands: AgentCommand[] = loadAgentCommands(projectRoot);
 	const refreshCommandCompletion = (): void => {
-		setCommands([...COMMANDS, { name: '/mcp', description: 'list MCP servers and available tools' }, ...customCommands.filter((command) => !['skill', 'sessions', 'resume', 'fork', 'plan'].includes(command.name.toLowerCase())).map((command) => ({ name: '/' + command.name, description: command.description || 'project command' }))]);
+		setCommands([...COMMANDS, { name: '/mcp', description: 'list MCP servers and available tools' }, ...customCommands.filter((command) => !['skill', 'sessions', 'resume', 'fork', 'plan', 'checkpoint', 'checkpoints', 'undo', 'redo'].includes(command.name.toLowerCase())).map((command) => ({ name: '/' + command.name, description: command.description || 'project command' }))]);
 	};
 	refreshCommandCompletion();
 	let activeAgentName = '';

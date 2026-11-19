@@ -218,6 +218,7 @@ function restoreState(projectRoot: string, relativePath: string, state: FileStat
   const temporary = target + '.' + randomUUID() + '.tmp';
   try {
     writeFileSync(temporary, state.content, { encoding: 'utf-8', mode: state.mode ?? 0o644 });
+    chmodSync(temporary, state.mode ?? 0o644);
     renameSync(temporary, target);
   } catch (error) {
     try { unlinkSync(temporary); } catch { /* Temporary file may not exist. */ }

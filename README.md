@@ -418,13 +418,6 @@ Use /help inside Agent-Termo to display the available commands.
 | /undo [id] | Preview and restore the latest or selected checkpoint. |
 | /redo | Preview and reapply the most recently undone checkpoint. |
 
-### Checkpoints and Rollback
-
-Agent-Termo creates an automatic checkpoint before applying the first file change in a task. Checkpoints preserve the original and resulting contents of files changed through Agent-Termo's file-write, file-edit, and file-delete tools. Manual checkpoints keep collecting those file changes until they are undone. Snapshot data is stored privately in `.agent-termo/checkpoints/`.
-
-Undo and redo first verify that every affected file still matches the expected contents and file mode. If a file was edited independently, the operation stops rather than overwriting that work.
-
-**Scope limitation:** shell commands, scripts, MCP tools, external applications, and other processes that modify files are not captured by this first version. Use Git commits for those changes; an Agent-Termo checkpoint is not a full-project or Git-history backup.
 | /memory | Display shared project memory. |
 | /timeline | Display the shared project timeline. |
 | /model | Open the model picker or switch to a specified model. |
@@ -446,6 +439,14 @@ Undo and redo first verify that every affected file still matches the expected c
 | /history [count] | Display recent conversation messages. |
 | /subagents | Show delegated sub-agent activity. |
 | /exit | Exit Agent-Termo. |
+
+### Checkpoints and Rollback
+
+Agent-Termo creates an automatic checkpoint before applying the first file change in a task. Checkpoints preserve the original and resulting contents of files changed through Agent-Termo's file-write, file-edit, and file-delete tools. Manual checkpoints keep collecting those file changes until they are undone. Snapshot data is stored privately in `.agent-termo/checkpoints/`.
+
+Undo and redo first verify that every affected file still matches the expected contents and file mode. If a file was edited independently, the operation stops rather than overwriting that work.
+
+**Scope limitation:** shell commands, scripts, MCP tools, external applications, and other processes that modify files are not captured by this first version. Use Git commits for those changes; an Agent-Termo checkpoint is not a full-project or Git-history backup.
 
 The input completion system also discovers project-defined slash commands from .agent-termo/commands/.
 
