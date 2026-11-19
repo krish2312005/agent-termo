@@ -1,0 +1,52 @@
+import { describe, expect, it } from 'vitest';
+import { parseTaskPlan, updatePlanStep } from '../../src/runtime/plans.js';
+
+const validPlan = JSON.stringify({
+  title: 'Add feature',
+  summary: 'Implement and validate the feature.',
+  risks: ['Existing callers may rely on the old behavior.'],
+  steps: [
+    { title: 'Inspect', description: 'Review the relevant implementation.', affectedFiles: ['src/main.ts'], risks: [], dependsOn: [] },
+    { title: 'Implement', description: 'Make the smallest required changes.', affectedFiles: ['src/main.ts'], risks: ['Regression risk'], dependsOn: [1] },
+  ],
+});
+
+describe('execution plans', () => {
+  it('parses a draft with ordered steps and affected files', () => {
+    const plan = parseTaskPlan(validPlan, 'Add the feature');
+    expect(plan.status).toBe('draft');
+    expect(plan.request).toBe('Add the feature');
+    expect(plan.steps.map((step) => step.number)).toEqual([1, 2]);
+    expect(plan.steps[1]?.dependsOn).toEqual([1]);
+    expect(plan.steps[0]?.affectedFiles).toEqual(['src/main.ts']);
+  });
+
+  it('rejects invalid or forward dependencies', () => {
+    const invalid = JSON.stringify({
+      title: 'Bad plan',
+      summary: 'Invalid dependency',
+      steps: [
+        { title: 'First', description: 'First step', dependsOn: [2] },
+        { title: 'Second', description: 'Second step', dependsOn: [] },
+      ],
+    });
+    expect(() => parseTaskPlan(invalid, 'Do work')).toThrow(/incomplete plan/i);
+  });
+
+  it('requires approval, respects dependencies, and tracks verified progress', () => {
+    const plan = parseTaskPlan(validPlan, 'Add the feature');
+    expect(() => updatePlanStep(plan, 1, 'in_progress')).toThrow(/approved plan/i);
+    plan.status = 'in_progress';
+    expect(() => updatePlanStep(plan, 2, 'in_progress')).toThrow(/Complete step 1/);
+    const ordered = parseTaskPlan(validPlan, 'Add the feature');
+    ordered.status = 'in_progress';
+    ordered.steps[1]!.dependsOn = [];
+    expect(() => updatePlanStep(ordered, 2, 'in_progress')).toThrow(/Complete step 1/);
+    expect(updatePlanStep(plan, 1, 'in_progress')).toContain('marked in_progress');
+    expect(updatePlanStep(plan, 1, 'completed', 'Typecheck passed')).toContain('marked completed');
+    expect(updatePlanStep(plan, 2, 'in_progress')).toContain('marked in_progress');
+    expect(updatePlanStep(plan, 2, 'completed', 'Tests passed')).toContain('marked completed');
+    expect(updatePlanStep(plan, 2, 'completed')).toContain('already complete');
+    expect(plan.steps.every((step) => step.status === 'completed')).toBe(true);
+  });
+});

@@ -49,6 +49,7 @@ export const COMMANDS: CommandInfo[] = [
 	{ name: '/sessions', description: 'browse saved conversations' },
 	{ name: '/resume', description: 'restore a saved conversation' },
 	{ name: '/fork', description: 'branch a conversation from a saved session' },
+	{ name: '/plan', description: 'create, approve, and track an execution plan' },
 	{ name: '/memory', description: 'view project memory (docs/MEMORY.md)' },
 	{ name: '/timeline', description: 'view project timeline (docs/TIMELINE.md)' },
 		{ name: '/model', description: 'switch NVIDIA NIM model (or /model <id>)' },
@@ -133,6 +134,7 @@ export class MarkdownPrinter {
 	private inCode = false;
 	private first = true;
 	private lastBlank = false;
+	private partialLine = false;
 
 	/** `beforeFirstOutput` runs once, just before the first line is printed (stop the spinner there). */
 	constructor(private readonly beforeFirstOutput?: () => void) {}
@@ -150,7 +152,23 @@ export class MarkdownPrinter {
 
 	end(): void {
 		if (this.pending) this.emit(this.pending.replace(/\r$/, ''));
+		else if (this.partialLine) out.write('\n');
 		this.pending = '';
+		this.partialLine = false;
+	}
+
+	/** Render the current line immediately, even when the model has not emitted a newline yet. */
+	flushPartial(): void {
+		if (!this.pending) return;
+		if (this.first) {
+			this.beforeFirstOutput?.();
+			out.write('\n');
+		}
+		const prefix = this.first ? c.magenta('● ') : this.partialLine ? '' : '  ';
+		this.first = false;
+		out.write(prefix + this.render(this.pending));
+		this.pending = '';
+		this.partialLine = true;
 	}
 
 	get printed(): boolean {
@@ -166,10 +184,11 @@ export class MarkdownPrinter {
 			this.beforeFirstOutput?.();
 			out.write('\n');
 		}
-		const prefix = this.first ? c.magenta('● ') : '  ';
+		const prefix = this.first ? c.magenta('● ') : this.partialLine ? '' : '  ';
 		this.first = false;
 		// Blank prose lines stay empty (no trailing indent); code keeps its gutter.
 		out.write(blank && !this.inCode ? '\n' : prefix + this.render(line) + '\n');
+		this.partialLine = false;
 	}
 
 	private render(line: string): string {

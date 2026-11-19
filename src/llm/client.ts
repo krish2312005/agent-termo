@@ -25,6 +25,7 @@ const TOOL_NAME_ALIASES: Record<string, string> = {
 	'git:push': 'git_push',
 	'git:log': 'git_log',
 	'agent:delegate': 'agent_delegate',
+	'plan:update': 'plan_update',
 };
 
 /** Names other models commonly use for the same actions. */
@@ -62,6 +63,7 @@ const EXTRA_TOOL_ALIASES: Record<string, string> = {
 	spawn_agent: 'agent:delegate',
 	spawn_subagent: 'agent:delegate',
 	delegate_task: 'agent:delegate',
+	plan_update: 'plan:update',
 	run_agent: 'agent:delegate',
 	invoke_agent: 'agent:delegate',
 	call_agent: 'agent:delegate',
@@ -175,6 +177,41 @@ export function parseToolCallsFromText(text: string): ToolCall[] {
 	return calls;
 }
 
+
+export interface StreamedToolCallDelta {
+  index?: number;
+  id?: string | null;
+  function?: { name?: string | null; arguments?: string | null };
+}
+
+/** Accumulates provider tool-call fragments without assuming chunk boundaries. */
+export class ToolCallStreamAccumulator {
+  private readonly calls = new Map<number, { id?: string; name: string; arguments: string }>();
+
+  add(delta: StreamedToolCallDelta): void {
+    const index = Number.isInteger(delta.index) ? delta.index! : 0;
+    const current = this.calls.get(index) ?? { name: '', arguments: '' };
+    if (delta.id) current.id = delta.id;
+    current.name += delta.function?.name ?? '';
+    current.arguments += delta.function?.arguments ?? '';
+    this.calls.set(index, current);
+  }
+
+  toToolCalls(): ToolCall[] {
+    return [...this.calls.entries()].sort(([a], [b]) => a - b).flatMap(([, call]) => {
+      if (!call.name) return [];
+      let args: Record<string, unknown> = {};
+      try {
+        const parsed = JSON.parse(call.arguments || '{}') as unknown;
+        args = parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : { _raw: call.arguments };
+      } catch {
+        args = { _raw: call.arguments };
+      }
+      return [{ id: call.id ?? crypto.randomUUID(), name: fromWireToolName(call.name), arguments: args }];
+    });
+  }
+}
+
 export class NimClient {
 	private client: OpenAI;
 	private model: string;
@@ -286,109 +323,126 @@ export class NimClient {
    * Handles Stepfun's quirks: filters "null" reasoning chunks, strips reasoning field.
    * Yields { content, toolCalls } at the end with clean text.
    */
+	/**
+	 * Stream assistant text while assembling native tool-call deltas. Tool-call
+	 * arguments are parsed only after the provider finishes the complete call.
+	 */
 	async *streamComplete(
 		messages: ConversationMessage[],
 		tools?: NIMTool[],
 		onChunk?: (text: string) => void,
+		onToolCallDelta?: (delta: { index: number; name: string; arguments: string; validJson: boolean }) => void,
 	): AsyncGenerator<{ content: string; toolCalls: ToolCall[] }, void, unknown> {
-			const rawChunks: string[] = [];
-			const toolCallMap: Map<number, { id: string; name: string; arguments: string }> = new Map();
 		const controller = new AbortController();
 		this.activeController = controller;
+		try {
+			const stream = await this.client.chat.completions.create({
+				model: this.model,
+				messages: messages.map((message) => {
+					if (message.role === 'tool') {
+						return { role: 'tool' as const, content: message.content, tool_call_id: message.id };
+					}
+					if (message.role === 'assistant' && message.toolCalls?.length) {
+						return {
+							role: 'assistant' as const,
+							content: message.content || null,
+							tool_calls: message.toolCalls.map((call) => ({
+								id: call.id,
+								type: 'function' as const,
+								function: { name: toWireToolName(call.name), arguments: JSON.stringify(call.arguments) },
+							})),
+						};
+					}
+					return { role: message.role as 'system' | 'user' | 'assistant', content: this.messageContent(message) };
+				}),
+				tools,
+				temperature: 0.3,
+				max_tokens: 8192,
+				stream: true,
+			}, { signal: controller.signal });
 
-		const stream = await this.client.chat.completions.create({
-      model: this.model,
-		messages: messages.map((m) => {
-				if (m.role === 'tool') {
-					return {
-						role: 'tool' as const,
-						content: m.content,
-					tool_call_id: m.id,
-				};
+			const rawChunks: string[] = [];
+			const toolCalls = new ToolCallStreamAccumulator();
+			const toolCallSnapshots = new Map<number, { name: string; arguments: string }>();
+			const startTag = '<tool_call>';
+			const endTag = '</tool_call>';
+			let pendingText = '';
+			let insideMarkupCall = false;
+
+			const emitVisible = (text: string): void => {
+				if (text && text !== 'null' && text !== 'undefined') onChunk?.(text);
+			};
+			const emitTextChunk = (text: string): void => {
+				let pending = pendingText + text;
+				pendingText = '';
+				while (pending.length > 0) {
+					if (insideMarkupCall) {
+						const end = pending.indexOf(endTag);
+						if (end < 0) {
+							pendingText = pending.slice(-Math.max(0, endTag.length - 1));
+							return;
+						}
+						pending = pending.slice(end + endTag.length);
+						insideMarkupCall = false;
+						continue;
+					}
+					const start = pending.indexOf(startTag);
+					if (start >= 0) {
+						emitVisible(pending.slice(0, start));
+						pending = pending.slice(start + startTag.length);
+						insideMarkupCall = true;
+						continue;
+					}
+					const held = Math.min(startTag.length - 1, pending.length);
+					if (pending.length > held) emitVisible(pending.slice(0, pending.length - held));
+					pendingText = pending.slice(pending.length - held);
+					return;
+				}
+			};
+
+			for await (const chunk of stream) {
+				const delta = chunk.choices[0]?.delta;
+				if (!delta) continue;
+				const rawContent = delta.content ?? '';
+				if (rawContent) {
+					rawChunks.push(rawContent);
+					emitTextChunk(rawContent);
+				}
+				if (delta.tool_calls) {
+					for (const toolCall of delta.tool_calls) {
+						const index = toolCall.index ?? 0;
+						toolCalls.add(toolCall);
+						const current = toolCallSnapshots.get(index) ?? { name: '', arguments: '' };
+						current.name += toolCall.function?.name ?? '';
+						current.arguments += toolCall.function?.arguments ?? '';
+						toolCallSnapshots.set(index, current);
+						let validJson = false;
+						try {
+							JSON.parse(current.arguments);
+							validJson = current.arguments.length > 0;
+						} catch { /* the arguments are still arriving */ }
+						onToolCallDelta?.({ index, ...current, validJson });
+					}
+				}
 			}
-			if (m.role === 'assistant' && m.toolCalls?.length) {
-				return {
-					role: 'assistant' as const,
-					content: m.content || null,
-					tool_calls: m.toolCalls.map((tc) => ({
-						id: tc.id,
-						type: 'function' as const,
-						function: { name: toWireToolName(tc.name), arguments: JSON.stringify(tc.arguments) },
-					})),
-				};
+
+			if (!insideMarkupCall) emitVisible(pendingText);
+			const content = rawChunks.join('');
+			this.recordUsage(this.estimatePromptTokens(messages), Math.ceil(content.length / 4));
+			const parsedToolCalls = toolCalls.toToolCalls();
+			let visibleContent = content;
+			if (parsedToolCalls.length === 0) {
+				const textCalls = parseToolCallsFromText(content);
+				if (textCalls.length > 0) {
+					parsedToolCalls.push(...textCalls);
+					visibleContent = content.includes('<tool_call>') ? removeToolCallMarkup(content) : '';
+				}
 			}
-				return {
-	          role: m.role as 'system' | 'user' | 'assistant',
-	          content: this.messageContent(m),
-	        };
-      }),
-      tools: tools,
-      temperature: 0.3,
-			max_tokens: 8192,
-			stream: true,
-		}, { signal: controller.signal });
-
-	    for await (const chunk of stream) {
-	      const delta = chunk.choices[0]?.delta;
-
-	      if (!delta) continue;
-      // Text delta — filter out "null" chunks (Stepfun's reasoning output)
-      const rawContent = delta.content ?? '';
-      // Check: if it's the literal string "null", it's reasoning noise — skip it
-      const isNoise = rawContent === 'null' || rawContent === 'undefined';
-      if (!isNoise && rawContent) {
-        rawChunks.push(rawContent);
-        onChunk?.(rawContent);
-      }
-
-      // Tool call deltas (accumulate across chunks via index)
-      if (delta.tool_calls) {
-        for (const tc of delta.tool_calls) {
-          const idx = tc.index ?? 0;
-          const prev = toolCallMap.get(idx);
-          const nameChunk = tc.function?.name ?? '';
-          if (!prev) {
-            toolCallMap.set(idx, {
-              id: tc.id ?? crypto.randomUUID(),
-              name: nameChunk,
-              arguments: tc.function?.arguments ?? '',
-            });
-          } else {
-            prev.arguments += tc.function?.arguments ?? '';
-            if (nameChunk && !prev.name.endsWith(nameChunk)) prev.name += nameChunk;
-          }
-        }
-      }
-    }
-
-    // For streaming: content is accumulated in rawChunks (null chunks already filtered)
-    // For non-streaming (complete() method): reasoning stripping happens in that method
-	    const finalContent = rawChunks.join('');
-		this.recordUsage(this.estimatePromptTokens(messages), Math.ceil(finalContent.length / 4));
-
-    // Extract tool calls
-    const toolCalls: ToolCall[] = Array.from(toolCallMap.values()).map((tc) => {
-      let args: Record<string, unknown> = {};
-      try {
-        const parsed = JSON.parse(tc.arguments) as unknown;
-        args = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : { _raw: tc.arguments };
-      } catch {
-        args = { _raw: tc.arguments };
-      }
-			return { id: tc.id, name: fromWireToolName(tc.name), arguments: args };
-    });
-
-		let visibleContent = finalContent;
-		if (toolCalls.length === 0) {
-			const parsedCalls = parseToolCallsFromText(finalContent);
-			if (parsedCalls.length > 0) {
-				toolCalls.push(...parsedCalls);
-				visibleContent = finalContent.includes('<tool_call>') ? removeToolCallMarkup(finalContent) : '';
-			}
+			yield { content: visibleContent, toolCalls: parsedToolCalls };
+		} finally {
+			if (this.activeController === controller) this.activeController = null;
 		}
-		if (this.activeController === controller) this.activeController = null;
-		yield { content: visibleContent, toolCalls };
-  }
+	}
 
   /**
    * Non-streaming completion — for when streaming fails or for retries.

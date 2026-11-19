@@ -9,6 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { ConversationMessage } from '../types/index.js';
+import { normalizeTaskPlan, type TaskPlan } from './plans.js';
 import { agentTermoSessionsDir } from './paths.js';
 
 export interface SessionTaskState {
@@ -32,6 +33,7 @@ export interface StoredSession {
   model?: string;
   thinkingCapacity?: string;
   taskState?: SessionTaskState;
+  taskPlan?: TaskPlan;
 }
 
 export interface SessionSummary {
@@ -130,6 +132,7 @@ function parseSession(projectRoot: string, input: string): StoredSession | undef
       model: typeof value.model === 'string' ? value.model : undefined,
       thinkingCapacity: typeof value.thinkingCapacity === 'string' ? value.thinkingCapacity : undefined,
       taskState,
+      taskPlan: normalizeTaskPlan(value.taskPlan),
     };
   } catch {
     return undefined;

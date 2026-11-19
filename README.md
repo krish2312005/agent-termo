@@ -76,6 +76,7 @@ Agent-Termo is designed around a reviewable workflow: file changes can be previe
 | **Custom Slash Commands** | Save reusable project workflows as Markdown commands. |
 | **Project Memory** | Maintain shared project context and a chronological project timeline. |
 | **Task Continuity** | Resume an interrupted task with its conversation and tool history. |
+| **Plan Mode** | Analyze a task, inspect likely affected files, review risks and ordered steps, then approve execution and track progress. |
 | **Context Mentions** | Attach discovered project files and activate agents with @ mentions. |
 | **Conversation Tools** | Inspect message history and compact older conversation context. |
 
@@ -407,6 +408,10 @@ Use /help inside Agent-Termo to display the available commands.
 | /sessions | List saved conversations for the current project. |
 | /resume [id] | Choose or reopen a saved conversation by ID. |
 | /fork [id] | Fork the current or a saved conversation into a new session. |
+| /plan <task> | Analyze a task and create an execution plan without changing files. |
+| /plan | Display the current plan and step progress. |
+| /plan approve | Approve the draft plan and start execution. |
+| /plan cancel | Cancel the current draft or execution plan. |
 | /memory | Display shared project memory. |
 | /timeline | Display the shared project timeline. |
 | /model | Open the model picker or switch to a specified model. |
