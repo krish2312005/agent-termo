@@ -1,13 +1,12 @@
 // =============================================================================
 // Local conversation sessions
 //
-// Each session is a private JSON snapshot under .agent-termo/sessions/. The
-// complete message array is stored so native tool calls and their results can
-// be restored exactly after a process restart.
+// Complete conversation snapshots are stored privately under
+// .agent-termo/sessions so tool calls and results survive process restarts.
 // =============================================================================
 
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { ConversationMessage } from '../types/index.js';
 import { agentTermoSessionsDir } from './paths.js';
@@ -53,8 +52,7 @@ function sessionPath(projectRoot: string, id: string): string {
 
 function sessionTitle(messages: ConversationMessage[]): string {
   const firstRequest = messages.find((message) => message.role === 'user')?.content?.trim();
-  if (!firstRequest) return 'New session';
-  return firstRequest.replace(/\s+/g, ' ').slice(0, 80);
+  return firstRequest ? firstRequest.replace(/\\s+/g, ' ').slice(0, 80) : 'New session';
 }
 
 function repairPendingToolCalls(messages: ConversationMessage[]): ConversationMessage[] {
@@ -64,19 +62,17 @@ function repairPendingToolCalls(messages: ConversationMessage[]): ConversationMe
     repaired.push(message);
     if (message.role !== 'assistant' || !message.toolCalls?.length) continue;
 
-    const savedResults = new Set<string>();
+    const savedResults = new Map<string, ConversationMessage>();
     let next = index + 1;
     while (next < messages.length && messages[next]?.role === 'tool') {
-      savedResults.add(messages[next]!.id);
-      repaired.push(messages[next]!);
+      savedResults.set(messages[next]!.id, messages[next]!);
       next++;
     }
     for (const call of message.toolCalls) {
-      if (savedResults.has(call.id)) continue;
-      repaired.push({
+      repaired.push(savedResults.get(call.id) ?? {
         id: call.id,
         role: 'tool',
-        content: 'No tool result was saved before the session stopped. Verify the action\'s current state before attempting it again.',
+        content: 'No tool result was saved before the session stopped. Verify the action current state before attempting it again.',
         timestamp: new Date(),
       });
     }
@@ -98,18 +94,17 @@ function parseSession(projectRoot: string, input: string): StoredSession | undef
     ) return undefined;
 
     const messages = value.messages
-      .filter((message): message is Record<string, unknown> =>
-        Boolean(message) &&
-        typeof message === 'object' &&
-        ['system', 'user', 'assistant', 'tool'].includes(String((message as Record<string, unknown>).role)) &&
-        typeof (message as Record<string, unknown>).content === 'string',
+      .filter((item): item is Record<string, unknown> =>
+        Boolean(item) &&
+        typeof item === 'object' &&
+        typeof (item as Record<string, unknown>).id === 'string' &&
+        ['system', 'user', 'assistant', 'tool'].includes(String((item as Record<string, unknown>).role)) &&
+        typeof (item as Record<string, unknown>).content === 'string',
       )
-      .map((message) => ({
-        ...message,
-        timestamp: new Date(typeof message.timestamp === 'string' || typeof message.timestamp === 'number'
-          ? message.timestamp
-          : Date.now()),
-      })) as unknown as ConversationMessage[];
+      .map((item) => {
+        const time = new Date(item.timestamp as string | number);
+        return { ...item, timestamp: Number.isNaN(time.getTime()) ? new Date() : time };
+      }) as unknown as ConversationMessage[];
 
     const savedTask = value.taskState as Partial<SessionTaskState> | undefined;
     const taskState: SessionTaskState | undefined = savedTask && typeof savedTask === 'object'
@@ -122,7 +117,7 @@ function parseSession(projectRoot: string, input: string): StoredSession | undef
         }
       : undefined;
 
-    const session: StoredSession = {
+    return {
       id: value.id,
       projectRoot: resolve(projectRoot),
       title: typeof value.title === 'string' ? value.title : 'New session',
@@ -136,7 +131,6 @@ function parseSession(projectRoot: string, input: string): StoredSession | undef
       thinkingCapacity: typeof value.thinkingCapacity === 'string' ? value.thinkingCapacity : undefined,
       taskState,
     };
-    return session;
   } catch {
     return undefined;
   }
@@ -166,41 +160,14 @@ export function saveSession(projectRoot: string, session: StoredSession): Stored
   };
   const temporaryPath = path + '.' + process.pid + '.tmp';
   try {
-    writeFileSync(temporaryPath, JSON.stringify(next, null, 2) + '\n', { encoding: 'utf-8', mode: 0o600 });
+    writeFileSync(temporaryPath, JSON.stringify(next, null, 2) + '\\n', { encoding: 'utf-8', mode: 0o600 });
     renameSync(temporaryPath, path);
   } catch (error) {
-    try {
-      if (existsSync(temporaryPath)) {
-        const { unlinkSync } = awaitImportFsFallback();
-        unlinkSync(temporaryPath);
-      }
-    } catch {
-      // Preserve the original persistence error.
-    }
+    try { unlinkSync(temporaryPath); } catch { /* Temporary file may not exist. */ }
     throw error;
   }
   return next;
 }
-
-function awaitImportFsFallback(): { unlinkSync: (path: string) => void } {
-  // Kept as a small static wrapper so cleanup remains synchronous on Node 20.
-  return { unlinkSync: (path) => {
-    try {
-      const { unlinkSync } = requireFs();
-      unlinkSync(path);
-    } catch {
-      // A stale temporary file is harmless and ignored by the session loader.
-    }
-  } };
-}
-
-function requireFs(): typeof import('node:fs') {
-  // createRequire is unnecessary here; this helper is replaced by a direct
-  // unlinkSync import in the module's normal build.
-  return fsModule;
-}
-
-import * as fsModule from 'node:fs';
 
 export function loadSession(projectRoot: string, id: string): StoredSession | undefined {
   try {
@@ -232,6 +199,11 @@ export function listSessions(projectRoot: string): SessionSummary[] {
   return sessions.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
+export function loadLatestSession(projectRoot: string): StoredSession | undefined {
+  const latest = listSessions(projectRoot)[0];
+  return latest ? loadSession(projectRoot, latest.id) : undefined;
+}
+
 export function forkSession(projectRoot: string, source: StoredSession): StoredSession {
   const clone = JSON.parse(JSON.stringify(source)) as StoredSession;
   const now = new Date().toISOString();
@@ -243,10 +215,7 @@ export function forkSession(projectRoot: string, source: StoredSession): StoredS
     createdAt: now,
     updatedAt: now,
     parentId: source.id,
-    messages: clone.messages.map((message) => ({
-      ...message,
-      timestamp: new Date(message.timestamp),
-    })),
+    messages: clone.messages.map((message) => ({ ...message, timestamp: new Date(message.timestamp) })),
   };
   return saveSession(projectRoot, forked);
 }
