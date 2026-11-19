@@ -29,6 +29,12 @@ export interface ToolResult {
 	success: boolean;
 	output?: string;
 	error?: string;
+	/** Structured execution details used by terminal tools and model serialization. */
+	command?: string;
+	cwd?: string;
+	stdout?: string;
+	stderr?: string;
+	exitCode?: number | null;
 	durationMs: number;
 }
 

@@ -156,8 +156,17 @@ export async function executeTool(
 				return { id, name, success: false, error: 'Invalid JSON tool arguments', durationMs: Date.now() - start };
 			}
 		}
-		const toolArgs = rawArgs && typeof rawArgs === 'object' ? normalizeToolArgs(rawArgs as Record<string, unknown>) : {};
-		const fn = TOOL_MAP[fromWireToolName(name)];
+			const toolArgs = rawArgs && typeof rawArgs === 'object' ? normalizeToolArgs(rawArgs as Record<string, unknown>) : {};
+			if (Object.prototype.hasOwnProperty.call(toolArgs, '_raw')) {
+				return {
+					id,
+					name,
+					success: false,
+					error: 'Invalid JSON tool arguments. Read the tool schema and send arguments as a JSON object. Raw payload: ' + String(toolArgs._raw).slice(0, 500),
+					durationMs: Date.now() - start,
+				};
+			}
+			const fn = TOOL_MAP[fromWireToolName(name)];
 		if (!fn) {
 			return { id, name, success: false, error: 'Unknown tool: ' + name, durationMs: Date.now() - start };
 		}
@@ -541,7 +550,10 @@ const DANGEROUS_PATTERNS = [
 ];
 
 async function toolBash(args: Record<string, unknown>, projectRoot: string): Promise<ToolResult> {
-	const command = String(args.command ?? '');
+	if (typeof args.command !== 'string' || !args.command.trim()) {
+		return { id: '', name: 'bash:execute', success: false, error: 'command must be a non-empty string. Do not pass an object or shell syntax in another field.', durationMs: 0 };
+	}
+	const command = args.command;
 	const cwd = args.cwd ? String(args.cwd) : projectRoot;
 	const fullCwd = toProjectPath(cwd, projectRoot);
 	// The schema (and BASH_TIMEOUT) are milliseconds.
@@ -564,26 +576,38 @@ async function toolBash(args: Record<string, unknown>, projectRoot: string): Pro
 
 	// Stream the command live (like Claude Code / opencode): output is piped
 	// to the terminal panel hooks while it runs, and captured for the model.
-	return await new Promise<ToolResult>((resolve) => {
-		let settled = false;
-		let output = '';
-		let timer: ReturnType<typeof setTimeout> | null = null;
-		const finish = (success: boolean, exitCode: number | null, error?: string): void => {
-			if (settled) return;
-			settled = true;
-			if (timer) clearTimeout(timer);
-			terminalHooks.onEnd?.(exitCode);
-			resolve(
-				success
-					? { id: '', name: 'bash:execute', success: true, output: output || '(no output)', durationMs: 0 }
-					: {
-						id: '',
-						name: 'bash:execute',
-						success: false,
-						error: (output ? output.slice(0, 500) + '\n' : '') + (error ?? `Command failed with exit code ${exitCode ?? 'unknown'}`),
-						durationMs: 0,
-					},
-			);
+		return await new Promise<ToolResult>((resolve) => {
+			let settled = false;
+			let stdout = '';
+			let stderr = '';
+			let timer: ReturnType<typeof setTimeout> | null = null;
+			const finish = (success: boolean, exitCode: number | null, error?: string): void => {
+				if (settled) return;
+				settled = true;
+				if (timer) clearTimeout(timer);
+				terminalHooks.onEnd?.(exitCode);
+				const combinedOutput = [stdout, stderr].filter(Boolean).join('');
+				const metadata = { command, cwd: fullCwd, stdout, stderr, exitCode };
+				resolve(
+					success
+						? { id: '', name: 'bash:execute', success: true, output: combinedOutput || '(no output)', ...metadata, durationMs: 0 }
+						: {
+							id: '',
+							name: 'bash:execute',
+							success: false,
+							output: combinedOutput || undefined,
+							error: [
+								`Command failed: ${command}`,
+								`Working directory: ${fullCwd}`,
+								`Exit code: ${exitCode ?? 'unknown'}`,
+								error ?? 'The command did not complete successfully.',
+								stdout ? `stdout:\n${stdout}` : '',
+								stderr ? `stderr:\n${stderr}` : '',
+							].join('\n'),
+							...metadata,
+							durationMs: 0,
+						},
+				);
 		};
 
 		terminalHooks.onStart?.(command);
@@ -600,16 +624,17 @@ async function toolBash(args: Record<string, unknown>, projectRoot: string): Pro
 		child.on('close', releaseChild);
 		child.on('error', releaseChild);
 
-		const capture = (chunk: Buffer | string): void => {
-			const text = chunk.toString();
-			// Keep the tail: build errors are usually at the end of the output.
-			output = (output + text).slice(-MAX_BASH_OUTPUT);
-			terminalHooks.onOutput?.(text);
-		};
-		child.stdout?.setEncoding('utf8');
-		child.stderr?.setEncoding('utf8');
-		child.stdout?.on('data', capture);
-		child.stderr?.on('data', capture);
+			const capture = (stream: 'stdout' | 'stderr') => (chunk: Buffer | string): void => {
+				const text = chunk.toString();
+				// Keep the tail: build errors are usually at the end of the output.
+				if (stream === 'stdout') stdout = (stdout + text).slice(-MAX_BASH_OUTPUT);
+				else stderr = (stderr + text).slice(-MAX_BASH_OUTPUT);
+				terminalHooks.onOutput?.(text);
+			};
+			child.stdout?.setEncoding('utf8');
+			child.stderr?.setEncoding('utf8');
+			child.stdout?.on('data', capture('stdout'));
+			child.stderr?.on('data', capture('stderr'));
 		child.on('error', (err) => finish(false, null, err.message));
 		child.on('close', (code) => finish(code === 0, code));
 

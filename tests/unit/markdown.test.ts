@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { MarkdownPrinter } from '../../src/ui/index.js';
+import { MarkdownPrinter, printToolResult } from '../../src/ui/index.js';
 
 // eslint-disable-next-line no-control-regex
 const stripAnsi = (s: string): string => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
@@ -58,6 +58,36 @@ describe('MarkdownPrinter', () => {
 
     expect(lines).toEqual(['● ┌─ ts', '  │ const a = **1**;', '  └─']);
   });
+
+	it('does not repeat the code gutter when a code line arrives in streamed fragments', () => {
+		const lines = capture(() => {
+			const md = new MarkdownPrinter();
+			md.push('```html\n');
+			md.flushPartial();
+			for (const chunk of ['<script type="', 'module" src="/js/', 'main.js"></script>']) {
+				md.push(chunk);
+				md.flushPartial();
+			}
+			md.push('\n```\n');
+			md.end();
+		}).filter(Boolean);
+
+		expect(lines).toEqual([
+			'● ┌─ html',
+			'  │ <script type="module" src="/js/main.js"></script>',
+			'  └─',
+		]);
+	});
+
+	it('prints terminal command output in the chat transcript', () => {
+		const lines = capture(() => {
+			printToolResult('bash:execute', { success: true, output: 'first line\nsecond line' });
+		}).filter(Boolean);
+
+		expect(lines).toContain('  ⎿  ✓ terminal output');
+		expect(lines).toContain('     first line');
+		expect(lines).toContain('     second line');
+	});
 
   it('holds a partial line until it is complete, and flushes it on end()', () => {
     const lines = capture(() => {
