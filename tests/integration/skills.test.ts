@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { executeTool } from '../../src/tools/index.js';
 import {
   createSkill,
   deleteSkill,
@@ -112,7 +113,7 @@ describe('Agent-Termo skills', () => {
     }
   });
 
-  it('imports full skill folders, reads supporting files, and deletes only the selected skill', () => {
+  it('imports full skill folders, reads supporting files, and deletes only the selected skill', async () => {
     const projectRoot = mkdtempSync(join(tmpdir(), 'agent-termo-skills-import-'));
     const source = mkdtempSync(join(tmpdir(), 'agent-termo-skill-source-'));
     try {
@@ -123,6 +124,10 @@ describe('Agent-Termo skills', () => {
       const imported = importSkill(projectRoot, source);
       expect(imported.name).toBe('security-audit');
       expect(readSkillFile(projectRoot, 'security-audit', 'references/checklist.md')).toContain('Security checklist');
+      const toolRead = await executeTool('skill_read', { name: 'security-audit', path: 'references/checklist.md' }, projectRoot);
+      expect(toolRead.success).toBe(true);
+      expect(toolRead.output).toContain('Security checklist');
+
       expect(() => readSkillFile(projectRoot, 'security-audit', '../outside.md')).toThrow(/relative paths/);
       expect(readFileSync(imported.filePath, 'utf-8')).toContain('Audits application security');
 
@@ -134,6 +139,31 @@ describe('Agent-Termo skills', () => {
     } finally {
       rmSync(projectRoot, { recursive: true, force: true });
       rmSync(source, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses to read skill symlinks that point outside the skill folder', () => {
+    const projectRoot = mkdtempSync(join(tmpdir(), 'agent-termo-skills-symlink-'));
+    try {
+      const skillDirectory = join(projectRoot, '.agent-termo', 'skills', 'safe-skill');
+      writeSkill(skillDirectory, 'safe-skill', 'A safe example skill.');
+      mkdirSync(join(skillDirectory, 'references'), { recursive: true });
+      const outsideFile = join(projectRoot, 'outside.md');
+      writeFileSync(outsideFile, 'private data', 'utf-8');
+
+      try {
+        symlinkSync(outsideFile, join(skillDirectory, 'references', 'external.md'));
+        const unsafeDirectory = join(projectRoot, '.agent-termo', 'skills', 'unsafe-skill');
+        mkdirSync(unsafeDirectory, { recursive: true });
+        symlinkSync(outsideFile, join(unsafeDirectory, 'SKILL.md'));
+      } catch {
+        return;
+      }
+
+      expect(() => readSkillFile(projectRoot, 'safe-skill', 'references/external.md')).toThrow(/Access denied/);
+      expect(listSkills(projectRoot).some((skill) => skill.name === 'unsafe-skill')).toBe(false);
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
     }
   });
 

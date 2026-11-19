@@ -125,7 +125,13 @@ function readDefinition(directory: string, root: SkillRoot): SkillDefinition | n
   if (!existsSync(filePath)) return null;
 
   try {
-    const metadata = parseSkillFrontmatter(readFileSync(filePath, 'utf-8'));
+    const realDirectory = realpathSync(directory);
+    const realFilePath = realpathSync(filePath);
+    if (!withinDirectory(realFilePath, realDirectory)) return null;
+    const fileStats = statSync(realFilePath);
+    if (!fileStats.isFile() || fileStats.size > MAX_SKILL_FILE_BYTES) return null;
+
+    const metadata = parseSkillFrontmatter(readFileSync(realFilePath, 'utf-8'));
     return {
       name: basename(directory),
       description: metadata.description || 'No description provided.',
@@ -270,8 +276,13 @@ export function importSkill(
     throw new Error('Import a skill folder or its SKILL.md file.');
   }
   if (!existsSync(sourceSkillFile)) throw new Error('The selected folder does not contain SKILL.md.');
+  const sourceDirectoryReal = realpathSync(sourceDirectory);
+  const sourceSkillReal = realpathSync(sourceSkillFile);
+  if (!withinDirectory(sourceSkillReal, sourceDirectoryReal)) {
+    throw new Error('SKILL.md must resolve to a file inside the selected skill folder.');
+  }
 
-  const metadata = parseSkillFrontmatter(readFileSync(sourceSkillFile, 'utf-8'));
+  const metadata = parseSkillFrontmatter(readFileSync(sourceSkillReal, 'utf-8'));
   const name = validateSkillName(metadata.name || basename(sourceDirectory));
   const destinationRoot = nativeSkillRoot(projectRoot, scope);
   const destination = resolve(destinationRoot, name);

@@ -261,7 +261,7 @@ function hasRelevantSkill(input: string, skills: SkillDefinition[]): boolean {
 		if (words.has(skill.name)) return true;
 		const terms = skill.description.toLowerCase().match(/[a-z0-9]{4,}/g) ?? [];
 		const matches = new Set(terms.filter((term) => !ignored.has(term) && words.has(term)));
-		return matches.size >= 2;
+		return matches.size >= 1;
 	});
 }
 
