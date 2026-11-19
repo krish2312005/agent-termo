@@ -411,8 +411,12 @@ Use /help inside Agent-Termo to display the available commands.
 | /fork [id] | Fork the current or a saved conversation into a new session. |
 | /plan <task> | Analyze a task and create an execution plan without changing files. |
 | /plan | Display the current plan and step progress. |
-| /plan approve | Approve the draft plan and start execution. |
+| /plan approve | Approve the draft plan and export it to PLAN.md without executing it. |
 | /plan cancel | Cancel the current draft or execution plan. |
+
+### Plan Export
+
+Use `/plan <task>` to create a draft, review it, and run `/plan approve` to write the approved plan to `PLAN.md` in the project root. Approval only exports the document; it does not start implementation. Assign the steps in `PLAN.md` to your own specialist agents. If `PLAN.md` already exists, Agent-Termo asks before replacing it.
 | /checkpoint [label] | Create a manual checkpoint for subsequent Agent-Termo file changes. |
 | /checkpoints | List automatic, plan, and manual checkpoints. |
 | /undo [id] | Preview and restore the latest or selected checkpoint. |

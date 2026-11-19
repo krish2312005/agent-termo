@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { formatTaskPlanMarkdown, parseTaskPlan, updatePlanStep } from '../../src/runtime/plans.js';
+import { formatTaskPlanDocument, formatTaskPlanMarkdown, parseTaskPlan, updatePlanStep, writeTaskPlanFile } from '../../src/runtime/plans.js';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { resolve } from 'node:path';
 
 const validPlan = JSON.stringify({
   title: 'Add feature',
@@ -32,6 +35,27 @@ describe('execution plans', () => {
     expect(markdown).toContain('## Overall risks');
     plan.steps[0]!.status = 'completed';
     expect(formatTaskPlanMarkdown(plan)).toContain('**Progress:** 1/2 steps');
+  });
+
+  it('exports an approved agent handoff document to PLAN.md', () => {
+    const plan = parseTaskPlan(validPlan, 'Build the feature using specialist agents');
+    const document = formatTaskPlanDocument(plan);
+    expect(document).toContain('# Add feature');
+    expect(document).toContain('## Goal');
+    expect(document).toContain('Build the feature using specialist agents');
+    expect(document).toContain('### 1. Inspect');
+    expect(document).toContain('Affected files:** `src/main.ts`');
+    expect(document).toContain('## Agent handoff');
+    expect(document).toContain('have not been executed');
+
+    const root = mkdtempSync(resolve(tmpdir(), 'agent-termo-plan-'));
+    try {
+      const path = writeTaskPlanFile(root, plan);
+      expect(path).toBe(resolve(root, 'PLAN.md'));
+      expect(readFileSync(path, 'utf-8')).toBe(document);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('rejects invalid or forward dependencies', () => {

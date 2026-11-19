@@ -3,7 +3,7 @@
 // =============================================================================
 
 import { NimClient, parseToolCallsFromText, type ThinkingCapacity } from './llm/client.js';
-import { buildPlanContext, formatTaskPlanMarkdown, parseTaskPlan, PLAN_PROGRESS_TOOL, updatePlanStep, type TaskPlan } from './runtime/plans.js';
+import { buildPlanContext, formatTaskPlanMarkdown, parseTaskPlan, PLAN_PROGRESS_TOOL, updatePlanStep, writeTaskPlanFile, type TaskPlan } from './runtime/plans.js';
 import { activeManualCheckpointIds, createCheckpoint, findCheckpoint, latestRedoableCheckpoint, latestUndoableCheckpoint, listCheckpoints, recordCheckpointAfter, recordCheckpointBefore, redoCheckpoint, undoCheckpoint } from './runtime/checkpoints.js';
 import { TOOL_DEFINITIONS } from './llm/tools.js';
 import { executeTool, applyFileChange, setTerminalHooks, killRunningTerminal } from './tools/index.js';
@@ -11,7 +11,7 @@ import { loadMemory, loadTimeline, logToTimeline, logAgentTermoTimeline, appendT
 import { buildSystemPrompt, resolveDelegation } from './agents/index.js';
 import { resolveProjectRoot, saveNimModel, saveNimThinking, savePermissionMode } from './utils/config.js';
 import { resolve } from 'node:path';
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { ensureAgentFolder, loadProjectAgents, loadAgentCommands, type AgentCommand } from './runtime/agent-folder.js';
 import { loadTermoInstructions } from './runtime/termo-md.js';
 import { createSkill, deleteSkill, importSkill, listSkills, loadSkillCatalogPrompt, loadSkillInstructions, readSkillFile, type SkillDefinition, type SkillScope } from './runtime/skills.js';
@@ -991,7 +991,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 			prompt += '\n\n## Active Task\n' + taskState.goal + '\nStatus: ' + taskState.status + (taskState.reason ? ' (' + taskState.reason + ')' : '');
 		}
 		if (currentGoal) prompt += '\n\n## Current Goal\n' + currentGoal;
-		if (activePlan && (activePlan.status === 'approved' || activePlan.status === 'in_progress')) prompt += '\n\n' + buildPlanContext(activePlan);
+		if (activePlan?.status === 'in_progress') prompt += '\n\n' + buildPlanContext(activePlan);
 		const mcpTools = getMcpToolDefinitions();
 		if (mcpTools.length > 0) {
 			prompt += '\n\n## Available MCP Tools\nThe following tools are connected through MCP. When a user request can be fulfilled by one of them, call the relevant tool instead of claiming the capability is unavailable. Use the exact tool names and schemas supplied in the tool definitions.\n' +
@@ -1200,13 +1200,10 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 	}
 	refreshSystemPrompt();
 
-	let pendingExecutionInput: string | undefined;
 	mainLoop: while (true) {
 		try {
 			let stopBackgroundCommands: () => void = () => undefined;
-				const queuedInput = pendingExecutionInput;
-				pendingExecutionInput = undefined;
-				const rawInput = queuedInput ?? await input.question('');
+				const rawInput = await input.question('');
 				let userInput = rawInput;
 				if (!userInput) continue;
 				if (userInput.includes('"mcpServers"')) {
@@ -1305,14 +1302,30 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					const argument = userInput.trim().slice('/plan'.length).trim();
 					const action = argument.toLowerCase();
 					if (action === 'approve') {
-						if (!activePlan || (activePlan.status !== 'draft' && activePlan.status !== 'approved')) {
+						if (!activePlan || !['draft', 'approved', 'saved'].includes(activePlan.status)) {
 							printError('There is no draft plan awaiting approval.', 'Create one with /plan <task>.');
 							continue mainLoop;
 						}
-						activePlan.status = 'approved';
-						persistSession();
-						printSuccess('Plan approved. Starting: ' + activePlan.title);
-						pendingExecutionInput = activePlan.request;
+						const planPath = resolve(projectRoot, 'PLAN.md');
+						if (existsSync(planPath)) {
+							input.close();
+							const decision = await promptAcceptReject('PLAN.md already exists. Overwrite it with this approved plan?');
+							input.showPrompt();
+							if (decision !== 'accept') {
+								printInfo('Plan export cancelled. Existing PLAN.md was not changed.');
+								continue mainLoop;
+							}
+						}
+						try {
+							writeTaskPlanFile(projectRoot, activePlan);
+							activePlan.status = 'saved';
+							refreshSystemPrompt();
+							persistSession();
+							printSuccess('Approved plan saved to PLAN.md. No implementation was started.');
+							printInfo('Use your own agents to implement the steps in PLAN.md.');
+						} catch (error) {
+							printError('Could not write PLAN.md: ' + (error instanceof Error ? error.message : String(error)));
+						}
 						continue mainLoop;
 					}
 					if (action === 'cancel') {
@@ -1919,11 +1932,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 
 				// Plain conversation does not need a large tool schema. Keeping it out of
 				// the request also supports providers/models that reject tool mode.
-				if (activePlan?.status === 'approved' && activePlan.request === userInput) {
-					activePlan.status = 'in_progress';
-					ensureTaskCheckpoint();
-					persistSession();
-				}
+				
 				refreshSystemPrompt();
 				const tools = shouldUseTools(userInput, activeAgentName, continuing, getMcpToolDefinitions().length > 0, skillInvocation || hasRelevantSkill(userInput, listSkills(projectRoot))) || activePlan?.status === 'in_progress'
 					? nimClient.buildToolDefs([...TOOL_DEFINITIONS, ...getMcpToolDefinitions(), ...(activePlan?.status === 'in_progress' ? [PLAN_PROGRESS_TOOL] : [])])
