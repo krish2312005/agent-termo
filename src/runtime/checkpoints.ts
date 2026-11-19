@@ -180,9 +180,15 @@ export function recordCheckpointBefore(projectRoot: string, id: string, filePath
   const checkpoint = getCheckpoint(projectRoot, id);
   if (!checkpoint || checkpoint.status === 'undone') throw new Error('Checkpoint is not available: #' + id);
   const normalized = safeRelativePath(projectRoot, filePath);
-  if (checkpoint.entries.some((entry) => entry.path === normalized)) return;
-  const before = captureState(projectRoot, normalized);
-  checkpoint.entries.push({ path: normalized, before, after: before });
+  const current = captureState(projectRoot, normalized);
+  const existing = checkpoint.entries.find((entry) => entry.path === normalized);
+  if (existing) {
+    if (!statesMatch(current, existing.after)) {
+      throw new Error('Cannot update checkpoint #' + id + ' because ' + normalized + ' changed outside the checkpoint.');
+    }
+    return;
+  }
+  checkpoint.entries.push({ path: normalized, before: current, after: current });
   saveCheckpoint(projectRoot, checkpoint);
 }
 export function recordCheckpointAfter(projectRoot: string, id: string, filePath: string): void {
@@ -257,8 +263,17 @@ function restoreCheckpoint(projectRoot: string, checkpoint: Checkpoint, directio
     }
     throw error;
   }
+  const previousStatus = checkpoint.status;
   checkpoint.status = direction === 'undo' ? 'undone' : checkpoint.kind === 'manual' ? 'active' : 'applied';
-  saveCheckpoint(projectRoot, checkpoint);
+  try {
+    saveCheckpoint(projectRoot, checkpoint);
+  } catch (error) {
+    checkpoint.status = previousStatus;
+    for (const previous of rollback) {
+      try { restoreState(projectRoot, previous.path, previous.state); } catch { /* Best-effort rollback. */ }
+    }
+    throw error;
+  }
   try { rebaseActiveManualCheckpoints(projectRoot, checkpoint.entries.map((entry) => entry.path), checkpoint.id); }
   catch { /* The completed restore remains valid if an unrelated manual marker cannot be rebased. */ }
   return checkpoint;
