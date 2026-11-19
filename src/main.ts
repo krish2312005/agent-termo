@@ -690,6 +690,11 @@ async function runToolLoop(
 ): Promise<string> {
 	let toolCalls = initialToolCalls;
 	let finalText = '';
+	// Same evidence gate as delegated runs (runtime/verify.ts): track what this
+	// turn actually wrote and ran, independent of direct file:write/file:edit
+	// tool calls made without going through agent:delegate at all.
+	const changedFiles = new Map<string, string>();
+	const ranCommands: string[] = [];
 
 	// Continue looping while the LLM keeps issuing tool calls
 	while (toolCalls.length > 0) {
@@ -741,6 +746,8 @@ async function runToolLoop(
 
 					const toolResult = execution.toolResult;
 					if (toolResult.success && tc.name !== 'plan:update') completedOperations.add(toolOperationKey(tc));
+					if (execution.applied && execution.change) changedFiles.set(execution.change.path, execution.change.proposedContent);
+					if (tc.name === 'bash:execute' && typeof tc.arguments.command === 'string') ranCommands.push(tc.arguments.command);
 				// Delegated runs bypass executeToolWithReview, so show their
 				// result explicitly instead of only feeding it to the model.
 				if (tc.name === 'agent:delegate') printToolResult(tc.name, toolResult);
@@ -844,6 +851,18 @@ async function runToolLoop(
 	if (finalText.trim()) {
 		void appendToTimeline(projectRoot, 'Agent-Termo', 'Completed tool-assisted request', ['Assistant summary: ' + finalText.replace(/\s+/g, ' ').slice(0, 700)], []);
 	}
+
+	// The model's narration above has already streamed to the terminal by the
+	// time we get here, so this can't retract a false "done" — but it can make
+	// sure an unsupported claim doesn't go unchallenged. See runtime/verify.ts.
+	if (changedFiles.size > 0) {
+		const verification = verifyCompletion(taskState.goal || finalText, changedFiles, ranCommands);
+		if (!verification.ok) {
+			printError('Completion check: this turn\'s own evidence does not back up "done" yet.', formatIssues(verification.issues));
+			logAgentTermoTimeline('Evidence gate flagged unresolved issues: ' + formatIssues(verification.issues).replace(/\s+/g, ' ').slice(0, 300), projectRoot);
+		}
+	}
+
 	return finalText;
 }
 
