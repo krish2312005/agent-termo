@@ -17,6 +17,8 @@ import { loadTermoInstructions } from './runtime/termo-md.js';
 import { createSkill, deleteSkill, importSkill, listSkills, loadSkillCatalogPrompt, loadSkillInstructions, readSkillFile, type SkillDefinition, type SkillScope } from './runtime/skills.js';
 import { initializeMcpServers, getMcpServerStatuses, getMcpToolDefinitions, isMcpToolName, executeMcpTool, shutdownMcpServers, saveMcpServerConfigs, type McpServerConfig } from './runtime/mcp.js';
 import { commandApprovalKey, isCommandApprovalRequired, loadAllowedCommands, saveAllowedCommands } from './runtime/permissions.js';
+import { verifyCompletionWithChecks, formatIssues } from './runtime/verify.js';
+import { runProjectChecks } from './runtime/checks.js';
 import { createSession, forkSession, listSessions, loadLatestSession, loadSession, saveSession, type StoredSession } from './runtime/sessions.js';
 import {
 	addSubAgentProgress,
@@ -560,6 +562,11 @@ async function runDelegatedAgent(
 	const delegatedToolDefs = filterAgentTools(agent, [...TOOL_DEFINITIONS, ...getMcpToolDefinitions()]);
 	let finalText = '';
 	let lastNarration = '';
+	// Evidence for the completion gate below: what the run actually wrote and
+	// ran, not what it claims in its final report. Keyed by path so only each
+	// file's last applied content is kept.
+	const changedFiles = new Map<string, string>();
+	const ranCommands: string[] = [];
 
 	try {
 		for (let iteration = 0; iteration < DELEGATED_TOOL_BUDGET; iteration++) {
@@ -605,6 +612,8 @@ async function runDelegatedAgent(
 				startSubAgentTool(subId, tc.name, describeArgs(tc.arguments) || task);
 				const execution = await executeToolWithReview(tc.name, tc.arguments, projectRoot, input, permissionMode, allowedCommands, (waiting) => setSubAgentWaiting(subId, waiting), getCheckpointId);
 				const toolResult = execution.toolResult;
+				if (execution.applied && execution.change) changedFiles.set(execution.change.path, execution.change.proposedContent);
+				if (tc.name === 'bash:execute' && typeof tc.arguments.command === 'string') ranCommands.push(tc.arguments.command);
 				const target = String(tc.arguments.path ?? tc.arguments.command ?? task).slice(0, 80);
 				endSubAgentTool(
 					subId,
@@ -635,6 +644,22 @@ async function runDelegatedAgent(
 			logAgentTermoTimeline(`Sub-agent ${agent.name} exhausted its budget before completing: ${task.slice(0, 120)}`, projectRoot);
 			return { id: toolCall.id, name: toolCall.name, success: false, error: detail, durationMs: Date.now() - started };
 		}
+		// Completion gate: the final report is a claim. Only accept it once the
+		// evidence actually collected during this run (files it wrote, commands
+		// it ran) backs it up — no stub implementations, and a real check command
+		// for any code work the task called for. If the agent didn't run one
+		// itself, run the project's own test/lint/typecheck scripts for real
+		// rather than trust the narration. See runtime/verify.ts, runtime/checks.ts.
+		const verification = await verifyCompletionWithChecks(task, changedFiles, ranCommands, () => runProjectChecks(projectRoot));
+		if (!verification.ok) {
+			const detail =
+				`Sub-agent ${agent.name} reported completion, but its own evidence does not support that claim — rejected:\n` +
+				`${formatIssues(verification.issues)}\n\nSub-agent's report (not accepted as-is):\n${output}`;
+			finishSubAgent(subId, 'failed', detail);
+			logAgentTermoTimeline(`Sub-agent ${agent.name} claimed completion but failed the evidence gate: ${task.slice(0, 120)}`, projectRoot);
+			return { id: toolCall.id, name: toolCall.name, success: false, error: detail, durationMs: Date.now() - started };
+		}
+
 		finishSubAgent(subId, 'completed', output);
 		logAgentTermoTimeline(`Sub-agent ${agent.name} completed delegated task: ${task.slice(0, 120)}`, projectRoot);
 		void appendToTimeline(projectRoot, agent.name, 'Delegated task completed', [`Task: ${task.slice(0, 300)}`], [`Summary: ${output.replace(/\s+/g, ' ').slice(0, 400)}`]);
@@ -668,6 +693,11 @@ async function runToolLoop(
 ): Promise<string> {
 	let toolCalls = initialToolCalls;
 	let finalText = '';
+	// Same evidence gate as delegated runs (runtime/verify.ts): track what this
+	// turn actually wrote and ran, independent of direct file:write/file:edit
+	// tool calls made without going through agent:delegate at all.
+	const changedFiles = new Map<string, string>();
+	const ranCommands: string[] = [];
 
 	// Continue looping while the LLM keeps issuing tool calls
 	while (toolCalls.length > 0) {
@@ -719,6 +749,8 @@ async function runToolLoop(
 
 					const toolResult = execution.toolResult;
 					if (toolResult.success && tc.name !== 'plan:update') completedOperations.add(toolOperationKey(tc));
+					if (execution.applied && execution.change) changedFiles.set(execution.change.path, execution.change.proposedContent);
+					if (tc.name === 'bash:execute' && typeof tc.arguments.command === 'string') ranCommands.push(tc.arguments.command);
 				// Delegated runs bypass executeToolWithReview, so show their
 				// result explicitly instead of only feeding it to the model.
 				if (tc.name === 'agent:delegate') printToolResult(tc.name, toolResult);
@@ -822,6 +854,19 @@ async function runToolLoop(
 	if (finalText.trim()) {
 		void appendToTimeline(projectRoot, 'Agent-Termo', 'Completed tool-assisted request', ['Assistant summary: ' + finalText.replace(/\s+/g, ' ').slice(0, 700)], []);
 	}
+
+	// The model's narration above has already streamed to the terminal by the
+	// time we get here, so this can't retract a false "done" — but it can run
+	// the project's own checks for real and make sure an unsupported claim
+	// doesn't go unchallenged. See runtime/verify.ts, runtime/checks.ts.
+	if (changedFiles.size > 0) {
+		const verification = await verifyCompletionWithChecks(taskState.goal || finalText, changedFiles, ranCommands, () => runProjectChecks(projectRoot));
+		if (!verification.ok) {
+			printError('Completion check: this turn\'s own evidence does not back up "done" yet.', formatIssues(verification.issues));
+			logAgentTermoTimeline('Evidence gate flagged unresolved issues: ' + formatIssues(verification.issues).replace(/\s+/g, ' ').slice(0, 300), projectRoot);
+		}
+	}
+
 	return finalText;
 }
 
