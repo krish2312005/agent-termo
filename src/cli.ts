@@ -86,15 +86,15 @@ async function promptForApiKey(): Promise<string> {
 
 async function startAgent(
 	project: string,
-	options: { apiKey?: string; model?: string; debug?: boolean; autoApprove?: boolean },
+	options: { apiKey?: string; model?: string; debug?: boolean; yes?: boolean },
 ): Promise<void> {
   // Apply CLI overrides to env before main initializes.
   if (options.apiKey) process.env.NIM_API_KEY = options.apiKey;
   if (options.model) process.env.NIM_MODEL = options.model;
 	if (options.debug) process.env.LOG_LEVEL = 'debug';
-	if (options.autoApprove) {
-		process.env.AGENT_TERMO_PERMISSION_MODE = 'auto';
-		process.env.AGENT_TERMO_AUTO_APPROVE = '1';
+	if (options.yes) {
+		process.env.AGENT_TERMO_PERMISSION_MODE = 'files';
+		delete process.env.AGENT_TERMO_AUTO_APPROVE;
 	}
 
   if (!process.env.NIM_API_KEY?.trim()) {
@@ -116,8 +116,8 @@ program
   .option('-k, --api-key <key>', 'Nvidia NIM API key')
   .option('-m, --model <model>', 'Model name to use')
 	.option('--debug', 'Enable debug logging')
-	.option('-y, --yes, --auto-approve', 'Automatically apply file changes without asking')
-	.action(async (project: string, options: { apiKey?: string; model?: string; debug?: boolean; autoApprove?: boolean }) => {
+	.option('-y, --yes', 'Automatically apply proposed file changes; shell, Git writes, and MCP actions still require approval')
+	.action(async (project: string, options: { apiKey?: string; model?: string; debug?: boolean; yes?: boolean }) => {
     await startAgent(project, options);
   });
 
