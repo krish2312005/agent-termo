@@ -16,7 +16,7 @@ import {
   type McpServerConfig,
   type McpConfigScope,
 } from './runtime/mcp.js';
-import pkg from '../package.json' assert { type: 'json' };
+import pkg from '../package.json' with { type: 'json' };
 
 const program = new Command();
 
