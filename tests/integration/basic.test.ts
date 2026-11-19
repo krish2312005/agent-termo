@@ -8,8 +8,9 @@
 import { describe, it, expect } from 'vitest';
 import { executeTool, applyFileChange, invalidateToolCache } from '../../src/tools/index.js';
 import { fromWireToolName, parseToolCallsFromText } from '../../src/llm/client.js';
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 
 const PROJECT_ROOT = process.cwd();
 
@@ -53,6 +54,71 @@ describe('executeTool', () => {
 		} finally {
 			rmSync(absolutePath, { force: true });
 		}
+	});
+
+	it('rejects stale proposals and preserves edits made after the proposal', async () => {
+		const path = '.test-stale-proposal.txt';
+		const absolutePath = resolve(PROJECT_ROOT, path);
+		writeFileSync(absolutePath, 'original\\n', 'utf-8');
+		try {
+			const proposal = await executeTool('file:write', { path, content: 'agent proposal\\n' }, PROJECT_ROOT);
+			const change = JSON.parse(proposal.output ?? '').proposedChange;
+			writeFileSync(absolutePath, 'newer user edit\\n', 'utf-8');
+			const applied = await applyFileChange(change, PROJECT_ROOT);
+			expect(applied.success).toBe(false);
+			expect(applied.error).toContain('Stale file change rejected');
+			expect(readFileSync(absolutePath, 'utf-8')).toBe('newer user edit\\n');
+		} finally { rmSync(absolutePath, { force: true }); }
+	});
+
+	it('distinguishes an existing empty file from a missing file', async () => {
+		const path = '.test-empty-existing.txt';
+		const absolutePath = resolve(PROJECT_ROOT, path);
+		writeFileSync(absolutePath, '', 'utf-8');
+		try {
+			const edit = await executeTool('file:edit', { path, old_string: 'old', new_string: 'new' }, PROJECT_ROOT);
+			expect(edit.success).toBe(false);
+			expect(edit.error).toContain('old_string not found');
+			expect(edit.error).not.toContain('File not found');
+		} finally { rmSync(absolutePath, { force: true }); }
+	});
+
+	it('reads only the requested bounded line window', async () => {
+		const path = '.test-bounded-read.txt';
+		const absolutePath = resolve(PROJECT_ROOT, path);
+		writeFileSync(absolutePath, Array.from({ length: 2100 }, (_, index) => 'line-' + (index + 1)).join('\\n'), 'utf-8');
+		try {
+			const read = await executeTool('file:read', { path, offset: 100, limit: 3 }, PROJECT_ROOT);
+			expect(read.success).toBe(true);
+			expect(read.output).toContain('line-101');
+			expect(read.output).toContain('line-103');
+			expect(read.output).not.toContain('line-104');
+		} finally { rmSync(absolutePath, { force: true }); }
+	});
+
+	it.skipIf(process.platform === 'win32')('rejects symlink reads and grep outside the workspace', async () => {
+		const outside = mkdtempSync(join(tmpdir(), 'agent-termo-outside-'));
+		const outsideFile = join(outside, 'secret.txt');
+		const linkPath = resolve(PROJECT_ROOT, '.test-outside-link.txt');
+		writeFileSync(outsideFile, 'external secret', 'utf-8');
+		try {
+			symlinkSync(outsideFile, linkPath, 'file');
+			const read = await executeTool('file:read', { path: '.test-outside-link.txt' }, PROJECT_ROOT);
+			expect(read.success).toBe(false);
+			expect(read.error).toContain('Access denied');
+			const grep = await executeTool('grep', { pattern: 'secret', path: '.test-outside-link.txt' }, PROJECT_ROOT);
+			expect(grep.success).toBe(false);
+			expect(grep.error).toContain('Access denied');
+		} finally {
+			rmSync(linkPath, { force: true });
+			rmSync(outside, { recursive: true, force: true });
+		}
+	});
+
+	it('rejects parent traversal patterns in file glob', async () => {
+		const result = await executeTool('file:glob', { pattern: '../**/*.env' }, PROJECT_ROOT);
+		expect(result.success).toBe(false);
+		expect(result.error).toContain('Access denied');
 	});
 
 	it('file:edit matches LF old_string in a CRLF file and preserves CRLF', async () => {
