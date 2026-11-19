@@ -598,8 +598,8 @@ async function runToolLoop(
 			timestamp: new Date(),
 		});
 
-				// Execute all delegation calls		onConversationChanged();
- in parallel. Ordinary tools stay sequential
+		onConversationChanged();
+				// Execute all delegation calls in parallel. Ordinary tools stay sequential
 				// because concurrent writes or terminal commands can race with each other.
 					const completedOperations = taskState.completedOperations ?? (taskState.completedOperations = new Set());
 					const allDelegations = shouldRunDelegationsInParallel(toolCalls) && !toolCalls.some((tc) => completedOperations.has(toolOperationKey(tc)));
@@ -1190,7 +1190,10 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					continue mainLoop;
 				}
 				if (cmd === '/clear' || cmd === '/cls') {
+					persistSession();
 					conversation.length = 1;
+					taskState = newTaskState();
+					session = createSession(projectRoot, conversation);
 					persistSession();
 					clearScreen();
 					printWelcome(projectRoot, nimClient.getModel());
@@ -1710,11 +1713,11 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				// The run reached the end without throwing: the task is complete,
 			// unless it was interrupted and must remain resumable with "continue".
 			finishTaskState(taskState);
-			persistSession();
 
 			if (conversation.length > 42) {
 				compactConversation(conversation);
 			}
+			persistSession();
 			} catch (err) {
 				input.close();
 			stopSpinner();
