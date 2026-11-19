@@ -1751,6 +1751,13 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						try {
 							undoCheckpoint(projectRoot, checkpoint.id);
 							printSuccess('Checkpoint #' + checkpoint.id + ' restored. Previous file contents are back in place.');
+							if (taskState.checkpointId === checkpoint.id) {
+								taskState = newTaskState();
+								if (activePlan?.status === 'in_progress') activePlan.status = 'cancelled';
+								refreshSystemPrompt();
+								persistSession();
+								printInfo('The matching task was closed because its changes were rolled back.');
+							}
 						} catch (error) {
 							printError('Could not undo checkpoint: ' + (error instanceof Error ? error.message : String(error)));
 						}
