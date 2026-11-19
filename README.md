@@ -760,6 +760,7 @@ agent-termo/
 │   ├── runtime/
 │   │   ├── agent-folder.ts    # Project agents and commands
 │   │   ├── paths.ts           # Canonical runtime paths
+│   │   ├── sessions.ts        # Persistent conversation snapshots
 │   │   └── permissions.ts     # Remembered command approvals
 │   ├── tools/
 │   │   └── index.ts           # File, shell, search, and Git tools
