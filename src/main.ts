@@ -8,7 +8,7 @@ import { activeManualCheckpointIds, createCheckpoint, findCheckpoint, latestRedo
 import { TOOL_DEFINITIONS } from './llm/tools.js';
 import { executeTool, applyFileChange, setTerminalHooks, killRunningTerminal } from './tools/index.js';
 import { loadMemory, loadTimeline, logToTimeline, logAgentTermoTimeline, appendToSessionLog, appendToTimeline, loadSessionLog } from './memory/index.js';
-import { buildSystemPrompt, resolveDelegation } from './agents/index.js';
+import { buildSystemPrompt, filterAgentTools, resolveDelegation } from './agents/index.js';
 import { resolveProjectRoot, saveNimModel, saveNimThinking, savePermissionMode } from './utils/config.js';
 import { resolve } from 'node:path';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
@@ -557,7 +557,7 @@ async function runDelegatedAgent(
 	];
 
 	// Sub-agents cannot delegate further; they get every other tool.
-	const delegatedToolDefs = [...TOOL_DEFINITIONS, ...getMcpToolDefinitions()].filter((t) => t.name !== 'agent:delegate');
+	const delegatedToolDefs = filterAgentTools(agent, [...TOOL_DEFINITIONS, ...getMcpToolDefinitions()]);
 	let finalText = '';
 	let lastNarration = '';
 

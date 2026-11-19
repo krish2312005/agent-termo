@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildSystemPrompt, resolveDelegation } from '../../src/agents/index.js';
+import { buildSystemPrompt, filterAgentTools, resolveDelegation } from '../../src/agents/index.js';
 import { fromWireToolName } from '../../src/llm/client.js';
 import type { Agent } from '../../src/types/index.js';
 
@@ -11,6 +11,17 @@ describe('delegation', () => {
       expect(fromWireToolName(name)).toBe('agent:delegate');
     }
     expect(fromWireToolName('file_read')).toBe('file:read');
+  });
+
+  it('limits delegated agents to their declared tools and excludes nested delegation', () => {
+    const available = [
+      { name: 'file:read', description: '', parameters: { type: 'object' as const, properties: {} } },
+      { name: 'file:write', description: '', parameters: { type: 'object' as const, properties: {} } },
+      { name: 'agent:delegate', description: '', parameters: { type: 'object' as const, properties: {} } },
+      { name: 'grep', description: '', parameters: { type: 'object' as const, properties: {} } },
+    ];
+    const reviewer = { name: 'reviewer', description: '', systemPrompt: '', tools: ['file:read', 'grep'] };
+    expect(filterAgentTools(reviewer, available).map((tool) => tool.name)).toEqual(['file:read', 'grep']);
   });
 
   it('accepts alternate argument names and loosely written agent names', () => {

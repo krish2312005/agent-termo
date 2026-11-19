@@ -5,7 +5,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { shellDescription } from '../utils/shell.js';
-import type { Agent } from '../types/index.js';
+import type { Agent, ToolDef } from '../types/index.js';
 
 function parseAgentMeta(content: string): { description: string; tools: string[] } {
   const descMatch = content.match(/^description:\s*(.+)$/m);
@@ -105,6 +105,12 @@ When done, say "Done: <brief summary>." Preserve relevant findings from earlier 
 AVAILABLE FILES:
 - docs/MEMORY.md — project context
 - docs/TIMELINE.md — recent activity log`;
+
+/** Restrict a delegated agent to the tools explicitly declared in its frontmatter. */
+export function filterAgentTools(agent: Agent, available: ToolDef[]): ToolDef[] {
+  const allowed = new Set(agent.tools);
+  return available.filter((tool) => tool.name !== 'agent:delegate' && allowed.has(tool.name));
+}
 
 const delegateKey = (name: string): string => name.trim().replace(/^@/, '').toLowerCase().replace(/[\s_.]+/g, '-');
 
