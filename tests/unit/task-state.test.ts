@@ -21,6 +21,16 @@ describe('task resumability', () => {
 		expect(isTransientError(new Error('401 invalid api key'))).toBe(false);
 	});
 
+	it('does not retry after a stream has already emitted visible text', async () => {
+		let attempts = 0;
+		const partial = Object.assign(new Error('Streaming response interrupted after partial output: 503'), { retryable: false });
+		await expect(withTransientRetries(async () => {
+			attempts++;
+			throw partial;
+		}, [0, 0])).rejects.toBe(partial);
+		expect(attempts).toBe(1);
+	});
+
 	it('detects independent delegation calls as a parallel fan-out', () => {
 		expect(shouldRunDelegationsInParallel([
 			{ id: 'a', name: 'agent:delegate', arguments: {} },

@@ -37,6 +37,24 @@ describe('local conversation sessions', () => {
       session.activeAgentName = 'code-reviewer';
       session.model = 'test-model';
       session.thinkingCapacity = 'high';
+      session.taskPlan = {
+        request: 'Inspect the main entry point',
+        title: 'Inspect code',
+        summary: 'Read the entry point and report findings.',
+        createdAt: new Date().toISOString(),
+        status: 'in_progress',
+        risks: ['The current working tree may contain uncommitted changes.'],
+        steps: [{
+          number: 1,
+          title: 'Read the entry point',
+          description: 'Inspect the main REPL implementation.',
+          affectedFiles: ['src/main.ts'],
+          risks: [],
+          dependsOn: [],
+          status: 'completed',
+          summary: 'Read the current implementation.',
+        }],
+      };
       session.taskState = {
         goal: 'Inspect the main entry point',
         status: 'interrupted',
@@ -57,6 +75,8 @@ describe('local conversation sessions', () => {
       expect(loaded?.model).toBe('test-model');
       expect(loaded?.thinkingCapacity).toBe('high');
       expect(loaded?.taskState?.status).toBe('interrupted');
+      expect(loaded?.taskPlan?.status).toBe('in_progress');
+      expect(loaded?.taskPlan?.steps[0]?.summary).toBe('Read the current implementation.');
       expect(loaded?.taskState?.completedOperations).toEqual(['file:read:src/main.ts']);
       expect(listSessions(projectRoot)[0]?.title).toBe('Inspect the main entry point');
       expect(loadLatestSession(projectRoot)?.id).toBe(session.id);

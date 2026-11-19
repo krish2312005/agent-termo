@@ -55,7 +55,10 @@ describe('Agent-Termo skills', () => {
 
   it('discovers Claude Code and Codex skill directories', () => {
     const projectRoot = mkdtempSync(join(tmpdir(), 'agent-termo-skills-compat-'));
+    const home = mkdtempSync(join(tmpdir(), 'agent-termo-skills-home-'));
     try {
+      vi.stubEnv('HOME', home);
+      vi.stubEnv('USERPROFILE', home);
       writeSkill(join(projectRoot, '.agents', 'skills', 'codex-lint'), 'codex-lint', 'Runs lint checks and reviews code style.');
       writeSkill(join(projectRoot, '.claude', 'skills', 'claude-review'), 'claude-review', 'Reviews source code for correctness and security.');
 
@@ -65,6 +68,7 @@ describe('Agent-Termo skills', () => {
       expect(skills.find((skill) => skill.name === 'claude-review')?.source).toBe('claude');
     } finally {
       rmSync(projectRoot, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
     }
   });
 
@@ -116,7 +120,10 @@ describe('Agent-Termo skills', () => {
   it('imports full skill folders, reads supporting files, and deletes only the selected skill', async () => {
     const projectRoot = mkdtempSync(join(tmpdir(), 'agent-termo-skills-import-'));
     const source = mkdtempSync(join(tmpdir(), 'agent-termo-skill-source-'));
+    const home = mkdtempSync(join(tmpdir(), 'agent-termo-skills-home-'));
     try {
+      vi.stubEnv('HOME', home);
+      vi.stubEnv('USERPROFILE', home);
       writeSkill(source, 'security-audit', 'Audits application security and authentication.');
       mkdirSync(join(source, 'references'), { recursive: true });
       writeFileSync(join(source, 'references', 'checklist.md'), '# Security checklist\n', 'utf-8');
@@ -139,6 +146,7 @@ describe('Agent-Termo skills', () => {
     } finally {
       rmSync(projectRoot, { recursive: true, force: true });
       rmSync(source, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
     }
   });
 
