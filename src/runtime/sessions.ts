@@ -160,7 +160,7 @@ export function saveSession(projectRoot: string, session: StoredSession): Stored
   };
   const temporaryPath = path + '.' + process.pid + '.tmp';
   try {
-    writeFileSync(temporaryPath, JSON.stringify(next, null, 2) + '\\n', { encoding: 'utf-8', mode: 0o600 });
+    writeFileSync(temporaryPath, JSON.stringify(next, null, 2) + '\n', { encoding: 'utf-8', mode: 0o600 });
     renameSync(temporaryPath, path);
   } catch (error) {
     try { unlinkSync(temporaryPath); } catch { /* Temporary file may not exist. */ }
