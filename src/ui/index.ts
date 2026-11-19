@@ -318,11 +318,11 @@ export function printToolResult(
 		// logs) is summarised, since the full text goes to the model.
 		const lines = (result.output ?? '').split('\n').filter((l) => l.trim() !== '');
 		const summary = lines.length > 1 ? `${lines.length} lines` : clipText((lines[0] ?? '').trim() || 'done', room);
-		out.write(c.dim('  ⎿  ') + c.green('✓ ') + summary + '\n');
-	} else {
-		const message = (result.error ?? 'unknown error').split('\n')[0] ?? 'unknown error';
-		out.write(c.dim('  ⎿  ') + c.red('✗ ' + clipText(`${toolName}: ${message}`, room)) + '\n');
-	}
+			out.write(c.dim('  ⎿  ') + c.green('✓ ') + summary + '\n');
+		} else {
+			const message = (result.error ?? 'unknown error').split('\n').find((line) => line.trim())?.trim() ?? 'unknown error';
+			out.write(c.dim('  ⎿  ') + c.red('✗ ' + clipText(`${toolName}: ${message}`, room)) + '\n');
+		}
 }
 
 // =============================================================================

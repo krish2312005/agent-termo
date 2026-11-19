@@ -267,6 +267,26 @@ function recordTaskAction(state: TaskState, action: string): void {
 }
 
 /**
+ * Keep tool execution and model conversation formats separate. The model must
+ * receive the complete outcome, not a UI-oriented summary that can hide an
+ * empty error line or discard stderr/exit status.
+ */
+export function formatToolResultForModel(result: { name?: string; success: boolean } & Partial<Omit<ToolResult, 'name' | 'success'>>): string {
+	const lines = [
+		`Tool: ${result.name ?? 'unknown tool'}`,
+		`Status: ${result.success ? 'success' : 'failure'}`,
+		result.command ? `Command: ${result.command}` : '',
+		result.cwd ? `Working directory: ${result.cwd}` : '',
+		result.exitCode !== undefined ? `Exit code: ${result.exitCode ?? 'unknown'}` : '',
+		result.stdout ? `stdout:\n${result.stdout}` : '',
+		result.stderr ? `stderr:\n${result.stderr}` : '',
+		result.output && !result.stdout && !result.stderr ? `Output:\n${result.output}` : '',
+		!result.success ? `Error:\n${result.error?.trim() || 'The tool reported a failure without details.'}` : '',
+	];
+	return lines.filter(Boolean).join('\n');
+}
+
+/**
  * Mark a run complete. An interrupted run stays interrupted so "continue" can
  * still resume it instead of dropping back to idle.
  */
@@ -609,7 +629,7 @@ async function runDelegatedAgent(
 				const execution = await executeToolWithReview(tc.name, tc.arguments, projectRoot, input, permissionMode, allowedCommands, (waiting) => setSubAgentWaiting(subId, waiting), getCheckpointId);
 				const toolResult = execution.toolResult;
 				if (execution.applied && execution.change) changedFiles.set(execution.change.path, execution.change.proposedContent);
-				if (tc.name === 'bash:execute' && typeof tc.arguments.command === 'string') ranCommands.push(tc.arguments.command);
+				if (tc.name === 'bash:execute') ranCommands.push(typeof tc.arguments.command === 'string' ? tc.arguments.command : '[invalid command arguments]');
 				const target = String(tc.arguments.path ?? tc.arguments.command ?? task).slice(0, 80);
 				endSubAgentTool(
 					subId,
@@ -622,7 +642,7 @@ async function runDelegatedAgent(
 				delegatedMessages.push({
 					id: tc.id,
 					role: 'tool',
-					content: (toolResult.success ? 'Result: ' : 'Error: ') + (toolResult.success ? (toolResult.output ?? '') : toolResult.error),
+					content: formatToolResultForModel(toolResult),
 					timestamp: new Date(),
 				});
 				logAgentTermoTimeline(`Sub-agent ${agent.name} tool: ${tc.name} -- ${toolResult.success ? 'OK' : 'ERR'}`, projectRoot);
@@ -673,7 +693,7 @@ async function runDelegatedAgent(
  * Run the tool-call loop: execute tools, feed results back to the LLM,
  * and repeat until the LLM stops issuing tool calls.
  */
-async function runToolLoop(
+export async function runToolLoop(
 	conversation: ConversationMessage[],
 	projectRoot: string,
 	initialToolCalls: ToolCall[],
@@ -687,8 +707,11 @@ async function runToolLoop(
 	taskPlan?: TaskPlan,
 	agentToolDefinitions?: ToolDef[],
 ): Promise<string> {
+	const MAX_TOOL_ITERATIONS = 40;
 	let toolCalls = initialToolCalls;
 	let finalText = '';
+	let iterations = 0;
+	const failedToolCalls = new Set<string>();
 	// Same evidence gate as delegated runs (runtime/verify.ts): track what this
 	// turn actually wrote and ran, independent of direct file:write/file:edit
 	// tool calls made without going through agent:delegate at all.
@@ -696,7 +719,15 @@ async function runToolLoop(
 	const ranCommands: string[] = [];
 
 	// Continue looping while the LLM keeps issuing tool calls
-		while (toolCalls.length > 0) {
+	while (toolCalls.length > 0) {
+		iterations++;
+		if (iterations > MAX_TOOL_ITERATIONS) {
+			taskState.status = 'interrupted';
+			taskState.reason = `Tool loop stopped after ${MAX_TOOL_ITERATIONS} iterations without reaching a final response.`;
+			printError(taskState.reason);
+			onConversationChanged();
+			return '';
+		}
 			// OpenAI-compatible APIs require the assistant tool-call message directly
 			// before the corresponding tool results. Without this message, the next
 			// request is rejected and file operations appear not to work.
@@ -716,12 +747,26 @@ async function runToolLoop(
 			// The conversation history is the source of truth for continuation; replay
 			// suppression here makes stale results look like current filesystem state.
 						const allDelegations = shouldRunDelegationsInParallel(toolCalls);
-						const executions: Array<{ toolResult: { success: boolean; output?: string; error?: string }; applied: boolean; change?: ProposedFileChange }> = [];
-					if (allDelegations) {
+		const executions: Array<{ toolResult: { success: boolean; output?: string; error?: string; name?: string }; applied: boolean; change?: ProposedFileChange }> = [];
+		let repeatedFailure = false;
+		if (allDelegations) {
 						executions.push(...await Promise.all(toolCalls.map((tc) => runDelegatedAgent(projectRoot, tc, nimClient, input, permissionMode, allowedCommands, taskState, getCheckpointId).then((toolResult) => ({ toolResult, applied: false })) )));
-					} else {
-						for (const tc of toolCalls) {
-							if (tc.name === 'plan:update') {
+		} else {
+			for (const tc of toolCalls) {
+				const signature = tc.name + ':' + JSON.stringify(tc.arguments);
+				if (failedToolCalls.has(signature)) {
+					repeatedFailure = true;
+					executions.push({
+						toolResult: {
+							name: tc.name,
+							success: false,
+							error: 'The identical tool call already failed in this turn and was not executed again. Inspect the previous diagnostic, change the source or command, then retry with a different call.',
+						},
+						applied: false,
+					});
+					continue;
+				}
+				if (tc.name === 'plan:update') {
 							let result: { success: boolean; output?: string; error?: string };
 							try {
 								if (!taskPlan) throw new Error('No execution plan is active.');
@@ -742,9 +787,11 @@ async function runToolLoop(
 				for (const [index, tc] of toolCalls.entries()) {
 						const execution = executions[index]!;
 
-						const toolResult = execution.toolResult;
+		const toolResult = execution.toolResult;
+		if (execution.applied) failedToolCalls.clear();
+		if (!toolResult.success) failedToolCalls.add(tc.name + ':' + JSON.stringify(tc.arguments));
 						if (execution.applied && execution.change) changedFiles.set(execution.change.path, execution.change.proposedContent);
-					if (tc.name === 'bash:execute' && typeof tc.arguments.command === 'string') ranCommands.push(tc.arguments.command);
+					if (tc.name === 'bash:execute') ranCommands.push(typeof tc.arguments.command === 'string' ? tc.arguments.command : '[invalid command arguments]');
 				// Delegated runs bypass executeToolWithReview, so show their
 				// result explicitly instead of only feeding it to the model.
 				if (tc.name === 'agent:delegate') printToolResult(tc.name, toolResult);
@@ -754,18 +801,27 @@ async function runToolLoop(
 			const target = String(tc.arguments.path ?? tc.arguments.command ?? tc.arguments.task ?? '').slice(0, 80);
 			recordTaskAction(taskState, `${tc.name} ${target} ${execution.applied ? '(applied)' : toolResult.success ? 'ok' : 'failed'}`);
 
-				conversation.push({
-					id: tc.id,
-					role: 'tool',
-				content: (toolResult.success ? 'Result: ' : 'Error: ') + (toolResult.success ? (toolResult.output ?? '') : toolResult.error) + changeNote,
+			conversation.push({
+				id: tc.id,
+				role: 'tool',
+				content: formatToolResultForModel(toolResult) + changeNote + (!toolResult.success && tc.name === 'bash:execute'
+					? '\nRecovery instruction: do not repeat this unchanged command. Inspect the diagnostic with file:read or grep, make a valid correction, and then rerun verification.'
+					: ''),
 				timestamp: new Date(),
 			});
 			onConversationChanged();
 
 				logAgentTermoTimeline('Tool: ' + tc.name + ' -- ' + statusText + changeNote, projectRoot);
 				const activity = describeToolActivity(tc.name, tc.arguments, toolResult.output, execution.change, execution.applied, toolResult.success);
-				void appendToTimeline(projectRoot, 'Agent-Termo', 'Tool execution: ' + tc.name, activity.actions, activity.notes);
-			}
+			void appendToTimeline(projectRoot, 'Agent-Termo', 'Tool execution: ' + tc.name, activity.actions, activity.notes);
+		}
+		if (repeatedFailure) {
+			taskState.status = 'interrupted';
+			taskState.reason = 'The model repeated an unchanged failed tool call. The previous diagnostic must be addressed before continuing.';
+			onConversationChanged();
+			printInfo('Task paused: the same failed tool call was requested again. Inspect the diagnostic and type "continue" after correcting the approach.');
+			return '';
+		}
 
 			// Send conversation (including tool results) back to the LLM
 			// The LLM will either produce text or more tool calls
