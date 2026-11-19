@@ -243,12 +243,12 @@ export async function initializeMcpServers(projectRoot: string): Promise<ServerS
 		return [{ name: 'configuration', connected: false, tools: 0, error: error instanceof Error ? error.message : String(error) }];
 	}
 
-	for (const [name, config] of Object.entries(configs)) {
+	await Promise.all(Object.entries(configs).map(async ([name, config]) => {
 		const status: ServerStatus = { name, connected: false, tools: 0 };
 		serverStatuses.set(name, status);
 		let pendingConnection: ActiveServer | undefined;
 		try {
-			if (config?.disabled === true) continue;
+			if (config?.disabled === true) return;
 			validateServerConfig(name, config);
 			const connected = await connectServer(projectRoot, name, config);
 			const connection: ActiveServer = { name, client: connected.client, transport: connected.transport };
