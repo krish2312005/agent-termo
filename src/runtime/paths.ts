@@ -55,6 +55,11 @@ export function agentTermoLogsDir(projectRoot: string): string {
   return resolve(agentTermoRoot(projectRoot), 'logs');
 }
 
+/** Private, reloadable conversation snapshots. */
+export function agentTermoSessionsDir(projectRoot: string): string {
+  return resolve(agentTermoRoot(projectRoot), 'sessions');
+}
+
 /** Private chat/session history. Not a project document. */
 export function sessionLogPath(projectRoot: string): string {
   return resolve(agentTermoLogsDir(projectRoot), 'session.md');
