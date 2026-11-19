@@ -12,10 +12,13 @@ function bounded(value: string | undefined): string {
   return value.length > MAX_OUTPUT_CHARS ? value.slice(-MAX_OUTPUT_CHARS) : value;
 }
 
+export type RuntimeEventListener = (event: RuntimeEvent) => void;
+
 export class AgentRunJournal {
   private readonly store: SessionEventStore;
   private currentRunId: string | undefined;
   private readonly streamedOutput = new Map<string, number>();
+  private readonly listeners = new Set<RuntimeEventListener>();
 
   constructor(projectRoot: string, sessionId: string) {
     this.store = new SessionEventStore(projectRoot, sessionId);
@@ -24,6 +27,22 @@ export class AgentRunJournal {
 
   get runId(): string | undefined {
     return this.currentRunId;
+  }
+
+  subscribe(listener: RuntimeEventListener): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  private append(type: RuntimeEventType, data: Record<string, unknown> = {}, durable = true): void {
+    const event = this.store.append(this.requireRun(), type, data, durable);
+    for (const listener of this.listeners) {
+      try {
+        listener(event);
+      } catch {
+        // A UI observer must never be able to break tool execution or persistence.
+      }
+    }
   }
 
   private recoverInterruptedWork(): void {
@@ -50,20 +69,20 @@ export class AgentRunJournal {
   startRun(goal: string): string {
     if (this.currentRunId) throw new Error("A run is already active in this journal.");
     this.currentRunId = randomUUID();
-    this.store.append(this.currentRunId, "run.started", { goal });
+    this.append("run.started", { goal });
     return this.currentRunId;
   }
 
   assistantStarted(): void {
-    this.store.append(this.requireRun(), "assistant.started");
+    this.append("assistant.started");
   }
 
   assistantTextDelta(text: string): void {
-    if (text) this.store.append(this.requireRun(), "assistant.text.delta", { text }, false);
+    if (text) this.append("assistant.text.delta", { text }, false);
   }
 
   assistantCompleted(content: string, toolCalls: readonly ToolCall[] = []): void {
-    this.store.append(this.requireRun(), "assistant.completed", {
+    this.append("assistant.completed", {
       content,
       toolCalls: toolCalls.map((call) => ({
         id: call.id,
@@ -74,7 +93,7 @@ export class AgentRunJournal {
   }
 
   toolCalled(call: ToolCall): void {
-    this.store.append(this.requireRun(), "tool.called", {
+    this.append("tool.called", {
       callId: call.id,
       name: call.name,
       arguments: call.arguments,
@@ -82,7 +101,7 @@ export class AgentRunJournal {
   }
 
   toolStarted(callId: string): void {
-    this.store.append(this.requireRun(), "tool.started", { callId });
+    this.append("tool.started", { callId });
   }
 
   toolOutputDelta(callId: string, stream: "stdout" | "stderr", text: string): void {
@@ -92,7 +111,7 @@ export class AgentRunJournal {
     if (remaining === 0 || !text) return;
     const chunk = text.slice(0, remaining);
     this.streamedOutput.set(key, stored + chunk.length);
-    this.store.append(this.requireRun(), "tool.output.delta", { callId, stream, text: chunk }, false);
+    this.append("tool.output.delta", { callId, stream, text: chunk }, false);
   }
 
   toolFinished(callId: string, result: ToolResult): void {
@@ -102,7 +121,7 @@ export class AgentRunJournal {
       const stored = this.streamedOutput.get(callId + ":" + stream) ?? 0;
       if (stored === 0 && value) {
         for (let offset = 0; offset < value.length; offset += 8192) {
-          this.store.append(this.requireRun(), "tool.output.delta", {
+          this.append("tool.output.delta", {
             callId, stream, text: value.slice(offset, offset + 8192),
           }, false);
         }
@@ -123,23 +142,23 @@ export class AgentRunJournal {
       stdout: output,
       stderr,
     };
-    this.store.append(this.requireRun(), result.success ? "tool.completed" : "tool.failed", data);
+    this.append(result.success ? "tool.completed" : "tool.failed", data);
     this.streamedOutput.delete(callId + ":stdout");
     this.streamedOutput.delete(callId + ":stderr");
   }
 
   complete(summary: string): void {
-    this.store.append(this.requireRun(), "run.completed", { summary });
+    this.append("run.completed", { summary });
     this.currentRunId = undefined;
   }
 
   pause(reason: string): void {
-    this.store.append(this.requireRun(), "run.paused", { reason });
+    this.append("run.paused", { reason });
     this.currentRunId = undefined;
   }
 
   fail(error: string): void {
-    this.store.append(this.requireRun(), "run.failed", { reason: error });
+    this.append("run.failed", { reason: error });
     this.currentRunId = undefined;
   }
 

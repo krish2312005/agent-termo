@@ -589,7 +589,7 @@ async function toolBash(args: Record<string, unknown>, projectRoot: string, onOu
 				if (settled) return;
 				settled = true;
 				if (timer) clearTimeout(timer);
-				terminalHooks.onEnd?.(exitCode);
+				if (!onOutput) terminalHooks.onEnd?.(exitCode);
 				const combinedOutput = [stdout, stderr].filter(Boolean).join('');
 				const metadata = { command, cwd: fullCwd, stdout, stderr, exitCode };
 				resolve(
@@ -614,7 +614,7 @@ async function toolBash(args: Record<string, unknown>, projectRoot: string, onOu
 				);
 		};
 
-		terminalHooks.onStart?.(command);
+		if (!onOutput) terminalHooks.onStart?.(command);
 		const child = spawn(command, {
 			cwd: fullCwd,
 			shell: resolveShell(),
@@ -634,7 +634,7 @@ async function toolBash(args: Record<string, unknown>, projectRoot: string, onOu
 				// Keep the tail: build errors are usually at the end of the output.
 				if (stream === 'stdout') stdout = (stdout + text).slice(-MAX_BASH_OUTPUT);
 				else stderr = (stderr + text).slice(-MAX_BASH_OUTPUT);
-				terminalHooks.onOutput?.(text);
+				if (!onOutput) terminalHooks.onOutput?.(text);
 			};
 			child.stdout?.setEncoding('utf8');
 			child.stderr?.setEncoding('utf8');
@@ -644,7 +644,9 @@ async function toolBash(args: Record<string, unknown>, projectRoot: string, onOu
 		child.on('close', (code) => finish(code === 0, code));
 
 		timer = setTimeout(() => {
-			terminalHooks.onOutput?.(`\n[agent-termo] timed out after ${timeoutMs}ms`);
+			const timeoutMessage = `\n[agent-termo] timed out after ${timeoutMs}ms`;
+			if (onOutput) onOutput('stderr', timeoutMessage);
+			else terminalHooks.onOutput?.(timeoutMessage);
 			killProcessTree(child);
 			finish(false, null, `Command timed out after ${timeoutMs}ms`);
 		}, timeoutMs);

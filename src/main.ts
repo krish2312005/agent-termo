@@ -633,7 +633,9 @@ async function runDelegatedAgent(
 				const journalCall = { ...tc, id: journalCallId };
 				journal?.toolCalled(journalCall);
 				journal?.toolStarted(journalCallId);
-				const outputHandler: ToolOutputHandler = (stream, text) => journal?.toolOutputDelta(journalCallId, stream, text);
+				const outputHandler: ToolOutputHandler | undefined = journal
+					? (stream, text) => journal.toolOutputDelta(journalCallId, stream, text)
+					: undefined;
 				const execution = await executeToolWithReview(tc.name, tc.arguments, projectRoot, input, permissionMode, allowedCommands, (waiting) => setSubAgentWaiting(subId, waiting), getCheckpointId, outputHandler);
 				const toolResult = execution.toolResult;
 				journal?.toolFinished(journalCallId, { ...toolResult, id: journalCallId });
@@ -747,6 +749,27 @@ export async function runToolLoop(
 		initialCallRecorded: false,
 	};
 	const journal = runtime.journal;
+	if (!runtimeState && journal) {
+		const terminalCommands = new Map<string, string>();
+		journal.subscribe((event) => {
+			const callId = typeof event.data.callId === 'string' ? event.data.callId : '';
+			if (event.type === 'tool.called' && event.data.name === 'bash:execute') {
+				const args = event.data.arguments as Record<string, unknown> | undefined;
+				if (typeof args?.command === 'string') terminalCommands.set(callId, args.command);
+			} else if (event.type === 'tool.started') {
+				const command = terminalCommands.get(callId);
+				if (command) startTerminalPanel(command);
+			} else if (event.type === 'tool.output.delta') {
+				appendTerminalOutput(String(event.data.text ?? ''));
+			} else if (event.type === 'tool.completed' || event.type === 'tool.failed' || event.type === 'tool.interrupted') {
+				const command = terminalCommands.get(callId);
+				if (command) {
+					finishTerminalPanel(typeof event.data.exitCode === 'number' ? event.data.exitCode : null);
+					terminalCommands.delete(callId);
+				}
+			}
+		});
+	}
 	if (!runtimeState) journal?.startRun(taskState.goal);
 
 	const changedFiles = runtime.changedFiles;
@@ -827,7 +850,7 @@ export async function runToolLoop(
 								? { toolResult: await runDelegatedAgent(projectRoot, tc, nimClient, input, permissionMode, allowedCommands, taskState, getCheckpointId, journal), applied: false }
 								: await executeToolWithReview(
 									tc.name, tc.arguments, projectRoot, input, permissionMode, allowedCommands, undefined,
-									getCheckpointId, (stream, text) => journal?.toolOutputDelta(tc.id, stream, text),
+									getCheckpointId, journal ? (stream, text) => journal.toolOutputDelta(tc.id, stream, text) : undefined,
 								));
 						}
 					}
@@ -996,7 +1019,7 @@ export async function runToolLoop(
 	// the project's own checks for real and make sure an unsupported claim
 	// doesn't go unchallenged. See runtime/verify.ts, runtime/checks.ts.
 	if (changedFiles.size > 0) {
-		const verification = await verifyCompletionWithChecks(taskState.goal || finalText, changedFiles, ranCommands, () => runProjectChecks(projectRoot));
+		const verification = await verifyCompletionWithChecks(taskState.goal || finalText, changedFiles, ranCommands, () => runProjectChecks(projectRoot, 180_000, journal));
 		if (!verification.ok) {
 			const details = formatIssues(verification.issues);
 			const directive = [

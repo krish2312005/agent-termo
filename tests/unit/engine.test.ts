@@ -20,6 +20,9 @@ describe("durable run engine", () => {
     const root = project();
     const sessionId = randomUUID();
     const journal = createRunJournal(root, sessionId);
+    const observed: string[] = [];
+    const unsubscribe = journal.subscribe((event) => observed.push(event.type));
+    const unsubscribeFaulty = journal.subscribe(() => { throw new Error("terminal renderer failed"); });
     const runId = journal.startRun("Fix the compiler errors");
     journal.assistantStarted();
     journal.assistantTextDelta("I will inspect the code.");
@@ -51,6 +54,10 @@ describe("durable run engine", () => {
       stdout: "typecheck passed",
       result: { exitCode: 0, success: true },
     });
+    expect(observed).toContain("tool.output.delta");
+    expect(observed).toContain("tool.completed");
+    unsubscribe();
+    unsubscribeFaulty();
   });
 
   it("marks in-flight tools and runs interrupted after a process restart", () => {

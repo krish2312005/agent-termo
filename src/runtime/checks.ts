@@ -11,9 +11,11 @@
 // real process output, not a claim.
 // =============================================================================
 
+import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { executeTool } from '../tools/index.js';
+import { executeTool, type ToolOutputHandler } from '../tools/index.js';
+import type { AgentRunJournal } from './engine.js';
 
 export interface CheckRun {
 	/** Which kind of check this was: 'typecheck' | 'lint' | 'test'. */
@@ -64,7 +66,11 @@ function readScripts(projectRoot: string): Record<string, string> {
  * of cascading errors from a broken build. Returns [] when the project
  * defines none of these scripts at all (nothing invented to fill the gap).
  */
-export async function runProjectChecks(projectRoot: string, timeoutMs = 180_000): Promise<CheckRun[]> {
+export async function runProjectChecks(
+	projectRoot: string,
+	timeoutMs = 180_000,
+	journal?: AgentRunJournal,
+): Promise<CheckRun[]> {
 	const scripts = readScripts(projectRoot);
 	if (Object.keys(scripts).length === 0) return [];
 	const runner = detectRunner(projectRoot);
@@ -74,7 +80,14 @@ export async function runProjectChecks(projectRoot: string, timeoutMs = 180_000)
 		const name = names.find((candidate) => typeof scripts[candidate] === 'string');
 		if (!name) continue;
 		const command = `${runner} ${name}`;
-		const result = await executeTool('bash:execute', { command, timeout: timeoutMs }, projectRoot);
+		const callId = randomUUID();
+		journal?.toolCalled({ id: callId, name: 'bash:execute', arguments: { command, timeout: timeoutMs } });
+		journal?.toolStarted(callId);
+		const outputHandler: ToolOutputHandler | undefined = journal
+			? (stream, text) => journal.toolOutputDelta(callId, stream, text)
+			: undefined;
+		const result = await executeTool('bash:execute', { command, timeout: timeoutMs }, projectRoot, outputHandler);
+		journal?.toolFinished(callId, { ...result, id: callId });
 		runs.push({ kind, command, success: result.success, output: (result.success ? result.output : result.error) ?? '' });
 		if (!result.success) break;
 	}

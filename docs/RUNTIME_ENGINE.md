@@ -16,7 +16,7 @@ The primary event vocabulary is:
 - `assistant.started`, `assistant.text.delta`, `assistant.completed`
 - `tool.called`, `tool.started`, `tool.output.delta`, `tool.completed`, `tool.failed`, `tool.interrupted`
 
-A tool call keeps its provider `callId` from request through completion. Shell stdout/stderr chunks are streamed to the same journal and to the terminal panel while the process runs. Tool completion retains the command, working directory, exit code, duration, stdout, stderr, output, and error. Output is bounded to prevent an unbounded event log from one noisy process. Text/output deltas are appended without forcing an fsync for every token; state transitions are synchronously flushed.
+A tool call keeps its provider `callId` from request through completion. Shell stdout/stderr chunks are streamed to the same journal and to the terminal panel while the process runs. `AgentRunJournal.subscribe()` exposes post-commit events to UI observers; observer errors are isolated from persistence and tool execution. Tool completion retains the command, working directory, exit code, duration, stdout, stderr, output, and error. Output is bounded to prevent an unbounded event log from one noisy process. Text/output deltas are appended without forcing an fsync for every token; state transitions are synchronously flushed.
 
 ## Recovery contract
 
@@ -31,7 +31,8 @@ Verification evidence is ordered relative to file changes:
 1. A successful check can verify code only until the next accepted file edit.
 2. Every accepted file change invalidates earlier check evidence.
 3. A failed check is represented as failed evidence with its actual diagnostic; it is not treated as proof that a check ran successfully.
-4. A completion-gate failure is written back into the conversation as a structured repair request. The model gets a bounded automatic repair opportunity, and the same run remains open until verification passes or the runtime pauses with the blocker recorded.
+4. Runtime-launched project checks use the same shell tool lifecycle and journal as model-requested commands.
+5. A completion-gate failure is written back into the conversation as a structured repair request. The model gets a bounded automatic repair opportunity, and the same run remains open until verification passes or the runtime pauses with the blocker recorded.
 
 This is intentionally a bounded recovery policy, not an infinite retry loop. The existing hard tool-iteration cap still protects the process from runaway tool generation.
 
