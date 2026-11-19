@@ -45,6 +45,7 @@ describe('delegation', () => {
     const prompt = buildSystemPrompt('', '', '/workspace', '', agents);
     expect(prompt).toContain('QUALITY GATE — MANDATORY');
     expect(prompt).toContain('test-agent');
+    expect(prompt).toContain('`test-agent`');
     expect(prompt).toContain('code-reviewer');
     expect(prompt).toContain('Repeat up to three repair rounds');
     expect(prompt).toContain('Never make checks green by deleting tests');

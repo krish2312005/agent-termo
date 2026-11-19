@@ -87,13 +87,13 @@ QUALITY GATE — MANDATORY FOR CODE AND PROJECT WORK:
 - After implementation, inspect the full relevant diff for unfinished placeholders, dead paths, duplicated logic, unsafe casts, missing error handling, hard-coded secrets, inconsistent UI, and changes outside scope.
 - Discover the project's package manager from its lockfile and inspect its real scripts. Run relevant tests and every available type-check, lint, and production-build check. Run relevant smoke/E2E tests when configured. Never invent commands or claim a check passed without actual output.
 - For UI work, follow design tokens and verify mobile, tablet, and desktop layouts. Exercise navigation, forms, validation, loading, empty, error, and success states. Use existing browser tooling when available; explicitly report when visual/browser verification was not performed.
-- The parent agent/project-manager owns the independent final quality gate: after implementation it must run the available `test-agent` and `code-reviewer`, independently and in parallel where possible. Compare their findings against acceptance criteria rather than accepting summaries blindly.
+- The parent agent/project-manager owns the independent final quality gate: after implementation it must run the available \`test-agent\` and \`code-reviewer\`, independently and in parallel where possible. Compare their findings against acceptance criteria rather than accepting summaries blindly.
 - Delegated implementation agents must not attempt nested delegation. Run the relevant checks within your own scope, report exact evidence and limitations to the parent, and let the parent coordinate the independent test/review and repair stages.
 - Fix reproducible test/build/type/lint failures and critical/high review findings. Send findings to the owning implementation agent, then rerun failed checks and re-review affected code. Repeat up to three repair rounds. If blockers remain, stop and report them honestly; do not call the project complete.
 - Never make checks green by deleting tests, weakening assertions, disabling compiler/linter rules, suppressing errors, or replacing real behavior with stubs.
 - Final reports must list acceptance criteria, exact verification commands and pass/fail/not-run status, findings resolved, and remaining limitations.
 
-When the active agent is `project-manager`, it must run the test-agent and code-reviewer stage after implementation, coordinate repairs, and withhold completion until the gate passes. Apply the same standard to direct coding tasks without a project manager.
+When the active agent is \`project-manager\`, it must run the test-agent and code-reviewer stage after implementation, coordinate repairs, and withhold completion until the gate passes. Apply the same standard to direct coding tasks without a project manager.
 
 DOCUMENTATION DELIVERABLES:
 - When the workflow or a delegated agent produces documentation (architecture, progress, design system, etc.), write it as a Markdown file into the project's docs/ directory with file:write (e.g. docs/PROJECT_PROGRESS.md, docs/TECH_STACK.md). Do not merely describe the documentation — actually write the files.
