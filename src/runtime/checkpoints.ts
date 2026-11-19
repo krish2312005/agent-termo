@@ -79,9 +79,22 @@ function saveCheckpoint(projectRoot: string, checkpoint: Checkpoint): void {
   const target = checkpointPath(projectRoot, checkpoint.id);
   const temporary = target + '.' + randomUUID() + '.tmp';
   try {
-    const now = Date.now();
+    // Use one monotonic timestamp sequence across all checkpoints. Per-checkpoint
+    // timestamps can tie or drift behind newer checkpoints during rapid undo operations.
+    let latestUpdate = 0;
+    for (const file of readdirSync(directory)) {
+      if (!/^\\d{3,}\\.json$/.test(file)) continue;
+      try {
+        const saved = JSON.parse(readFileSync(resolve(directory, file), 'utf-8')) as { updatedAt?: unknown };
+        if (typeof saved.updatedAt === 'string') {
+          latestUpdate = Math.max(latestUpdate, Date.parse(saved.updatedAt) || 0);
+        }
+      } catch {
+        // Ignore malformed checkpoint files; listCheckpoints already skips them.
+      }
+    }
     const previousUpdate = Date.parse(checkpoint.updatedAt) || 0;
-    checkpoint.updatedAt = new Date(Math.max(now, previousUpdate + 1)).toISOString();
+    checkpoint.updatedAt = new Date(Math.max(Date.now(), latestUpdate + 1, previousUpdate + 1)).toISOString();
     writeFileSync(temporary, JSON.stringify(checkpoint, null, 2) + '\n', { encoding: 'utf-8', mode: 0o600 });
     renameSync(temporary, target);
   } catch (error) {
