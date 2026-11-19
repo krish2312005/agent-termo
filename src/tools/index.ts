@@ -8,8 +8,7 @@ import { resolve, isAbsolute, relative, dirname } from 'node:path';
 import { spawn } from 'node:child_process';
 import { glob as globPromise } from 'glob';
 import { simpleGit } from 'simple-git';
-import { createReadStream, statSync, existsSync, mkdirSync } from 'node:fs';
-import { createInterface } from 'node:readline';
+import { createReadStream, statSync, existsSync } from 'node:fs';
 import { getConfig } from '../utils/config.js';
 import { resolveShell } from '../utils/shell.js';
 import { fromWireToolName } from '../llm/client.js';
@@ -712,7 +711,7 @@ async function toolBash(args: Record<string, unknown>, projectRoot: string, onOu
 			const timeoutMessage = `\n[agent-termo] timed out after ${timeoutMs}ms`;
 			if (onOutput) onOutput('stderr', timeoutMessage);
 			else terminalHooks.onOutput?.(timeoutMessage);
-			killProcessTree(child);
+			processManager.kill(processId);
 			finish(false, null, `Command timed out after ${timeoutMs}ms`);
 		}, timeoutMs);
 	});

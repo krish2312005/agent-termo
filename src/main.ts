@@ -43,7 +43,6 @@ import {
 	printSuccess,
 	printInfo,
 	printHelp,
-	MarkdownPrinter,
 	printAgentsList,
 	printMemoryFile,
 	printTimelineFile,
