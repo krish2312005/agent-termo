@@ -1405,7 +1405,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						const first = (tokens[0] ?? '').toLowerCase();
 						const actions = new Set(['list', 'show', 'add', 'create', 'import', 'install', 'delete', 'remove', 'use', 'refresh']);
 						const action = actions.has(first) ? first : first ? 'use' : 'menu';
-						const flags = tokens.filter((token) => token === '--global' || token === '--user' || token === '--project');
+						const flags: string[] = tokens.filter((token) => token === '--global' || token === '--user' || token === '--project');
 						const values = tokens.filter((token) => !flags.includes(token));
 						const scope: SkillScope = flags.includes('--global') || flags.includes('--user') ? 'user' : 'project';
 						const scopeFilter: SkillScope | undefined = flags.includes('--project') ? 'project' : flags.includes('--global') || flags.includes('--user') ? 'user' : undefined;

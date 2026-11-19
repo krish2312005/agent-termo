@@ -17,7 +17,7 @@ describe('packaged-project runtime initialization', () => {
   it('keeps project docs outside .agent-termo and private logs inside it', async () => {
     const projectRoot = mkdtempSync(join(tmpdir(), 'agent-termo-empty-project-'));
     try {
-      ensureAgentStructure(projectRoot);
+      ensureAgentFolder(projectRoot);
       await logToTimeline(projectRoot, 'startup smoke test');
       await appendToMemory(projectRoot, 'memory smoke test');
       appendToSessionLog('### User\n\nsession smoke test', projectRoot);
