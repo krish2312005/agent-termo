@@ -1732,7 +1732,18 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					}
 					continue mainLoop;
 				}
-				if (cmd === '/mcp') {
+				if (cmd === '/mcp' || cmd === '/mcp reconnect') {
+					if (cmd === '/mcp reconnect') {
+						startSpinner('Reconnecting MCP servers');
+						const reconnected = await initializeMcpServers(projectRoot);
+						stopSpinner();
+						refreshSystemPrompt();
+						for (const status of reconnected) {
+							if (status.connected) printSuccess('MCP server connected: ' + status.name + ' (' + status.tools + ' tools)');
+							else printError('MCP server unavailable: ' + status.name + (status.error ? ' — ' + status.error : ''));
+						}
+						continue mainLoop;
+					}
 					const statuses = getMcpServerStatuses();
 					const tools = getMcpToolDefinitions();
 					if (statuses.length === 0) {

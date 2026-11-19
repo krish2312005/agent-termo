@@ -4,6 +4,7 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { getAgentTermoDir } from '../utils/config.js';
 import type { ToolDef, ToolParameter } from '../types/index.js';
+import { validateJsonSchema } from './tool-validation.js';
 
 export type McpConfigScope = 'project' | 'user';
 
@@ -78,7 +79,7 @@ function writeConfigFile(projectRoot: string, scope: McpConfigScope, servers: Re
 
 export function saveMcpServerConfigs(projectRoot: string, configs: Record<string, McpServerConfig>, scope: McpConfigScope = 'project'): void {
 	const servers = readConfigFile(configPath(projectRoot, scope));
-	for (const [name, config] of Object.entries(configs)) {
+	await Promise.all(Object.entries(configs).map(async ([name, config]) => {
 		if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) {
 			throw new Error('Invalid MCP server name: "' + name + '".');
 		}
@@ -302,7 +303,7 @@ export async function initializeMcpServers(projectRoot: string): Promise<ServerS
 			status.error = error instanceof Error ? error.message : String(error);
 			status.connected = false;
 		}
-	}
+	}));
 	return getMcpServerStatuses();
 }
 
@@ -327,6 +328,8 @@ export async function executeMcpTool(name: string, args: Record<string, unknown>
 	if (!tool) return { success: false, error: 'MCP tool is not connected: ' + name };
 
 	try {
+		const validationError = validateJsonSchema(tool.definition.parameters, args);
+		if (validationError) return { success: false, error: 'Invalid MCP tool arguments: ' + validationError };
 		const result = await tool.client.callTool({ name: tool.toolName, arguments: args });
 		const content = Array.isArray(result.content) ? result.content.map((item: any) => {
 			if (item.type === 'text') return item.text;

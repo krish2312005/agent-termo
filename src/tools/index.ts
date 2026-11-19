@@ -17,6 +17,8 @@ import { computeDiff } from '../diff/index.js';
 import type { ToolResult, ProposedFileChange } from '../types/index.js';
 import { readSkillFile } from '../runtime/skills.js';
 import { isWorkspacePath } from '../runtime/workspace.js';
+import { validateJsonSchema } from '../runtime/tool-validation.js';
+import { TOOL_DEFINITIONS } from '../llm/tools.js';
 
 const MAX_GLOB_RESULTS = 500;
 const MAX_GREP_MATCHES = 300;
@@ -180,10 +182,16 @@ export async function executeTool(
 					durationMs: Date.now() - start,
 				};
 			}
-			const fn = TOOL_MAP[fromWireToolName(name)];
+			const canonicalName = fromWireToolName(name);
+			const fn = TOOL_MAP[canonicalName];
 		if (!fn) {
 			return { id, name, success: false, error: 'Unknown tool: ' + name, durationMs: Date.now() - start };
 		}
+			const definition = TOOL_DEFINITIONS.find((tool) => tool.name === canonicalName);
+			const validationError = definition ? validateJsonSchema(definition.parameters, toolArgs) : undefined;
+			if (validationError) {
+				return { id, name: canonicalName, success: false, error: 'Invalid tool arguments: ' + validationError, durationMs: Date.now() - start };
+			}
 			const result = await fn(toolArgs, projectRoot, onOutput);
 			if (fromWireToolName(name) === 'bash:execute') invalidateToolCache(projectRoot);
 			return result;
