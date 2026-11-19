@@ -3,6 +3,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadAllAgents } from '../agents/index.js';
 import type { Agent } from '../types/index.js';
+import { ensureTermoFile } from './termo-md.js';
 import {
   agentTermoAgentsDir,
   agentTermoCommandsDir,
@@ -23,6 +24,15 @@ export interface AgentCommand {
   name: string;
   description: string;
   prompt: string;
+}
+
+function bundledDefaultRoots(): string[] {
+  const here = dirname(fileURLToPath(import.meta.url));
+  return [
+    resolve(here, '.agent-termo-defaults'),
+    resolve(here, 'defaults'),
+    resolve(here, '..', '..', 'src', 'runtime', 'defaults'),
+  ];
 }
 
 function bundledClaudeRoots(): string[] {
@@ -102,12 +112,22 @@ export function ensureAgentFolder(projectRoot: string): AgentFolderResult {
 
   let copiedAgents = 0;
   let copiedCommands = 0;
+
+  // Bring forward legacy Claude assets first, then fill in Agent-Termo defaults.
+  // Existing project-specific files always win and are never overwritten.
   for (const bundled of bundledClaudeRoots()) {
-    if (copiedAgents === 0) copiedAgents = copyMarkdownDirectory(resolve(bundled, 'agents'), agents);
-    if (copiedCommands === 0) copiedCommands = copyMarkdownDirectory(resolve(bundled, 'commands'), commands);
-    if (copiedAgents > 0 && copiedCommands > 0) break;
+    copiedAgents += copyMarkdownDirectory(resolve(bundled, 'agents'), agents);
+    copiedCommands += copyMarkdownDirectory(resolve(bundled, 'commands'), commands);
   }
 
+  for (const bundled of bundledDefaultRoots()) {
+    copiedAgents += copyMarkdownDirectory(resolve(bundled, 'agents'), agents);
+    copiedCommands += copyMarkdownDirectory(resolve(bundled, 'commands'), commands);
+    copyMarkdownDirectory(resolve(bundled, 'templates'), resolve(root, 'templates'));
+    copyMarkdownDirectory(resolve(bundled, 'workflow'), root);
+  }
+
+  ensureTermoFile(projectRoot);
   return { root, copiedAgents, copiedCommands };
 }
 
