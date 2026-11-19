@@ -75,6 +75,7 @@ Available functions:
 - bash:execute(command) → run a shell command
 - git:status() / git:commit(message) / git:push() → version control
 - agent:delegate(agent, task, context?) → spawn a specialist sub-agent and receive its result
+- skill:read(name, path?) → load a relevant skill's SKILL.md or one of its supporting reference files
 
 WORKFLOW CONTINUITY:
 - When the user says "continue", resume the interrupted task from the last completed step using the conversation history. Never restart the task from the beginning or redo work that is already done.
@@ -137,6 +138,7 @@ export function buildSystemPrompt(
 	activeAgentPrompt = '',
 	roster: Array<{ name: string; description: string }> = [],
 	termoInstructions = '',
+	skillsPrompt = '',
 ): string {
 	let prompt = SYSTEM_BASE;
 	prompt += `\n\n## Project Working Directory\n${agentDir}\nAll relative file paths and shell commands must operate inside this directory. Create and modify the user's files here. Never use /tmp, an OS temp directory, the npm package directory, or another workspace for project files.`;
@@ -144,6 +146,10 @@ export function buildSystemPrompt(
 
 	if (termoInstructions) {
 		prompt += '\n\n## Project Instructions (TERMO.md)\n' + termoInstructions;
+	}
+
+	if (skillsPrompt) {
+		prompt += '\n\n' + skillsPrompt;
 	}
 
 	if (activeAgentPrompt) {

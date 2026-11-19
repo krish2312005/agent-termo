@@ -103,6 +103,7 @@ describe('executeTool', () => {
 	});
 
 	it('accepts common model tool names and Claude-style argument names', async () => {
+		expect(fromWireToolName('skill_read')).toBe('skill:read');
 		const path = '.test-alias-tool.txt';
 		const absolutePath = resolve(PROJECT_ROOT, path);
 		rmSync(absolutePath, { force: true });

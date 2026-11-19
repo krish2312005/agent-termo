@@ -29,6 +29,7 @@ describe('packaged-project runtime initialization', () => {
       expect(existsSync(memoryPath)).toBe(true);
       expect(existsSync(join(projectRoot, '.agent-termo', 'agents'))).toBe(true);
       expect(existsSync(join(projectRoot, '.agent-termo', 'commands'))).toBe(true);
+      expect(existsSync(join(projectRoot, '.agent-termo', 'skills'))).toBe(true);
       expect(existsSync(join(projectRoot, '.agent-termo', 'logs'))).toBe(true);
       expect(existsSync(join(projectRoot, '.agent-termo', 'agents', 'project-manager.md'))).toBe(true);
       expect(existsSync(join(projectRoot, '.agent-termo', 'agents', 'architect.md'))).toBe(true);

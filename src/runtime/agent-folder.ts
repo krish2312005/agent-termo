@@ -7,6 +7,7 @@ import { ensureTermoFile } from './termo-md.js';
 import {
   agentTermoAgentsDir,
   agentTermoCommandsDir,
+  agentTermoSkillsDir,
   agentTermoLogsDir,
   agentTermoRoot,
   ensureProjectDocs,
@@ -95,6 +96,7 @@ export function ensureAgentStructure(projectRoot: string): string {
   const root = agentTermoRoot(projectRoot);
   mkdirSync(agentTermoAgentsDir(projectRoot), { recursive: true });
   mkdirSync(agentTermoCommandsDir(projectRoot), { recursive: true });
+  mkdirSync(agentTermoSkillsDir(projectRoot), { recursive: true });
   mkdirSync(agentTermoLogsDir(projectRoot), { recursive: true });
   ensureProjectDocs(projectRoot);
 

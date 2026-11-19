@@ -52,5 +52,9 @@ Thumbs.db
 
 # pkg cache
 .degree/
-# Agent-Termo runtime state (project agents, commands, private session logs)
+# Agent-Termo runtime state. Keep project skills in version control; ignore other runtime files.
 .agent-termo/
+!.agent-termo/
+.agent-termo/*
+!.agent-termo/skills/
+!.agent-termo/skills/**

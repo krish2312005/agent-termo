@@ -12,8 +12,10 @@ import { resolve } from 'node:path';
 import { readdirSync, readFileSync } from 'node:fs';
 import { ensureAgentFolder, loadProjectAgents, loadAgentCommands, type AgentCommand } from './runtime/agent-folder.js';
 import { loadTermoInstructions } from './runtime/termo-md.js';
+import { createSkill, deleteSkill, importSkill, listSkills, loadSkillCatalogPrompt, loadSkillInstructions, readSkillFile, type SkillDefinition, type SkillScope } from './runtime/skills.js';
 import { initializeMcpServers, getMcpServerStatuses, getMcpToolDefinitions, isMcpToolName, executeMcpTool, shutdownMcpServers, saveMcpServerConfigs, type McpServerConfig } from './runtime/mcp.js';
 import { commandApprovalKey, isCommandApprovalRequired, loadAllowedCommands, saveAllowedCommands } from './runtime/permissions.js';
+import { createSession, forkSession, listSessions, loadLatestSession, loadSession, saveSession, type StoredSession } from './runtime/sessions.js';
 import {
 	addSubAgentProgress,
 	beginSubAgentRun,
@@ -247,8 +249,25 @@ function isContinueRequest(input: string): boolean {
 	return /^(?:\/)?continue\b/i.test(input.trim()) || input.trim().toLowerCase() === 'c';
 }
 
-function shouldUseTools(input: string, activeAgentName: string, continuing: boolean, hasMcpTools = false): boolean {
-	if (continuing || activeAgentName || hasMcpTools) return true;
+function splitCommandArgs(value: string): string[] {
+	return (value.match(/"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|\S+/g) ?? [])
+		.map((part) => part.replace(/^['"]|['"]$/g, ''));
+}
+
+function hasRelevantSkill(input: string, skills: SkillDefinition[]): boolean {
+	const words = new Set(input.toLowerCase().match(/[a-z0-9-]{3,}/g) ?? []);
+	const ignored = new Set(['about', 'after', 'also', 'and', 'application', 'build', 'code', 'from', 'into', 'make', 'need', 'project', 'that', 'this', 'with', 'your']);
+	return skills.some((skill) => {
+		if (skill.disableModelInvocation) return false;
+		if (words.has(skill.name)) return true;
+		const terms = skill.description.toLowerCase().match(/[a-z0-9]{4,}/g) ?? [];
+		const matches = new Set(terms.filter((term) => !ignored.has(term) && words.has(term)));
+		return matches.size >= 1;
+	});
+}
+
+function shouldUseTools(input: string, activeAgentName: string, continuing: boolean, hasMcpTools = false, hasRelevantSkills = false): boolean {
+	if (continuing || activeAgentName || hasMcpTools || hasRelevantSkills) return true;
 	return /\b(build|code|debug|deploy|edit|file|fix|implement|refactor|review|run|test|write|rewrite|create|delete|inspect|analy[sz]e|documentation|docs|architecture|delegate|spawn|specialist|sub-?agent)\b/i.test(input);
 }
 
@@ -453,7 +472,7 @@ async function runDelegatedAgent(
 		loadTimeline(projectRoot),
 	]);
 	const delegatedMessages: ConversationMessage[] = [
-		{ id: crypto.randomUUID(), role: 'system', content: buildSystemPrompt(projectMemory, projectTimeline, projectRoot, agent.systemPrompt, [], loadTermoInstructions(projectRoot)), timestamp: new Date(), agent: agent.name },
+		{ id: crypto.randomUUID(), role: 'system', content: buildSystemPrompt(projectMemory, projectTimeline, projectRoot, agent.systemPrompt, [], loadTermoInstructions(projectRoot), loadSkillCatalogPrompt(projectRoot)), timestamp: new Date(), agent: agent.name },
 		{
 			id: crypto.randomUUID(),
 			role: 'user',
@@ -561,6 +580,7 @@ async function runToolLoop(
 	permissionMode: PermissionMode,
 	allowedCommands: Set<string>,
 	taskState: TaskState,
+	onConversationChanged: () => void,
 ): Promise<string> {
 	let toolCalls = initialToolCalls;
 	let finalText = '';
@@ -578,6 +598,7 @@ async function runToolLoop(
 			timestamp: new Date(),
 		});
 
+		onConversationChanged();
 				// Execute all delegation calls in parallel. Ordinary tools stay sequential
 				// because concurrent writes or terminal commands can race with each other.
 					const completedOperations = taskState.completedOperations ?? (taskState.completedOperations = new Set());
@@ -616,6 +637,7 @@ async function runToolLoop(
 				content: (toolResult.success ? 'Result: ' : 'Error: ') + (toolResult.success ? (toolResult.output ?? '') : toolResult.error) + changeNote,
 				timestamp: new Date(),
 			});
+			onConversationChanged();
 
 				logAgentTermoTimeline('Tool: ' + tc.name + ' -- ' + statusText + changeNote, projectRoot);
 				const activity = describeToolActivity(tc.name, tc.arguments, toolResult.output, execution.change, execution.applied, toolResult.success);
@@ -674,6 +696,7 @@ async function runToolLoop(
 						content: finalText.trim(),
 						timestamp: new Date(),
 					});
+					onConversationChanged();
 				}
 			// Narration that comes with more tool calls is shown now; the
 			// final answer (no tool calls) is printed by the caller.
@@ -822,15 +845,38 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 	});
 	let customCommands: AgentCommand[] = loadAgentCommands(projectRoot);
 	const refreshCommandCompletion = (): void => {
-		setCommands([...COMMANDS, { name: '/mcp', description: 'list MCP servers and available tools' }, ...customCommands.map((command) => ({ name: '/' + command.name, description: command.description || 'project command' }))]);
+		setCommands([...COMMANDS, { name: '/mcp', description: 'list MCP servers and available tools' }, ...customCommands.filter((command) => !['skill', 'sessions', 'resume', 'fork'].includes(command.name.toLowerCase())).map((command) => ({ name: '/' + command.name, description: command.description || 'project command' }))]);
 	};
 	refreshCommandCompletion();
 	let activeAgentName = '';
 	let activeAgentPrompt = '';
 	let currentGoal = '';
-	const taskState = newTaskState();
+	let taskState = newTaskState();
+	let session: StoredSession = loadLatestSession(projectRoot) ?? createSession(projectRoot);
+	const sessionStartedAt = Date.now();
+
+	if (session.model) nimClient.setModel(session.model);
+	if (session.thinkingCapacity) nimClient.setThinkingCapacity(session.thinkingCapacity as ThinkingCapacity);
+	currentGoal = session.currentGoal ?? '';
+	if (session.activeAgentName) {
+		const selectedAgent = customAgents.find((agent) => agent.name === session.activeAgentName);
+		if (selectedAgent) {
+			activeAgentName = selectedAgent.name;
+			activeAgentPrompt = selectedAgent.systemPrompt;
+		}
+	}
+	if (session.taskState) {
+		taskState = {
+			goal: session.taskState.goal,
+			status: session.taskState.status === 'running' ? 'interrupted' : session.taskState.status,
+			reason: session.taskState.status === 'running' ? 'Agent-Termo restarted before the task finished.' : session.taskState.reason,
+			lastActions: [...session.taskState.lastActions],
+			completedOperations: new Set(session.taskState.completedOperations),
+		};
+	}
+
 	const buildSessionPrompt = (): string => {
-		let prompt = buildSystemPrompt(memory, '', projectRoot, activeAgentPrompt, customAgents, loadTermoInstructions(projectRoot));
+		let prompt = buildSystemPrompt(memory, '', projectRoot, activeAgentPrompt, customAgents, loadTermoInstructions(projectRoot), loadSkillCatalogPrompt(projectRoot));
 		if (memoryContext) prompt += '\n\n## Recent Session Log (previous sessions, may include interrupted tasks)\n' + memoryContext;
 		if (taskState.goal && taskState.status !== 'idle') {
 			prompt += '\n\n## Active Task\n' + taskState.goal + '\nStatus: ' + taskState.status + (taskState.reason ? ' (' + taskState.reason + ')' : '');
@@ -844,25 +890,77 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 		return prompt;
 	};
 
-	const session = { id: crypto.randomUUID(), projectRoot, startedAt: new Date() };
-
-	const conversation: ConversationMessage[] = [
-		{
-			id: crypto.randomUUID(),
-			role: 'system',
-			content: buildSessionPrompt(),
-			timestamp: new Date(),
-		},
-	];
+	let conversation: ConversationMessage[] = session.messages.length > 0
+		? session.messages.map((message) => ({ ...message, timestamp: new Date(message.timestamp) }))
+		: [];
+	if (conversation.length === 0) {
+		conversation.push({ id: crypto.randomUUID(), role: 'system', content: buildSessionPrompt(), timestamp: new Date() });
+	} else if (conversation[0]?.role !== 'system') {
+		conversation.unshift({ id: crypto.randomUUID(), role: 'system', content: buildSessionPrompt(), timestamp: new Date() });
+	}
 	const refreshSystemPrompt = (): void => {
 		const compacted = conversation[0]?.content.match(/\n\n## Compacted Conversation Context[\s\S]*$/)?.[0] ?? '';
 		conversation[0]!.content = buildSessionPrompt() + compacted;
+	};
+
+	let persistenceWarningShown = false;
+	const persistSession = (): void => {
+		session.messages = conversation;
+		session.currentGoal = currentGoal || undefined;
+		session.activeAgentName = activeAgentName || undefined;
+		session.model = nimClient.getModel();
+		session.thinkingCapacity = nimClient.getThinkingCapacity();
+		session.taskState = {
+			goal: taskState.goal,
+			status: taskState.status,
+			reason: taskState.reason,
+			lastActions: [...taskState.lastActions],
+			completedOperations: [...(taskState.completedOperations ?? [])],
+		};
+		try {
+			session = saveSession(projectRoot, session);
+		} catch (error) {
+			if (!persistenceWarningShown) {
+				persistenceWarningShown = true;
+				printError('Could not save this session: ' + (error instanceof Error ? error.message : String(error)));
+			}
+		}
+	};
+
+	const restoreSession = (selected: StoredSession): void => {
+		session = selected;
+		conversation = selected.messages.map((message) => ({ ...message, timestamp: new Date(message.timestamp) }));
+		currentGoal = selected.currentGoal ?? '';
+		activeAgentName = '';
+		activeAgentPrompt = '';
+		const selectedAgent = customAgents.find((agent) => agent.name === selected.activeAgentName);
+		if (selectedAgent) {
+			activeAgentName = selectedAgent.name;
+			activeAgentPrompt = selectedAgent.systemPrompt;
+		}
+		taskState = selected.taskState ? {
+			goal: selected.taskState.goal,
+			status: selected.taskState.status === 'running' ? 'interrupted' : selected.taskState.status,
+			reason: selected.taskState.status === 'running' ? 'Agent-Termo restarted before the task finished.' : selected.taskState.reason,
+			lastActions: [...selected.taskState.lastActions],
+			completedOperations: new Set(selected.taskState.completedOperations),
+		} : newTaskState();
+		if (selected.model) nimClient.setModel(selected.model);
+		if (selected.thinkingCapacity) nimClient.setThinkingCapacity(selected.thinkingCapacity as ThinkingCapacity);
+		if (conversation.length === 0) conversation.push({ id: crypto.randomUUID(), role: 'system', content: buildSessionPrompt(), timestamp: new Date() });
+		refreshSystemPrompt();
+		persistSession();
 	};
 
 	initScreen({ model: nimClient.getModel(), project: projectRoot, thinking: nimClient.getThinkingCapacity() });
 	setScreenStatus({ usage: nimClient.formatUsage() });
 	setPermissionMode(permissionMode);
 	printWelcome(projectRoot, nimClient.getModel());
+	if (session.messages.some((message) => message.role !== 'system')) {
+		printSuccess('Restored session ' + session.id.slice(0, 8) + ': ' + session.title);
+		if (taskState.status === 'interrupted') printInfo('The previous task was interrupted. Type /continue to resume it.');
+	}
+	persistSession();
 	logAgentTermoTimeline('Agent-Termo session started. Model: ' + nimClient.getModel(), projectRoot);
 	void logToTimeline(projectRoot, 'Agent-Termo session started. Model: ' + nimClient.getModel());
 	logAgentTermoTimeline('Commands: /help /clear /memory /timeline /model /thinking /agents /history', projectRoot);
@@ -876,6 +974,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 		activeAgentName = selected.name;
 		activeAgentPrompt = selected.systemPrompt;
 		refreshSystemPrompt();
+		persistSession();
 		if (seedInput) setNextInput('@' + selected.name + ' ');
 		logAgentTermoTimeline('Active custom agent: ' + selected.name, projectRoot);
 		printSuccess('Active agent: ' + selected.name);
@@ -895,16 +994,68 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 		if (selected) activateAgent(selected, true);
 	};
 
+	const showSkills = (skills = listSkills(projectRoot)): void => {
+		if (skills.length === 0) {
+			printInfo('No skills found. Create one with /skill add <name> or import one with /skill import <path>.');
+			printInfo('Project skills: ' + resolve(projectRoot, '.agent-termo', 'skills'));
+			printInfo('User skills: ' + resolve(process.env.HOME || process.env.USERPROFILE || '', '.agent-termo', 'skills'));
+			return;
+		}
+		printInfo('Available skills (' + skills.length + '):');
+		for (const skill of skills) {
+			printInfo('  ' + skill.name + ' [' + skill.scope + '/' + skill.source + '] — ' + skill.description);
+		}
+	};
+
+	const chooseSkillEntry = async (skills: SkillDefinition[], title: string): Promise<SkillDefinition | undefined> => {
+		if (skills.length === 0) return undefined;
+		if (skills.length === 1) return skills[0];
+		const selected = await pick({
+			title,
+			items: skills.map((skill, index) => ({
+				value: String(index),
+				label: skill.name + ' (' + skill.scope + ', ' + skill.source + ')',
+				hint: skill.description,
+			})),
+		});
+		return selected === null ? undefined : skills[Number(selected)];
+	};
+
+	const removeSkill = async (name = '', scope?: SkillScope): Promise<void> => {
+		let candidates = listSkills(projectRoot);
+		if (name) candidates = candidates.filter((skill) => skill.name === name);
+		if (scope) candidates = candidates.filter((skill) => skill.scope === scope);
+		if (candidates.length === 0) {
+			printError(name ? 'Skill not found: ' + name : 'No skills are available to delete.');
+			return;
+		}
+		const selected = await chooseSkillEntry(candidates, 'Select a skill to delete');
+		if (!selected) return;
+		const decision = await promptAcceptReject('Permanently delete ' + selected.name + ' (' + selected.scope + '/' + selected.source + ')?');
+		if (decision !== 'accept') {
+			printInfo('Skill deletion cancelled.');
+			return;
+		}
+		try {
+			deleteSkill(projectRoot, selected);
+			refreshSystemPrompt();
+			printSuccess('Deleted skill: ' + selected.name + ' (' + selected.scope + '/' + selected.source + ').');
+		} catch (error) {
+			printError('Could not delete skill: ' + (error instanceof Error ? error.message : String(error)));
+		}
+	};
+
 	let cleanupStarted = false;
 	const cleanup = () => {
 		if (cleanupStarted) return;
 		cleanupStarted = true;
+		persistSession();
 		input.close();
 		void shutdownMcpServers().finally(() => {
 			process.stdout.write('\n');
 			console.log(
 				'Session complete. ' +
-				Math.round((Date.now() - session.startedAt.getTime()) / 60000) +
+				Math.round((Date.now() - sessionStartedAt) / 60000) +
 				' minutes.',
 			);
 			process.exit(0);
@@ -963,9 +1114,10 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 			}
 
 				let displayedInput = false;
+				let skillInvocation = false;
 					const lowerInput = userInput.toLowerCase().trim();
 					const customCommandMatch = /^\/([A-Za-z0-9_-]+)(?:\s+([\s\S]*))?$/.exec(userInput);
-					const customCommand = customCommandMatch
+					const customCommand = customCommandMatch && customCommandMatch[1]!.toLowerCase() !== 'skill'
 						? customCommands.find((command) => command.name.toLowerCase() === customCommandMatch[1]!.toLowerCase())
 						: undefined;
 					if (customCommand) {
@@ -1039,7 +1191,12 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					continue mainLoop;
 				}
 				if (cmd === '/clear' || cmd === '/cls') {
+					persistSession();
 					conversation.length = 1;
+					taskState = newTaskState();
+					conversation[0]!.content = buildSessionPrompt();
+					session = createSession(projectRoot, conversation);
+					persistSession();
 					clearScreen();
 					printWelcome(projectRoot, nimClient.getModel());
 					printSuccess('Conversation cleared.');
@@ -1056,10 +1213,12 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					if (cmd === '/model' || cmd.startsWith('/model ')) {
 						// Take the argument from the original text: model IDs are case-sensitive.
 						await handleModelCommand(userInput.trim().slice('/model'.length).trim(), nimClient, projectRoot);
+						persistSession();
 						continue mainLoop;
 					}
 						if (cmd === '/thinking' || cmd.startsWith('/thinking ')) {
 						await handleThinkingCommand(userInput.trim().slice('/thinking'.length).trim(), nimClient, projectRoot);
+						persistSession();
 						continue mainLoop;
 					}
 						if (cmd === '/permissions' || cmd.startsWith('/permissions ')) {
@@ -1079,6 +1238,166 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 							printSuccess(permissionMode === 'auto' ? 'Permission mode: AUTO-ACCEPT (files and terminal commands run without prompts).' : permissionMode === 'files' ? 'Permission mode: FILES-AUTO (file changes apply; terminal commands still ask).' : 'Permission mode: ASK before applying changes.');
 							continue mainLoop;
 						}
+
+					if (cmd === '/skill' || cmd.startsWith('/skill ')) {
+						const tokens = splitCommandArgs(userInput.trim().slice('/skill'.length).trim());
+						const first = (tokens[0] ?? '').toLowerCase();
+						const actions = new Set(['list', 'show', 'add', 'create', 'import', 'install', 'delete', 'remove', 'use', 'refresh']);
+						const action = actions.has(first) ? first : first ? 'use' : 'menu';
+						const flags = tokens.filter((token) => token === '--global' || token === '--user' || token === '--project');
+						const values = tokens.filter((token) => !flags.includes(token));
+						const scope: SkillScope = flags.includes('--global') || flags.includes('--user') ? 'user' : 'project';
+						const scopeFilter: SkillScope | undefined = flags.includes('--project') ? 'project' : flags.includes('--global') || flags.includes('--user') ? 'user' : undefined;
+						const name = actions.has(first) ? (values[1] ?? '') : (values[0] ?? '');
+						const task = actions.has(first) ? values.slice(2).join(' ') : values.slice(1).join(' ');
+
+						if (action === 'menu') {
+							const choice = await pick({
+								title: 'Manage skills',
+								items: [
+									{ value: 'list', label: 'List skills', hint: 'See project and user skills' },
+									{ value: 'use', label: 'Use a skill', hint: 'Load a skill for your next task' },
+									{ value: 'add', label: 'Create a skill', hint: 'Scaffold a new SKILL.md' },
+									{ value: 'import', label: 'Import a skill', hint: 'Copy an existing skill folder' },
+									{ value: 'delete', label: 'Delete a skill', hint: 'Remove a skill after confirmation' },
+								],
+							});
+							if (choice === 'list') showSkills();
+							else if (choice === 'add') setNextInput('/skill add ');
+							else if (choice === 'import') setNextInput('/skill import ');
+							else if (choice === 'use') {
+								const available: SkillDefinition[] = [];
+								const seen = new Set<string>();
+								for (const skill of listSkills(projectRoot)) {
+									if (skill.userInvocable && !seen.has(skill.name)) {
+										available.push(skill);
+										seen.add(skill.name);
+									}
+								}
+								const selected = await chooseSkillEntry(available, 'Select a skill to use');
+								if (selected) setNextInput('/skill use ' + selected.name + (selected.scope === 'user' ? ' --global ' : ' --project '));
+							}
+							else if (choice === 'delete') await removeSkill();
+							else if (choice === null) {
+								showSkills();
+								printInfo('Usage: /skill list|use|add|import|show|delete');
+							}
+							continue mainLoop;
+						}
+
+						if (action === 'list') {
+							showSkills(scopeFilter ? listSkills(projectRoot).filter((skill) => skill.scope === scopeFilter) : listSkills(projectRoot));
+							continue mainLoop;
+						}
+
+						if (action === 'refresh') {
+							refreshSystemPrompt();
+							showSkills();
+							printSuccess('Skill catalog refreshed.');
+							continue mainLoop;
+						}
+
+						if (action === 'add' || action === 'create') {
+							if (!name) {
+								setNextInput('/skill add ');
+								printInfo('Enter a lowercase skill name, then press Enter.');
+								continue mainLoop;
+							}
+							try {
+								const path = createSkill(projectRoot, name, scope);
+								refreshSystemPrompt();
+								printSuccess('Created skill: ' + name);
+								printInfo('Edit ' + path + ' and replace its starter description and instructions.');
+							} catch (error) {
+								printError('Could not create skill: ' + (error instanceof Error ? error.message : String(error)));
+							}
+							continue mainLoop;
+						}
+
+						if (action === 'import' || action === 'install') {
+							const sourcePath = values[1] ?? '';
+							if (!sourcePath) {
+								setNextInput('/skill import ');
+								printInfo('Enter a local skill folder or path to its SKILL.md file.');
+								continue mainLoop;
+							}
+							try {
+								const imported = importSkill(projectRoot, sourcePath, scope);
+								refreshSystemPrompt();
+								printSuccess('Imported skill: ' + imported.name);
+								printInfo('Installed at ' + imported.filePath);
+							} catch (error) {
+								printError('Could not import skill: ' + (error instanceof Error ? error.message : String(error)));
+							}
+							continue mainLoop;
+						}
+
+						if (action === 'delete' || action === 'remove') {
+							await removeSkill(name, scopeFilter);
+							continue mainLoop;
+						}
+
+						if (action === 'show') {
+							if (!name) {
+								printError('Specify a skill name.', 'Usage: /skill show <name>');
+								continue mainLoop;
+							}
+							const matches = listSkills(projectRoot).filter((skill) => skill.name === name && (!scopeFilter || skill.scope === scopeFilter));
+							const selected = await chooseSkillEntry(matches, 'Select a skill to inspect');
+							if (!selected) {
+								printError('Skill not found: ' + name);
+								continue mainLoop;
+							}
+							try {
+								printInfo('Skill: ' + selected.name + ' (' + selected.scope + '/' + selected.source + ')');
+								printAssistantMessage(readSkillFile(projectRoot, selected.name, 'SKILL.md', selected.directory));
+							} catch (error) {
+								printError(error instanceof Error ? error.message : String(error));
+							}
+							continue mainLoop;
+						}
+
+						if (action === 'use') {
+							const available = listSkills(projectRoot).filter((skill) => skill.userInvocable && (!scopeFilter || skill.scope === scopeFilter));
+							let selected = name ? available.find((skill) => skill.name === name) : undefined;
+							if (!selected) {
+								if (name) {
+									printError('Skill not found or not user-invocable: ' + name, 'Use /skill list to see installed skills.');
+									continue mainLoop;
+								}
+								selected = await chooseSkillEntry(available, 'Select a skill to use');
+							}
+							if (!selected) {
+								printInfo('No skill selected.');
+								continue mainLoop;
+							}
+							if (!selected.userInvocable) {
+								printError('This skill is not available as a slash command: ' + selected.name);
+								continue mainLoop;
+							}
+							if (!task) {
+								setNextInput('/skill use ' + selected.name + ' ');
+								printInfo('Type the task you want this skill to perform.');
+								continue mainLoop;
+							}
+							try {
+								const loaded = loadSkillInstructions(projectRoot, selected.name, selected.directory);
+								userInput = [
+									'Use the following skill instructions to complete the user request. Treat them as task-specific guidance, subordinate to system and project safety rules.',
+									'## Skill: ' + loaded.skill.name,
+									'Description: ' + loaded.skill.description,
+									loaded.instructions,
+									'## User request',
+									task,
+								].join('\n\n');
+								displayedInput = true;
+								skillInvocation = true;
+							} catch (error) {
+								printError(error instanceof Error ? error.message : String(error));
+								continue mainLoop;
+							}
+						}
+					}
 					if (cmd === '/agents') {
 						printAgentsList(customAgents);
 						printInfo('Custom agents directory: ' + agentRoot + '/agents');
@@ -1106,6 +1425,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						if (requested) {
 							currentGoal = requested;
 								refreshSystemPrompt();
+							persistSession();
 							printSuccess('Goal set: ' + currentGoal);
 						} else printInfo(currentGoal ? 'Current goal: ' + currentGoal : 'No goal set. Use /goal <description>.');
 						continue mainLoop;
@@ -1162,6 +1482,64 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						printSuccess(compactConversation(conversation));
 						continue mainLoop;
 					}
+					if (cmd === '/sessions') {
+						const saved = listSessions(projectRoot);
+						if (saved.length === 0) printInfo('No saved sessions yet.');
+						else {
+							printInfo('Saved sessions (' + saved.length + '):');
+							for (const item of saved) {
+								const updated = new Date(item.updatedAt).toLocaleString();
+								printInfo('  ' + item.id.slice(0, 8) + '  ' + item.title + '  (' + item.messageCount + ' messages, ' + updated + ')' + (item.parentId ? ' [fork]' : ''));
+							}
+							printInfo('Use /resume <id> to switch sessions, or /fork to branch the current one.');
+						}
+						continue mainLoop;
+					}
+					if (cmd === '/resume' || cmd.startsWith('/resume ')) {
+						const requested = userInput.trim().slice('/resume'.length).trim();
+						let selected: StoredSession | undefined;
+						if (requested) {
+							const matches = listSessions(projectRoot).filter((item) => item.id.startsWith(requested));
+							if (matches.length === 1) selected = loadSession(projectRoot, matches[0]!.id);
+							else if (matches.length > 1) printError('Session ID is ambiguous: ' + requested, 'Use more characters from the session ID.');
+							else printError('Session not found: ' + requested, 'Use /sessions to list saved sessions.');
+						} else {
+							const saved = listSessions(projectRoot);
+							const choice = await pick({
+								title: 'Resume a session',
+								items: saved.map((item) => ({ value: item.id, label: item.id.slice(0, 8) + '  ' + item.title, hint: new Date(item.updatedAt).toLocaleString() + ' · ' + item.messageCount + ' messages' })),
+							});
+							if (choice) selected = loadSession(projectRoot, choice);
+						}
+						if (selected) {
+							persistSession();
+							restoreSession(selected);
+							clearScreen();
+							printWelcome(projectRoot, nimClient.getModel());
+							printSuccess('Resumed session ' + session.id.slice(0, 8) + ': ' + session.title);
+							if (taskState.status === 'interrupted') printInfo('This task was interrupted. Type /continue to pick up where it stopped.');
+						}
+						continue mainLoop;
+					}
+					if (cmd === '/fork' || cmd.startsWith('/fork ')) {
+						const requested = userInput.trim().slice('/fork'.length).trim();
+						let source: StoredSession | undefined = session;
+						if (requested) {
+							const matches = listSessions(projectRoot).filter((item) => item.id.startsWith(requested));
+							if (matches.length === 1) source = loadSession(projectRoot, matches[0]!.id);
+							else {
+								printError(matches.length > 1 ? 'Session ID is ambiguous: ' + requested : 'Session not found: ' + requested);
+								source = undefined;
+							}
+						}
+						if (source) {
+							persistSession();
+							const forked = forkSession(projectRoot, source);
+							restoreSession(forked);
+							printSuccess('Created and switched to fork ' + session.id.slice(0, 8) + ' from ' + (session.parentId ?? '').slice(0, 8) + '.');
+						}
+						continue mainLoop;
+					}
 						if (cmd === '/history' || cmd === '/hist' || cmd.startsWith('/history ')) {
 						const requested = Number.parseInt(userInput.trim().slice('/history'.length).trim() || '12', 10);
 						const count = Number.isFinite(requested) && requested > 0 ? Math.min(requested, 50) : 12;
@@ -1186,7 +1564,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					// command block, which resumes an interrupted task in place.
 					printUserMessage(userInput);
 					displayedInput = true;
-				} else {
+				} else if (!skillInvocation) {
 					printError('Unknown command: ' + cmd, 'Type /help for available commands.');
 					continue mainLoop;
 				}
@@ -1224,6 +1602,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				timestamp: new Date(),
 				};
 				conversation.push(userMsg);
+				persistSession();
 				rememberChat(projectRoot, 'User', userInput);
 				void appendToTimeline(projectRoot, activeAgentName || 'Agent-Termo', 'User request', ['Request: ' + userInput.replace(/\s+/g, ' ').slice(0, 700)], []);
 				if (!displayedInput) printUserMessage(userInput);
@@ -1234,7 +1613,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 
 				// Plain conversation does not need a large tool schema. Keeping it out of
 				// the request also supports providers/models that reject tool mode.
-				const tools = shouldUseTools(userInput, activeAgentName, continuing, getMcpToolDefinitions().length > 0)
+				const tools = shouldUseTools(userInput, activeAgentName, continuing, getMcpToolDefinitions().length > 0, skillInvocation || hasRelevantSkill(userInput, listSkills(projectRoot)))
 					? nimClient.buildToolDefs([...TOOL_DEFINITIONS, ...getMcpToolDefinitions()])
 					: undefined;
 
@@ -1258,6 +1637,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 								timestamp: new Date(),
 				});
 				rememberChat(projectRoot, 'Assistant', cleanText);
+							persistSession();
 				printAssistantMessage(cleanText);
 						}
 					} else {
@@ -1266,7 +1646,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						if (narration) printAssistantMessage(narration);
 
 						// Run the tool-call loop: execute tools, feed results back, repeat
-						const finalText = await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, permissionMode, allowedCommands, taskState);
+						const finalText = await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, permissionMode, allowedCommands, taskState, persistSession);
 						if (finalText && finalText.trim() && finalText.trim() !== 'null') {
 							printAssistantMessage(finalText.trim());
 						}
@@ -1305,7 +1685,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						if (toolCalls.length > 0) {
 							const narration = (fallback.content ?? '').trim().replace(/^null$/, '').trim();
 							if (narration && !narration.includes('"tool_calls"')) printAssistantMessage(narration);
-							const finalText = await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, permissionMode, allowedCommands, taskState);
+							const finalText = await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, permissionMode, allowedCommands, taskState, persistSession);
 							if (finalText && finalText.trim() && finalText.trim() !== 'null') {
 								rememberChat(projectRoot, 'Assistant', finalText);
 								printAssistantMessage(finalText.trim());
@@ -1314,6 +1694,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 							const cleanText = (fallback.content ?? '').trim().replace(/^null$/, '').trim();
 							if (cleanText) {
 								conversation.push({ id: crypto.randomUUID(), role: 'assistant', content: cleanText, timestamp: new Date() });
+								persistSession();
 								printAssistantMessage(cleanText);
 							}
 							}
@@ -1341,6 +1722,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 			if (conversation.length > 42) {
 				compactConversation(conversation);
 			}
+			persistSession();
 			} catch (err) {
 				input.close();
 			stopSpinner();
@@ -1348,6 +1730,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 			if (taskState.status === 'running') {
 				taskState.status = 'interrupted';
 				taskState.reason = err instanceof Error ? err.message : String(err);
+				persistSession();
 				appendToSessionLog('### Interrupted task\n\nGoal: ' + taskState.goal + '\nReason: ' + taskState.reason + '\nLast actions: ' + taskState.lastActions.join('; '), projectRoot);
 				printInfo('The task was interrupted. Type "continue" to resume from where it stopped.');
 			}

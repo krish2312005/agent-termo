@@ -32,6 +32,24 @@ export const TOOL_DEFINITIONS: ToolDef[] = [
     },
   },
   {
+    name: 'skill:read',
+    description: 'Read a skill instruction file or a supporting reference file from an installed skill. Use only when a skill in the Available Skills catalog is relevant to the user request.',
+    parameters: {
+      type: 'object',
+      properties: {
+        name: {
+          type: 'string',
+          description: 'Exact skill name from the Available Skills catalog',
+        },
+        path: {
+          type: 'string',
+          description: 'Optional relative path inside the skill folder (defaults to SKILL.md)',
+        },
+      },
+      required: ['name'],
+    },
+  },
+  {
     name: 'file:write',
     description: 'Write or overwrite a complete file. Use this to create new files or replace existing ones entirely.',
     parameters: {

@@ -12,6 +12,7 @@ type NIMFunctionTool = Extract<NIMTool, { type: 'function' }>;
 export type ThinkingCapacity = 'off' | 'auto' | 'low' | 'medium' | 'high';
 
 const TOOL_NAME_ALIASES: Record<string, string> = {
+	'skill:read': 'skill_read',
 	'file:read': 'file_read',
 	'file:write': 'file_write',
 	'file:edit': 'file_edit',
