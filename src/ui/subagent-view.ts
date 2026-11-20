@@ -151,15 +151,24 @@ function wrap(text: string, width: number): string[] {
 function wrapVerbatim(text: string, width: number): string[] {
 	const columns = Math.max(1, width);
 	const rows: string[] = [];
-	for (const sourceLine of text.split('\n')) {
-		if (sourceLine.length === 0) {
-			rows.push('');
+	let line = '';
+	let lineLength = 0;
+	for (const character of text) {
+		if (character === '\n') {
+			rows.push(line);
+			line = '';
+			lineLength = 0;
 			continue;
 		}
-		for (let offset = 0; offset < sourceLine.length; offset += columns) {
-			rows.push(sourceLine.slice(offset, offset + columns));
+		line += character;
+		lineLength++;
+		if (lineLength === columns) {
+			rows.push(line);
+			line = '';
+			lineLength = 0;
 		}
 	}
+	if (line || rows.length === 0 || text.endsWith('\n')) rows.push(line);
 	return rows;
 }
 

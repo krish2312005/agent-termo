@@ -1,35 +1,26 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { buildInspector } from '../../src/ui/subagent-view.js';
-import type { SubAgentActivity } from '../../src/runtime/subagents.js';
+import { getSubAgent, resetSubAgents, spawnSubAgent, startSubAgentTool } from '../../src/runtime/subagents.js';
+
+afterEach(() => resetSubAgents());
 
 describe('sub-agent bash command display', () => {
-	it('renders the tail of long multiline commands and their working directory', () => {
-		const command = 'npm run typecheck && '.repeat(30) + 'npm test -- --run && printf "COMMAND_END_MARKER"';
-		const cwd = '/Users/example/project/deep/workspace';
-		const activity: SubAgentActivity = {
-			id: 'sub-agent-1',
-			runId: 1,
-			agent: 'test-agent',
-			task: 'Run project checks',
-			status: 'running',
-			activity: 'bash:execute',
-			step: 1,
-			budget: 8,
-			startedAt: 1000,
-			tools: [{
-				name: 'bash:execute',
-				args: `Command:\n${command}\nWorking directory:\n${cwd}`,
-				startedAt: 1000,
-			}],
-			progress: [],
-		};
+\tit('preserves the full command in registry storage and renders it with its working directory', () => {
+\t\tconst command = 'npm run typecheck && '.repeat(30) + 'npm test -- --run && printf "COMMAND_END_MARKER"';
+\t\tconst cwd = '/Users/example/project/deep/workspace';
+\t\tconst args = \`Command:\\n\${command}\\nWorking directory:\\n\${cwd}\`;
+\t\tconst id = spawnSubAgent('request-1', 'test-agent', 'Run project checks', 8);
+\t\tstartSubAgentTool(id, 'bash:execute', args);
 
-		const inspector = buildInspector(activity, 64, 2000);
-		const rendered = inspector.body.join('\n');
-		expect(rendered).toContain('Command:');
-		expect(rendered).toContain('Working directory:');
-		expect(rendered).toContain('COMMAND_END_MARKER');
-		expect(rendered).toContain(cwd);
-		expect(rendered).not.toContain('COMMAND_END_MARKER…');
-	});
+\t\tconst activity = getSubAgent(id);
+\t\texpect(activity?.tools[0]?.args).toBe(args);
+\t\tconst inspector = buildInspector(activity!, 64, 2000);
+\t\tconst rendered = inspector.body.join('\\n');
+
+\t\texpect(rendered).toContain('Command:');
+\t\texpect(rendered).toContain('Working directory:');
+\t\texpect(rendered).toContain('COMMAND_END_MARKER');
+\t\texpect(rendered).toContain(cwd);
+\t\texpect(rendered).not.toContain('COMMAND_END_MARKER…');
+\t});
 });
