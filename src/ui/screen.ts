@@ -348,6 +348,7 @@ function renderTerminalOutputViewer(): void {
 export function openTerminalOutputViewer(): boolean {
 	if (!S.term || S.term.exitCode === null || S.termViewerOpen) return false;
 	S.termViewerOpen = true;
+	syncTerminalMouseTracking();
 	S.term.scrollOffset = 0;
 	if (out.isTTY) out.write(CSI + '?1049h' + CSI + '1;' + dims().rows + 'r');
 	if (out.isTTY) renderTerminalOutputViewer();
@@ -357,6 +358,7 @@ export function openTerminalOutputViewer(): boolean {
 export function closeTerminalOutputViewer(): void {
 	if (!S.termViewerOpen) return;
 	S.termViewerOpen = false;
+	syncTerminalMouseTracking();
 	if (out.isTTY) out.write(CSI + '?1049l' + CSI + '?25h');
 }
 
@@ -1338,9 +1340,9 @@ const pumpState = { paste: null as string | null };
 let pumping = false;
 let mouseTrackingEnabled = false;
 
-/** Capture SGR mouse input only while the terminal output viewport is visible. */
+/** Capture SGR mouse input only while the expanded terminal viewer is visible. */
 function syncTerminalMouseTracking(): void {
-	const enabled = pumping && S.active && Boolean(S.term && S.termOpen) && Boolean(out.isTTY);
+	const enabled = pumping && S.active && Boolean(S.term && S.termViewerOpen) && Boolean(out.isTTY);
 	if (enabled === mouseTrackingEnabled) return;
 	mouseTrackingEnabled = enabled;
 	if (out.isTTY) out.write(enabled ? `${CSI}?1000h${CSI}?1006h` : `${CSI}?1006l${CSI}?1000l`);
