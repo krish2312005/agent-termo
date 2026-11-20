@@ -36,6 +36,9 @@ describe('live terminal panel', () => {
 		const completed = terminalPanelState();
 		expect(completed?.panelRows).toBe(running?.panelRows);
 		expect(completed?.viewportRows).toBe(7);
+		// Every PTY output row must enter the terminal buffer exactly once.
+		expect(completed?.lines).toEqual(lines);
+		expect(new Set(completed?.lines).size).toBe(150);
 		expect(terminalPanelPreview(completed?.lines ?? [], 7)).toEqual([
 			'(144 earlier lines)',
 			...lines.slice(-6),
