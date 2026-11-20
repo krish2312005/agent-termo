@@ -89,6 +89,8 @@ const S = {
 		pending: string;
 		/** Current line being composed for the running command's stdin. */
 		input: string;
+		/** True after Escape sends an interrupt to the active command. */
+		interrupting: boolean;
 		/** null = still running; number = exit code. */
 		exitCode: null | number;
 	},
@@ -105,6 +107,13 @@ let terminalInputHandler: ((input: string) => boolean) | null = null;
 /** Connect terminal keyboard input to the active PTY session. */
 export function setTerminalInputHandler(handler: ((input: string) => boolean) | null): void {
 	terminalInputHandler = handler;
+}
+
+let terminalInterruptHandler: (() => boolean) | null = null;
+
+/** Connect Escape to the active terminal command's interrupt signal. */
+export function setTerminalInterruptHandler(handler: (() => boolean) | null): void {
+	terminalInterruptHandler = handler;
 }
 
 export function setAgentNames(names: string[]): void {
@@ -188,7 +197,7 @@ function termPaint(): void {
 /** A terminal command started: track it but keep panel closed by default. */
 export function startTerminalPanel(command: string): void {
 	clearTerminalPanel();
-	S.term = { command, lines: [], pending: '', input: '', exitCode: null };
+	S.term = { command, lines: [], pending: '', input: '', interrupting: false, exitCode: null };
 	terminalEmulator = new Terminal({
 		cols: Math.max(1, out.columns || 80),
 		rows: Math.max(1, out.rows || 24),
@@ -337,7 +346,12 @@ export function startBackgroundCommandListener(onCommand: (command: string) => v
 				}
 			} else if (key.name === 'escape') {
 				bgTyped = '';
-				if (S.term) S.term.input = '';
+				if (S.term) {
+					S.term.input = '';
+					if (S.term.exitCode === null && terminalInterruptHandler?.()) {
+						S.term.interrupting = true;
+					}
+				}
 				termPaint();
 			}
 		},
@@ -785,7 +799,7 @@ function chromeString(): string {
 		const hasInputRow = S.term.exitCode === null;
 		const shown = panel - (hasInputRow ? 4 : 2);
 		const headerRow = rows - panel;
-		const statusText = S.term.exitCode === null ? 'RUNNING' : `EXIT ${S.term.exitCode}`;
+		const statusText = S.term.exitCode === null ? (S.term.interrupting ? 'STOPPING' : 'RUNNING') : `EXIT ${S.term.exitCode}`;
 		const status = S.term.exitCode === null
 			? c.yellow(statusText)
 			: S.term.exitCode === 0
@@ -816,7 +830,7 @@ function chromeString(): string {
 			const labelFill = '─'.repeat(Math.max(0, cols - labelPrefix.length - 1));
 			parts.push(line(headerRow + 1 + shown, c.cyan('├─ ') + c.bold('INPUT') + c.cyan(' ' + labelFill + '┤')));
 
-			const inputHint = 'Enter sends · Esc clears';
+			const inputHint = 'Enter sends · Esc stops command';
 			const inputText = S.term.input ? '› ' + S.term.input : '› Type a response…';
 			const inputWidth = Math.max(0, panelWidth - inputHint.length - 2);
 			const inputValue = clipText(inputText, inputWidth).padEnd(inputWidth);

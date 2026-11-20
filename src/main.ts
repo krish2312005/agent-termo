@@ -6,7 +6,7 @@ import { NimClient, parseToolCallsFromText, type ThinkingCapacity } from './llm/
 import { buildPlanContext, formatTaskPlanMarkdown, parseTaskPlan, PLAN_PROGRESS_TOOL, updatePlanStep, writeTaskPlanFile, type TaskPlan } from './runtime/plans.js';
 import { activeManualCheckpointIds, createCheckpoint, findCheckpoint, latestRedoableCheckpoint, latestUndoableCheckpoint, listCheckpoints, recordCheckpointAfter, recordCheckpointBefore, redoCheckpoint, undoCheckpoint } from './runtime/checkpoints.js';
 import { TOOL_DEFINITIONS } from './llm/tools.js';
-import { executeTool, applyFileChange, setTerminalHooks, killRunningTerminal, writeTerminalInput, type ToolOutputHandler } from './tools/index.js';
+import { executeTool, applyFileChange, setTerminalHooks, killRunningTerminal, writeTerminalInput, interruptTerminalCommand, type ToolOutputHandler } from './tools/index.js';
 import { loadMemory, loadTimeline, logToTimeline, logAgentTermoTimeline, appendToSessionLog, appendToTimeline, loadSessionLog } from './memory/index.js';
 import { buildSystemPrompt, filterAgentTools, resolveDelegation } from './agents/index.js';
 import { resolveProjectRoot, saveNimModel, saveNimThinking, savePermissionMode } from './utils/config.js';
@@ -66,6 +66,7 @@ import {
 	appendTerminalOutput,
 	finishTerminalPanel,
 	setTerminalInputHandler,
+	setTerminalInterruptHandler,
 	printSubAgents,
 	startBackgroundCommandListener,
 } from './ui/index.js';
@@ -1286,6 +1287,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 		onEnd: finishTerminalPanel,
 	});
 	setTerminalInputHandler(writeTerminalInput);
+	setTerminalInterruptHandler(interruptTerminalCommand);
 	let customCommands: AgentCommand[] = loadAgentCommands(projectRoot);
 	const refreshCommandCompletion = (): void => {
 		setCommands([...COMMANDS, { name: '/mcp', description: 'list MCP servers and available tools' }, ...customCommands.filter((command) => !['skill', 'sessions', 'resume', 'fork', 'plan', 'checkpoint', 'checkpoints', 'undo', 'redo'].includes(command.name.toLowerCase())).map((command) => ({ name: '/' + command.name, description: command.description || 'project command' }))]);

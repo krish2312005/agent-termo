@@ -41,6 +41,26 @@ export class ProcessManager {
     return false;
   }
 
+  /** Interrupt only the newest active command, preserving its process tree for graceful cleanup. */
+  interruptLatest(): boolean {
+    for (const child of [...this.children.values()].reverse()) {
+      if ('write' in child && typeof child.write === 'function') {
+        try {
+          child.write('\\x03');
+          return true;
+        } catch {
+          continue;
+        }
+      }
+      try {
+        if (child.kill('SIGINT')) return true;
+      } catch {
+        // The child may have exited between lookup and interrupt.
+      }
+    }
+    return false;
+  }
+
   kill(id: string): boolean {
     const child = this.children.get(id);
     if (!child) return false;

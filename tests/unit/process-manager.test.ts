@@ -63,6 +63,27 @@ describe('ProcessManager', () => {
     expect(write).toHaveBeenCalledWith('y\r');
   });
 
+  it('interrupts only the newest PTY command with Ctrl+C', () => {
+    const manager = new ProcessManager();
+    const firstWrite = vi.fn();
+    const secondWrite = vi.fn();
+    manager.register({ pid: undefined, write: firstWrite, kill: vi.fn() } as unknown as import('node-pty').IPty);
+    manager.register({ pid: undefined, write: secondWrite, kill: vi.fn() } as unknown as import('node-pty').IPty);
+
+    expect(manager.interruptLatest()).toBe(true);
+    expect(secondWrite).toHaveBeenCalledWith('\\x03');
+    expect(firstWrite).not.toHaveBeenCalled();
+  });
+
+  it('sends SIGINT to a piped child process', () => {
+    const manager = new ProcessManager();
+    const kill = vi.fn(() => true);
+    manager.register({ pid: undefined, kill } as unknown as ChildProcess);
+
+    expect(manager.interruptLatest()).toBe(true);
+    expect(kill).toHaveBeenCalledWith('SIGINT');
+  });
+
   it('ignores an invocation that has already been removed', () => {
     const manager = new ProcessManager();
     expect(manager.kill('missing')).toBe(false);

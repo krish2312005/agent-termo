@@ -34,6 +34,7 @@ export {
 	appendTerminalOutput,
 	finishTerminalPanel,
 	setTerminalInputHandler,
+	setTerminalInterruptHandler,
 	startBackgroundCommandListener,
 	clearTerminalPanel,
 	toggleTerminalPanel,

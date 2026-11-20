@@ -127,6 +127,11 @@ export function writeTerminalInput(input: string): boolean {
 	return processManager.writeLatest(input);
 }
 
+/** Send Ctrl+C to the foreground command in the newest active terminal. */
+export function interruptTerminalCommand(): boolean {
+	return processManager.interruptLatest();
+}
+
 /** Kill all active shell invocations and their descendants. */
 export function killRunningTerminal(): boolean {
 	const killed = processManager.killAll();
