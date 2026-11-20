@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseKeys } from '../../src/ui/screen.js';
+import { parseKeys, terminalInputForKey } from '../../src/ui/screen.js';
 
 const parse = (chunk: string, state: { paste: string | null } = { paste: null }) => parseKeys(chunk, state);
 
@@ -18,9 +18,41 @@ describe('parseKeys', () => {
     expect(names('\x03')).toEqual(['ctrl+c']);
     expect(names('\x7f')).toEqual(['backspace']);
     expect(names('\x1b[A\x1b[B\x1b[C\x1b[D')).toEqual(['up', 'down', 'right', 'left']);
+    expect(names('\x1b[Z')).toEqual(['shift+tab']);
+    expect(names('\x1b[5;2~\x1b[6;2~')).toEqual(['shift+pageup', 'shift+pagedown']);
     expect(names('\x1bOH\x1bOF')).toEqual(['home', 'end']);
     expect(names('\x1b[3~')).toEqual(['delete']);
     expect(names('\x1b[1;5D\x1b[1;5C')).toEqual(['word-left', 'word-right']);
+  });
+
+  it('parses SGR left-click events and their pointer coordinates', () => {
+    expect(parse('\x1b[<0;18;35M')).toEqual([
+      { name: 'mouse-left-down', mouseX: 18, mouseY: 35 },
+    ]);
+    expect(parse('\x1b[<0;18;35m')).toEqual([]);
+  });
+
+  it('parses SGR mouse wheel events and their pointer coordinates', () => {
+    expect(parse('\x1b[<64;18;35M')).toEqual([
+      { name: 'mouse-wheel-up', mouseX: 18, mouseY: 35 },
+    ]);
+    expect(parse('\x1b[<65;22;40M')).toEqual([
+      { name: 'mouse-wheel-down', mouseX: 22, mouseY: 40 },
+    ]);
+    expect(parse('\x1b[<0;22;40M')).toEqual([
+      { name: 'mouse-left-down', mouseX: 22, mouseY: 40 },
+    ]);
+    expect(parse('\x1b[<0;22;40m')).toEqual([]);
+  });
+
+  it('encodes navigation keys for the active PTY', () => {
+    expect(terminalInputForKey('up')).toBe('\x1b[A');
+    expect(terminalInputForKey('down')).toBe('\x1b[B');
+    expect(terminalInputForKey('left')).toBe('\x1b[D');
+    expect(terminalInputForKey('right')).toBe('\x1b[C');
+    expect(terminalInputForKey('tab')).toBe('\t');
+    expect(terminalInputForKey('shift+tab')).toBe('\x1b[Z');
+    expect(terminalInputForKey('unknown')).toBeNull();
   });
 
   it('splits typed text around keys in the same chunk', () => {

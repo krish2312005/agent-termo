@@ -13,6 +13,7 @@
 // =============================================================================
 
 import Chalk from 'chalk';
+import { createRequire } from 'node:module';
 import { createInterface } from 'node:readline';
 import { listRunSubAgents, subscribeSubAgents } from '../runtime/subagents.js';
 import {
@@ -26,6 +27,10 @@ import {
 } from './subagent-view.js';
 
 const c: typeof Chalk = Chalk as unknown as typeof Chalk;
+// The published 6.0.0 package has an invalid ESM module field and no exports map.
+// Load its valid CommonJS main entry explicitly; retain the package's official API types.
+const { Terminal } = createRequire(import.meta.url)('@xterm/headless') as typeof import('@xterm/headless');
+type TerminalEmulator = InstanceType<typeof Terminal>;
 const out = process.stdout;
 
 const CSI = '\x1b[';
@@ -39,9 +44,11 @@ const PLACEHOLDER = 'Ask anything… or type / for commands';
 const MAX_INPUT_LINES = 16;
 /** Maximum rows in the command completion popup. */
 const MAX_POPUP_ROWS = 8;
-/** Rows of live output shown in the terminal panel below the input box. */
-const TERM_PANEL_LINES = 6;
-/** Key(s) that toggle (close/open) the terminal panel. */
+/** Minimum rows shown when the terminal panel is open. */
+const TERM_PANEL_LINES = 7;
+const TERM_CARD_ROWS = 10;
+const TERM_RUNNING_LINES = 6;
+const TERM_PANEL_SCROLLBACK = 2000;
 const TERM_TOGGLE_KEYS = new Set(['ctrl+o', 'ctrl+t']);
 /** Inspector panel height limits (rows) and the output rows that must stay visible. */
 const MON_PANEL_MAX = 16;
@@ -86,15 +93,37 @@ const S = {
 		lines: string[];
 		/** Partial line still waiting for a newline. */
 		pending: string;
+		/** Current line being composed for the running command's stdin. */
+		input: string;
+		/** Number of rows scrolled back from the latest terminal output. */
+		scrollOffset: number;
+		/** True after Escape sends an interrupt to the active command. */
+		interrupting: boolean;
 		/** null = still running; number = exit code. */
 		exitCode: null | number;
 	},
-	/** Whether the terminal panel is shown below the input box. */
+	/** Whether the compact terminal output card is shown above the composer. */
 	termOpen: false,
+	/** Whether the full-output pager owns the alternate screen. */
+	termViewerOpen: false,
 };
 
 export function setCommands(commands: CommandInfo[]): void {
 	S.commands = commands;
+}
+
+let terminalInputHandler: ((input: string) => boolean) | null = null;
+
+/** Connect terminal keyboard input to the active PTY session. */
+export function setTerminalInputHandler(handler: ((input: string) => boolean) | null): void {
+	terminalInputHandler = handler;
+}
+
+let terminalInterruptHandler: (() => boolean) | null = null;
+
+/** Connect Escape to the active terminal command's interrupt signal. */
+export function setTerminalInterruptHandler(handler: (() => boolean) | null): void {
+	terminalInterruptHandler = handler;
 }
 
 export function setAgentNames(names: string[]): void {
@@ -141,61 +170,108 @@ function shortPath(p: string): string {
 // =============================================================================
 
 let termPaintTimer: ReturnType<typeof setTimeout> | null = null;
+let terminalEmulator: TerminalEmulator | null = null;
 
 function termPanelRows(): number {
 	if (!S.term || !S.termOpen) return 0;
-	const shown = Math.min(TERM_PANEL_LINES, Math.max(1, S.term.lines.length));
-	return shown + 2; // header row + bottom border
+	const monitorReserve = monitorVisible() ? MON_PANEL_MAX + 1 : 0;
+	const available = dims().rows - visibleLines() - 3 - MIN_OUTPUT_ROWS - monitorReserve;
+	return available >= TERM_CARD_ROWS ? TERM_CARD_ROWS : 0;
 }
 
-/** Strip ANSI escapes and fold \r progress-bar rewrites into single lines. */
-function termCleanLine(line: string): string {
-	// These ANSI ESC/BEL sequences are intentional terminal control characters.
-	// eslint-disable-next-line no-control-regex
-	const plain = line.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '');
-	const last = plain.split('\r').pop() ?? '';
-	return last.replace(/\t/g, '  ').slice(0, 400);
+function termOutputRows(): number {
+	const panel = termPanelRows();
+	if (!S.term) return TERM_PANEL_LINES;
+	return Math.max(1, panel - (S.term.exitCode === null ? 4 : 3));
+}
+
+export function terminalPanelPreview(lines: string[], visibleRows = TERM_PANEL_LINES): string[] {
+	if (lines.length <= visibleRows) return [...lines];
+	const tailRows = Math.max(1, visibleRows - 1);
+	const hidden = lines.length - tailRows;
+	return ['(' + hidden + ' earlier ' + (hidden === 1 ? 'line' : 'lines') + ')', ...lines.slice(-tailRows)];
+}
+
+/** Copy the visible terminal screen after xterm has processed its ANSI control sequences. */
+function snapshotTerminalScreen(): void {
+	if (!S.term || !terminalEmulator) return;
+	const buffer = terminalEmulator.buffer.active;
+	const previousLineCount = S.term.lines.length;
+	const wasScrolledBack = S.term.scrollOffset > 0;
+	const cursorRow = buffer.baseY + buffer.cursorY;
+	const rowCount = buffer.type === 'alternate' ? buffer.length : Math.min(buffer.length, cursorRow + 1);
+	const lines = Array.from({ length: rowCount }, (_, row) =>
+		buffer.getLine(row)?.translateToString(true) ?? '',
+	);
+	// A normal terminal's cursor sits on an unused row after a trailing newline.
+	// Remove only that final cursor row; retain intentional blank lines within the output.
+	if (buffer.type === 'normal' && lines.at(-1) === '') lines.pop();
+	if (wasScrolledBack && lines.length > previousLineCount) {
+		S.term.scrollOffset += lines.length - previousLineCount;
+	}
+	S.term.lines = lines;
+	S.term.scrollOffset = Math.min(S.term.scrollOffset, Math.max(0, lines.length - termOutputRows()));
+	S.term.pending = '';
 }
 
 function termPaint(): void {
-	if (!S.active) return;
-	if (termPaintTimer) return;
+	if (!S.active || termPaintTimer) return;
 	termPaintTimer = setTimeout(() => {
 		termPaintTimer = null;
-		paint();
+		if (S.termViewerOpen) renderTerminalOutputViewer();
+		else out.write(SAVE + terminalPanelString() + RESTORE);
 	}, 60);
 }
 
 /** A terminal command started: track it but keep panel closed by default. */
 export function startTerminalPanel(command: string): void {
 	clearTerminalPanel();
-	S.term = { command, lines: [], pending: '', exitCode: null };
-	S.termOpen = false; // default hidden
+	S.term = { command, lines: [], pending: '', input: '', scrollOffset: 0, interrupting: false, exitCode: null };
+	terminalEmulator = new Terminal({
+		cols: Math.max(1, out.columns || 80),
+		rows: Math.max(1, out.rows || 24),
+		scrollback: TERM_PANEL_SCROLLBACK,
+		allowProposedApi: true,
+		logLevel: 'off',
+	});
+	S.termOpen = true;
+	S.termViewerOpen = false;
 	syncTermKeyListener();
-	// no paint() — panel stays hidden
+	syncTerminalMouseTracking();
+	paint();
 }
 
-/** Stream raw stdout/stderr text into the panel. */
+/** Feed PTY output through a terminal emulator so cursor-based prompts remain visible. */
 export function appendTerminalOutput(text: string): void {
-	if (!S.term) return;
-	S.term.pending += text;
-	const parts = S.term.pending.split('\n');
-	S.term.pending = parts.pop() ?? '';
-	for (const part of parts) S.term.lines.push(termCleanLine(part));
-	if (S.term.lines.length > 500) S.term.lines.splice(0, S.term.lines.length - 500);
-	if (S.termOpen) termPaint(); // only repaint if panel is visible
+	if (!S.term || !terminalEmulator) return;
+	const wasHidden = !S.termOpen;
+	S.termOpen = true;
+	syncTermKeyListener();
+	syncTerminalMouseTracking();
+	if (wasHidden) paint();
+	terminalEmulator.write(text, () => {
+		snapshotTerminalScreen();
+		termPaint();
+	});
 }
 
-/** The terminal command finished; keep panel closed (Ctrl+O opens it). */
+/** The terminal command finished; flush queued output before disposing its emulator. */
 export function finishTerminalPanel(exitCode: number | null): void {
 	if (!S.term) return;
-	if (S.term.pending) {
-		S.term.lines.push(termCleanLine(S.term.pending));
-		S.term.pending = '';
-	}
-	S.term.exitCode = exitCode ?? -1;
-	syncTermKeyListener();
-	// panel stays closed; Ctrl+O opens it
+	const finish = (): void => {
+		snapshotTerminalScreen();
+		if (S.term) {
+			S.term.exitCode = exitCode ?? -1;
+			S.term.input = '';
+			S.term.pending = '';
+		}
+		terminalEmulator?.dispose();
+		terminalEmulator = null;
+		syncTermKeyListener();
+		termPaint();
+	};
+	if (terminalEmulator) terminalEmulator.write('', finish);
+	else finish();
 }
 
 /** Toggle the terminal panel open/closed (Ctrl+O / Ctrl+T). */
@@ -203,15 +279,22 @@ export function toggleTerminalPanel(): void {
 	if (!S.term) return;
 	S.termOpen = !S.termOpen;
 	syncTermKeyListener();
+	syncTerminalMouseTracking();
 	paint();
 }
 
 /** Close the terminal panel but keep the last term so it can be reopened with Ctrl+O. */
 export function clearTerminalPanel(): void {
+	if (S.termViewerOpen) closeTerminalOutputViewer();
 	S.termOpen = false;
+	syncTerminalMouseTracking();
+	terminalEmulator?.dispose();
+	terminalEmulator = null;
 	if (S.term) {
 		S.term.lines = [];
 		S.term.pending = '';
+		S.term.input = '';
+		S.term.scrollOffset = 0;
 		S.term.exitCode = null;
 	}
 	syncTermKeyListener();
@@ -222,9 +305,133 @@ export function terminalPanelVisible(): boolean {
 	return Boolean(S.term && S.termOpen);
 }
 
-export function terminalPanelState(): { command: string; exitCode: number | null; lines: string[] } | null {
+export function terminalPanelState(): { command: string; exitCode: number | null; lines: string[]; input: string; scrollOffset: number; viewportRows: number; panelRows: number; viewerOpen: boolean } | null {
 	if (!S.term) return null;
-	return { command: S.term.command, exitCode: S.term.exitCode, lines: S.term.lines };
+	return {
+		command: S.term.command,
+		exitCode: S.term.exitCode,
+		lines: [...S.term.lines],
+		input: S.term.input,
+		scrollOffset: S.term.scrollOffset,
+		viewportRows: S.termViewerOpen ? terminalViewerRows() : S.termOpen ? termOutputRows() : 0,
+		panelRows: termPanelRows(),
+		viewerOpen: S.termViewerOpen,
+	};
+}
+
+/** Select an older or newer page of terminal output without sending keys to the child process. */
+function terminalViewerRows(): number {
+	return Math.max(1, dims().rows - 2);
+}
+
+function renderTerminalOutputViewer(): void {
+	if (!S.termViewerOpen || !S.term) return;
+	const { rows, cols } = dims();
+	const shown = terminalViewerRows();
+	const maxOffset = Math.max(0, S.term.lines.length - shown);
+	S.term.scrollOffset = Math.max(0, Math.min(maxOffset, S.term.scrollOffset));
+	const content = terminalPanelWindow(S.term.lines, S.term.scrollOffset, shown);
+	const line = (row: number, value: string) => CSI + row + ';1H' + CSI + '2K' + value;
+	const command = clipText(S.term.command.trim().replace(/\s+/g, ' '), Math.max(1, cols - 48));
+	const status = S.term.exitCode === 0 ? c.green('EXIT 0') : c.red('EXIT ' + (S.term.exitCode ?? 'unknown'));
+	const width = Math.max(1, cols - 4);
+	const output: string[] = [CSI + '?25l' + CSI + '2J' + CSI + 'H'];
+	output.push(line(1, c.cyan('╭─ ') + c.bold('TERMINAL OUTPUT') + c.dim(' · ') + c.white(command) + c.dim(' · ') + status));
+	for (let i = 0; i < shown; i++) {
+		const value = content[i] ?? '';
+		output.push(line(i + 2, c.dim('│ ') + c.white(clipText(value, width).padEnd(width)) + c.dim(' │')));
+	}
+	output.push(line(rows, c.dim('↑/↓ scroll · PgUp/PgDn page · Home/End · Esc close')));
+	out.write(output.join(''));
+}
+
+export function openTerminalOutputViewer(): boolean {
+	if (!S.term || S.term.exitCode === null || S.termViewerOpen) return false;
+	S.termViewerOpen = true;
+	S.term.scrollOffset = 0;
+	if (out.isTTY) out.write(CSI + '?1049h' + CSI + '1;' + dims().rows + 'r');
+	if (out.isTTY) renderTerminalOutputViewer();
+	return true;
+}
+
+export function closeTerminalOutputViewer(): void {
+	if (!S.termViewerOpen) return;
+	S.termViewerOpen = false;
+	if (out.isTTY) out.write(CSI + '?1049l' + CSI + '?25h');
+}
+
+export function scrollTerminalPanel(direction: 'up' | 'down', rows?: number): void {
+	if (!S.term || !S.termViewerOpen) return;
+	const amount = Math.max(1, Math.trunc(rows ?? terminalViewerRows()));
+	const maxOffset = Math.max(0, S.term.lines.length - terminalViewerRows());
+	const nextOffset = direction === 'up'
+		? Math.min(maxOffset, S.term.scrollOffset + amount)
+		: Math.max(0, S.term.scrollOffset - amount);
+	if (nextOffset === S.term.scrollOffset) return;
+	S.term.scrollOffset = nextOffset;
+	renderTerminalOutputViewer();
+}
+
+export function terminalPanelOutputBounds(): { left: number; right: number; top: number; bottom: number } | null {
+	if (!S.term || !S.termOpen || S.term.exitCode === null) return null;
+	const panel = termPanelRows();
+	const { rows, cols } = dims();
+	const bottomBorderRow = rows - 1 - monitorRows();
+	const composerTopRow = bottomBorderRow - visibleLines() - 1;
+	const cardTopRow = composerTopRow - panel;
+	return { left: 1, right: cols, top: cardTopRow, bottom: cardTopRow + panel - 1 };
+}
+
+export function handleTerminalPanelClick(x: number, y: number): boolean {
+	const bounds = terminalPanelOutputBounds();
+	if (!bounds || x < bounds.left || x > bounds.right || y < bounds.top || y > bounds.bottom) return false;
+	return openTerminalOutputViewer();
+}
+
+export function handleTerminalMouseWheel(direction: 'up' | 'down', x: number, y: number): boolean {
+	if (!S.termViewerOpen) return false;
+	const { rows, cols } = dims();
+	if (x < 1 || x > cols || y < 2 || y >= rows) return false;
+	scrollTerminalPanel(direction, 3);
+	return true;
+}
+
+export function handleTerminalPanelKey(keyName: string): boolean {
+	if (!S.term) return false;
+	if (S.termViewerOpen) {
+		if (keyName === 'escape' || keyName === 'ctrl+c') {
+			closeTerminalOutputViewer();
+			return true;
+		}
+		if (keyName === 'up' || keyName === 'down') {
+			scrollTerminalPanel(keyName === 'up' ? 'up' : 'down', 1);
+			return true;
+		}
+		if (['pageup', 'shift+pageup', 'pagedown', 'shift+pagedown'].includes(keyName)) {
+			scrollTerminalPanel(keyName.includes('up') ? 'up' : 'down');
+			return true;
+		}
+		if (keyName === 'home' || keyName === 'end') {
+			S.term.scrollOffset = keyName === 'home' ? Math.max(0, S.term.lines.length - terminalViewerRows()) : 0;
+			renderTerminalOutputViewer();
+			return true;
+		}
+		return false;
+	}
+	if (TERM_TOGGLE_KEYS.has(keyName)) {
+		toggleTerminalPanel();
+		return true;
+	}
+	if (!S.termOpen) return false;
+	if (S.term.exitCode !== null && ['pageup', 'pagedown', 'enter'].includes(keyName)) return openTerminalOutputViewer();
+	return false;
+}
+
+export function terminalPanelWindow(lines: string[], scrollOffset: number, visibleRows = TERM_PANEL_LINES): string[] {
+	const maxOffset = Math.max(0, lines.length - visibleRows);
+	const offset = Math.max(0, Math.min(maxOffset, Math.trunc(scrollOffset)));
+	const end = lines.length - offset;
+	return lines.slice(Math.max(0, end - visibleRows), end);
 }
 
 // A background key listener while the user is NOT editing (during the agent
@@ -236,7 +443,7 @@ function syncTermKeyListener(): void {
 	const want = Boolean(S.term) && !S.editing && S.active;
 	if (want && !termKeyStop) {
 		termKeyStop = listenKeys((key) => {
-			if (TERM_TOGGLE_KEYS.has(key.name)) toggleTerminalPanel();
+			handleTerminalPanelKey(key.name);
 		}, undefined, { background: true });
 	} else if (!want && termKeyStop) {
 		termKeyStop();
@@ -250,27 +457,113 @@ export function layoutSupported(): boolean {
 	);
 }
 
-/** Text typed while the agent runs (invisible, like before); Enter runs it if it is /subagents. */
+/** Text typed while the agent runs; Enter sends it to the active PTY. */
 let bgTyped = '';
 
+function updateTerminalInputDraft(): void {
+	if (!S.term || S.term.exitCode !== null) return;
+	S.term.input = bgTyped;
+	S.termOpen = true;
+	termPaint();
+}
+
+/** Escape sequences sent to the child PTY for keys that control terminal UIs. */
+const TERMINAL_KEY_SEQUENCES: Readonly<Record<string, string>> = {
+	up: '\x1b[A',
+	down: '\x1b[B',
+	right: '\x1b[C',
+	left: '\x1b[D',
+	home: '\x1b[H',
+	end: '\x1b[F',
+	delete: '\x1b[3~',
+	pageup: '\x1b[5~',
+	pagedown: '\x1b[6~',
+	tab: '\t',
+	'shift+tab': '\x1b[Z',
+	backspace: '\x7f',
+	'ctrl+u': '\x15',
+	'ctrl+w': '\x17',
+	'ctrl+k': '\x0b',
+};
+
+/** Convert a parsed key into the byte sequence expected by a PTY application. */
+export function terminalInputForKey(name: string): string | null {
+	return TERMINAL_KEY_SEQUENCES[name] ?? null;
+}
+
+/** Full-screen terminal apps receive keystrokes immediately instead of line-buffered input. */
+function terminalUsesAlternateScreen(): boolean {
+	return terminalEmulator?.buffer.active.type === 'alternate';
+}
+
 /**
- * Accept read-only slash commands while the main agent request is in flight,
- * and mark the run as active for the sub-agent monitor. The normal line editor
- * is closed during tool execution; this listener fills that gap without
- * consuming Escape, which remains cancellation.
+ * While a tool runs, reuse the raw-key listener for interactive input. Enter
+ * sends one line to the active PTY; /subagents remains a UI command.
  */
 export function startBackgroundCommandListener(onCommand: (command: string) => void): () => void {
 	if (!process.stdin.isTTY || backgroundCommandStop) return () => undefined;
 	bgTyped = '';
 	const stopKeys = listenKeys(
 		(key) => {
-			if (key.name === 'text' || key.name === 'paste') bgTyped += key.text ?? '';
-			else if (key.name === 'backspace') bgTyped = bgTyped.slice(0, -1);
-			else if (key.name === 'enter') {
+			const directInput = S.term?.exitCode === null && terminalUsesAlternateScreen();
+			if (key.name === 'text' || key.name === 'paste') {
+				const text = key.text ?? '';
+				if (directInput && terminalInputHandler?.(text)) return;
+				bgTyped += text;
+				updateTerminalInputDraft();
+			} else if (key.name === 'backspace') {
+				if (directInput && terminalInputHandler?.('\x7f')) return;
+				if (bgTyped.length > 0) {
+					bgTyped = bgTyped.slice(0, -1);
+					updateTerminalInputDraft();
+				} else if (S.term?.exitCode === null) {
+					terminalInputHandler?.('\x7f');
+				}
+			} else if (key.name === 'ctrl+u') {
+				if (directInput && terminalInputHandler?.('\x15')) return;
+				if (bgTyped.length > 0) {
+					bgTyped = '';
+					updateTerminalInputDraft();
+				} else if (S.term?.exitCode === null) {
+					terminalInputHandler?.('\x15');
+				}
+			} else if (key.name === 'enter') {
 				const command = bgTyped.trim();
+				if (/^\/subagents(?:\s|$)/i.test(command)) {
+					bgTyped = '';
+					if (S.term) S.term.input = '';
+					onCommand(command);
+					termPaint();
+				} else if (S.term && S.term.exitCode === null && terminalInputHandler) {
+					if (terminalInputHandler(bgTyped + '\r')) {
+						bgTyped = '';
+						S.term.input = '';
+						termPaint();
+					}
+				} else {
+					bgTyped = '';
+					if (S.term) S.term.input = '';
+				}
+			} else if (key.name === 'escape' || key.name === 'ctrl+c') {
 				bgTyped = '';
-				if (/^\/subagents(?:\s|$)/i.test(command)) onCommand(command);
-			} else if (key.name === 'escape') bgTyped = '';
+				if (S.term) {
+					S.term.input = '';
+					if (S.term.exitCode === null && terminalInterruptHandler?.()) {
+						S.term.interrupting = true;
+					}
+				}
+				termPaint();
+			} else {
+				const sequence = terminalInputForKey(key.name);
+				if (sequence && S.term?.exitCode === null && terminalInputHandler) {
+					// Flush locally buffered text before a control key so PTY input order is preserved.
+					if (terminalInputHandler(bgTyped + sequence)) {
+						bgTyped = '';
+						S.term.input = '';
+						termPaint();
+					}
+				}
+			}
 		},
 		undefined,
 		{ background: true },
@@ -279,6 +572,7 @@ export function startBackgroundCommandListener(onCommand: (command: string) => v
 		stopKeys();
 		backgroundCommandStop = null;
 		bgTyped = '';
+		if (S.term) S.term.input = '';
 		monitorRefresh();
 	};
 	monitorRefresh();
@@ -343,6 +637,10 @@ function monitorString(firstRow: number, count: number): string {
 
 /** Offer a key to the monitor; true means it was used and must not reach anyone else. */
 function monitorKeyIntercept(key: Key): boolean {
+	// Terminal-panel scroll keys must not be consumed by the sub-agent inspector.
+	if (S.term && S.termOpen && ['pageup', 'pagedown', 'shift+pageup', 'shift+pagedown'].includes(key.name)) return false;
+	// Navigation belongs to the foreground PTY while a terminal command is interactive.
+	if (S.term && S.term.exitCode === null) return false;
 	if (!monitorVisible()) return false;
 	const list = listRunSubAgents();
 	const panelRows = monitorPanelRows();
@@ -620,8 +918,9 @@ function popupTopRow(popup: NonNullable<ReturnType<typeof activePopup>>): number
 // =============================================================================
 
 function statusLine(max: number): string {
-	const hint =
-		S.permissionMode === 'auto'
+	const hint = S.term && S.term.exitCode === null
+		? 'type input · Enter sends to command · ctrl+o terminal'
+		: S.permissionMode === 'auto'
 			? 'AUTO-ACCEPT · /permissions ask to disable'
 			: S.permissionMode === 'files'
 				? 'FILES-AUTO · terminal commands still ask'
@@ -653,6 +952,45 @@ function statusLine(max: number): string {
 	return result;
 }
 
+function terminalPanelString(): string {
+	if (!S.term || !S.termOpen) return '';
+	const panel = termPanelRows();
+	if (panel < TERM_CARD_ROWS) return '';
+	const { rows, cols } = dims();
+	const bottomBorderRow = rows - 1 - monitorRows();
+	const composerTopRow = bottomBorderRow - visibleLines() - 1;
+	const headerRow = composerTopRow - panel;
+	const running = S.term.exitCode === null;
+	const shown = running ? TERM_RUNNING_LINES : TERM_PANEL_LINES;
+	const command = clipText(S.term.command.trim().replace(/\s+/g, ' '), Math.max(1, cols - 50));
+	const statusText = running ? (S.term.interrupting ? 'STOPPING' : 'RUNNING') : 'EXIT ' + S.term.exitCode;
+	const status = running ? c.yellow(statusText) : S.term.exitCode === 0 ? c.green(statusText) : c.red(statusText);
+	const line = (row: number, value: string) => CSI + row + ';1H' + CSI + '2K' + value;
+	const suffix = running ? statusText : 'click to expand';
+	const prefix = '╭─ TERMINAL · ';
+	const fill = '─'.repeat(Math.max(0, cols - prefix.length - command.length - suffix.length - 4));
+	const parts = [line(headerRow, c.cyan('╭─ ') + c.bold('TERMINAL') + c.dim(' · ') + c.white(command) + ' ' + status + c.dim(' · ' + suffix + ' ') + c.cyan(fill + '╮'))];
+	const output = running ? terminalPanelWindow(S.term.lines, 0, shown) : terminalPanelPreview(S.term.lines, shown);
+	const width = Math.max(1, cols - 4);
+	for (let i = 0; i < shown; i++) {
+		const value = output[i] ?? (S.term.lines.length === 0 ? 'Waiting for terminal output…' : '');
+		parts.push(line(headerRow + 1 + i, c.cyan('│') + ' ' + c.white(clipText(value, width).padEnd(width)) + ' ' + c.cyan('│')));
+	}
+	if (running) {
+		const label = '├─ INPUT ' + '─'.repeat(Math.max(0, cols - 11)) + '┤';
+		parts.push(line(headerRow + 1 + shown, c.cyan(label)));
+		const hint = 'Enter sends · Esc stops';
+		const prompt = S.term.input ? '› ' + S.term.input : '› Type a response…';
+		const inputWidth = Math.max(1, width - hint.length - 2);
+		const value = clipText(prompt, inputWidth).padEnd(inputWidth);
+		parts.push(line(headerRow + 2 + shown, c.cyan('│') + ' ' + (S.term.input ? c.yellow(value) : c.dim(value)) + c.dim('  ' + hint) + ' ' + c.cyan('│')));
+	} else {
+		parts.push(line(headerRow + 1 + shown, c.cyan('│') + ' ' + c.dim('Click to inspect complete command output') + ' ' + c.cyan('│')));
+	}
+	parts.push(line(headerRow + panel - 1, c.cyan('╰' + '─'.repeat(Math.max(0, cols - 2)) + '╯')));
+	return parts.join('');
+}
+
 function chromeString(): string {
 	const { rows, cols } = dims();
 	const width = Math.max(1, cols - 6); // '│ ❯ ' + text + ' │'
@@ -670,10 +1008,10 @@ function chromeString(): string {
 	const prompt =
 		S.permissionMode === 'auto' ? c.red.bold('❯') : S.permissionMode === 'files' ? c.yellow.bold('❯') : c.magenta.bold('❯');
 
-	// Sub-agent monitor and terminal panel sit between the input box and the status line.
+	// Keep the compact terminal preview above the composer.
 	const panel = termPanelRows();
 	const monitorCount = monitorRows();
-	const bottomBorderRow = rows - 1 - panel - monitorCount;
+	const bottomBorderRow = rows - 1 - monitorCount;
 	// Input rows sit directly above the bottom border; the top border is one
 	// row above them (it was previously drawn under the first input line and
 	// erased by it, which hid it completely).
@@ -681,8 +1019,8 @@ function chromeString(): string {
 	const line = (row: number, text: string): string => `${CSI}${row};1H${CSI}2K${text}`;
 
 	const parts: string[] = [];
-	// Completion popup floats above the input box.
-	parts.push(popupString(topBorderRow));
+	parts.push(terminalPanelString());
+	parts.push(popupString(topBorderRow - panel - 1));
 	parts.push(line(topBorderRow, edge('╭' + '─'.repeat(cols - 2) + '╮')));
 
 	for (let i = 0; i < vis; i++) {
@@ -709,32 +1047,6 @@ function chromeString(): string {
 	// ── Sub-agent monitor: indicator row + optional live inspector ────────
 	if (monitorCount > 0) parts.push(monitorString(bottomBorderRow + 1, monitorCount));
 
-	// ── Terminal panel: live output of the agent's bash commands ──────────
-	if (S.term && panel > 0) {
-		const shown = panel - 2;
-		const headerRow = rows - panel;
-		const status =
-			S.term.exitCode === null
-				? c.yellow('● running')
-				: S.term.exitCode === 0
-					? c.green(`✓ exit ${S.term.exitCode}`)
-					: c.red(`✗ exit ${S.term.exitCode}`);
-		const title = 'bash output';
-		const hint = c.dim(' ctrl+o close ');
-		parts.push(
-			line(
-				headerRow,
-				c.cyan('╭─ bash ─ ') + c.bold(clipText(title, cols - 30)) + ' ' + status + c.cyan('─'.repeat(Math.max(1, cols - 30 - title.length - 20))) + hint + c.cyan('╮'),
-			),
-		);
-		const content = S.term.lines.slice(-shown);
-		for (let i = 0; i < shown; i++) {
-			const text = content[i] ?? '';
-			const body = clipText(text, width).padEnd(width);
-			parts.push(line(headerRow + 1 + i, c.cyan('│') + ' ' + body + ' ' + c.cyan('│')));
-		}
-		parts.push(line(rows - 1, c.cyan('╰' + '─'.repeat(cols - 2) + '╯')));
-	}
 
 	parts.push(line(rows, statusLine(cols - 1)));
 	return parts.join('');
@@ -748,12 +1060,16 @@ function inputCursor(): string {
 	const offset = lineOffset(pos.col, width);
 	// The cursor must sit on the row being edited, which moves with the
 	// number of input lines and the terminal panel below the box.
-	const row = rows - 1 - termPanelRows() - monitorRows() - vis + (pos.line - S.topLine);
+	const row = rows - 1 - monitorRows() - vis + (pos.line - S.topLine);
 	return `${CSI}${Math.max(1, Math.min(rows, row))};${5 + pos.col - offset}H`;
 }
 
 function paint(): void {
 	if (!S.active) return;
+	if (S.termViewerOpen) {
+		renderTerminalOutputViewer();
+		return;
+	}
 	if (S.editing) {
 		syncRegion();
 		// The saved slot holds the output position while editing: don't touch it.
@@ -772,6 +1088,11 @@ function paint(): void {
 
 function onResize(): void {
 	const { rows } = dims();
+	if (S.termViewerOpen) {
+		S.rows = rows;
+		renderTerminalOutputViewer();
+		return;
+	}
 	S.lastPopupRows = 0;
 	S.lastPopupTopRow = 0;
 	if (rows === S.rows && regionBottomRow === Math.max(1, rows - chromeRows())) {
@@ -838,6 +1159,11 @@ export function resetScreen(): void {
 export function teardownScreen(): void {
 	if (!S.active) return;
 	S.active = false;
+	if (S.termViewerOpen) {
+		S.termViewerOpen = false;
+		if (out.isTTY) out.write(`${CSI}?1049l`);
+	}
+	syncTerminalMouseTracking();
 	if (termKeyStop) {
 		termKeyStop();
 		termKeyStop = null;
@@ -862,10 +1188,12 @@ export function teardownScreen(): void {
 export interface Key {
 	name: string;
 	text?: string;
+	mouseX?: number;
+	mouseY?: number;
 }
 
 // eslint-disable-next-line no-control-regex
-const TOKEN_RE = /\x1b\[200~|\x1b\[201~|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1bO[A-Za-z]|\x1b[\s\S]|[\s\S]/gu;
+const TOKEN_RE = /\x1b\[200~|\x1b\[201~|\x1b\[(?:<)?[0-9;?]*[ -/]*[@-~]|\x1bO[A-Za-z]|\x1b[\s\S]|[\s\S]/gu;
 
 const NAMED: Record<string, string> = {
 	'\r': 'enter',
@@ -896,10 +1224,15 @@ const NAMED: Record<string, string> = {
 	'\x1bOA': 'up',
 	'\x1b[B': 'down',
 	'\x1bOB': 'down',
+	'\x1b[1;1A': 'up',
+	'\x1b[1;1B': 'down',
+	'\x1b[1;1C': 'right',
+	'\x1b[1;1D': 'left',
 	'\x1b[C': 'right',
 	'\x1bOC': 'right',
 	'\x1b[D': 'left',
 	'\x1bOD': 'left',
+	'\x1b[Z': 'shift+tab',
 	'\x1b[H': 'home',
 	'\x1bOH': 'home',
 	'\x1b[1~': 'home',
@@ -909,6 +1242,8 @@ const NAMED: Record<string, string> = {
 	'\x1b[3~': 'delete',
 	'\x1b[5~': 'pageup',
 	'\x1b[6~': 'pagedown',
+	'\x1b[5;2~': 'shift+pageup',
+	'\x1b[6;2~': 'shift+pagedown',
 	'\x1b[1;5D': 'word-left',
 	'\x1b[1;3D': 'word-left',
 	'\x1bb': 'word-left',
@@ -959,6 +1294,23 @@ export function parseKeys(chunk: string, state: { paste: string | null }): Key[]
 			continue;
 		}
 
+		// eslint-disable-next-line no-control-regex
+		const mouse = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/.exec(tok);
+		if (mouse) {
+			const button = Number(mouse[1]);
+			flush();
+			if ((button & 64) !== 0) {
+				keys.push({
+					name: (button & 1) !== 0 ? 'mouse-wheel-down' : 'mouse-wheel-up',
+					mouseX: Number(mouse[2]),
+					mouseY: Number(mouse[3]),
+				});
+			} else if ((button & 3) === 0 && mouse[4] === 'M') {
+				keys.push({ name: 'mouse-left-down', mouseX: Number(mouse[2]), mouseY: Number(mouse[3]) });
+			}
+			continue;
+		}
+
 		const named = NAMED[tok];
 		if (named) {
 			flush();
@@ -984,6 +1336,16 @@ interface KeySub {
 const keySubs = new Set<KeySub>();
 const pumpState = { paste: null as string | null };
 let pumping = false;
+let mouseTrackingEnabled = false;
+
+/** Capture SGR mouse input only while the terminal output viewport is visible. */
+function syncTerminalMouseTracking(): void {
+	const enabled = pumping && S.active && Boolean(S.term && S.termOpen) && Boolean(out.isTTY);
+	if (enabled === mouseTrackingEnabled) return;
+	mouseTrackingEnabled = enabled;
+	if (out.isTTY) out.write(enabled ? `${CSI}?1000h${CSI}?1006h` : `${CSI}?1006l${CSI}?1000l`);
+}
+
 /** Gets first refusal on each key, but only while every attached listener is a background one. */
 let keyInterceptor: ((key: Key) => boolean) | null = monitorKeyIntercept;
 
@@ -994,6 +1356,14 @@ export function setKeyInterceptor(interceptor: ((key: Key) => boolean) | null): 
 
 function onStdinData(chunk: string | Buffer): void {
 	for (const key of parseKeys(chunk.toString(), pumpState)) {
+		if (S.termViewerOpen && ['escape', 'ctrl+c', 'up', 'down', 'pageup', 'pagedown', 'home', 'end'].includes(key.name)) {
+			handleTerminalPanelKey(key.name);
+			continue;
+		}
+		if (key.name === 'mouse-left-down' && handleTerminalPanelClick(key.mouseX ?? 0, key.mouseY ?? 0)) continue;
+		if (key.name === 'mouse-wheel-up' || key.name === 'mouse-wheel-down') {
+			if (handleTerminalMouseWheel(key.name === 'mouse-wheel-up' ? 'up' : 'down', key.mouseX ?? 0, key.mouseY ?? 0)) continue;
+		}
 		const subs = [...keySubs];
 		if (keyInterceptor && subs.length > 0 && subs.every((sub) => sub.background) && keyInterceptor(key)) continue;
 		for (const sub of subs) {
@@ -1016,6 +1386,7 @@ function removeKeySub(sub: KeySub): void {
 	const stdin = process.stdin;
 	stdin.off('data', onStdinData);
 	if (out.isTTY) out.write(`${CSI}?2004l${CSI}<u${CSI}>4;0m`);
+	syncTerminalMouseTracking();
 	stdin.setRawMode?.(false);
 	stdin.pause();
 }
@@ -1041,13 +1412,10 @@ export function listenKeys(
 		stdin.setRawMode?.(true);
 		stdin.resume();
 		stdin.setEncoding('utf8');
+		syncTerminalMouseTracking();
 		if (out.isTTY) {
 			// Bracketed paste + kitty keyboard flags (the same negotiation opencode
-			// uses). The kitty push makes supporting terminals report Shift+Enter
-			// distinctly (CSI 13;2u) and the Esc key as CSI 27u. Terminals without
-			// kitty support fall back to xterm modifyOtherKeys (mode 1), which also
-			// encodes Shift+Enter as CSI 13;2u; terminals with neither simply ignore
-			// both sequences and keep their legacy encoding.
+			// uses). SGR mouse mode is enabled separately while the terminal panel is visible.
 			out.write(`${CSI}?2004h${CSI}>1u${CSI}>4;1m`);
 		}
 		stdin.on('data', onStdinData);
@@ -1295,6 +1663,12 @@ export function createInput(): InputController {
 						case 'ctrl+t':
 							toggleTerminalPanel();
 							return;
+						case 'shift+pageup':
+						case 'shift+pagedown':
+						case 'pageup':
+						case 'pagedown':
+							if (handleTerminalPanelKey(key.name)) return;
+							break;
 						case 'tab': {
 							if (popup) {
 								const item = popup.items[S.popupSel] ?? popup.items[0];
