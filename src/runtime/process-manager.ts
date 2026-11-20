@@ -46,7 +46,7 @@ export class ProcessManager {
     for (const child of [...this.children.values()].reverse()) {
       if ('write' in child && typeof child.write === 'function') {
         try {
-          child.write('\\x03');
+          child.write('\x03');
           return true;
         } catch {
           continue;

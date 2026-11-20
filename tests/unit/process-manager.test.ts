@@ -71,7 +71,7 @@ describe('ProcessManager', () => {
     manager.register({ pid: undefined, write: secondWrite, kill: vi.fn() } as unknown as import('node-pty').IPty);
 
     expect(manager.interruptLatest()).toBe(true);
-    expect(secondWrite).toHaveBeenCalledWith('\\x03');
+    expect(secondWrite).toHaveBeenCalledWith('\x03');
     expect(firstWrite).not.toHaveBeenCalled();
   });
 
