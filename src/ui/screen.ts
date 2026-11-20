@@ -1221,7 +1221,7 @@ export function parseKeys(chunk: string, state: { paste: string | null }): Key[]
 			continue;
 		}
 
-		const mouse = /^\\x1b\\[<(\\d+);(\\d+);(\\d+)([Mm])$/.exec(tok);
+		const mouse = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/.exec(tok);
 		if (mouse) {
 			const button = Number(mouse[1]);
 			if ((button & 64) !== 0) {
