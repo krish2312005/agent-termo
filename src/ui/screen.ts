@@ -145,6 +145,8 @@ function termPanelRows(): number {
 
 /** Strip ANSI escapes and fold \r progress-bar rewrites into single lines. */
 function termCleanLine(line: string): string {
+	// These ANSI ESC/BEL sequences are intentional terminal control characters.
+	// eslint-disable-next-line no-control-regex
 	const plain = line.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '');
 	const last = plain.split('\r').pop() ?? '';
 	return last.replace(/\t/g, '  ').slice(0, 400);
