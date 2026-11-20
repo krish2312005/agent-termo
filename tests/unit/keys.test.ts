@@ -19,6 +19,7 @@ describe('parseKeys', () => {
     expect(names('\x7f')).toEqual(['backspace']);
     expect(names('\x1b[A\x1b[B\x1b[C\x1b[D')).toEqual(['up', 'down', 'right', 'left']);
     expect(names('\x1b[Z')).toEqual(['shift+tab']);
+    expect(names('\x1b[5;2~\x1b[6;2~')).toEqual(['shift+pageup', 'shift+pagedown']);
     expect(names('\x1bOH\x1bOF')).toEqual(['home', 'end']);
     expect(names('\x1b[3~')).toEqual(['delete']);
     expect(names('\x1b[1;5D\x1b[1;5C')).toEqual(['word-left', 'word-right']);
