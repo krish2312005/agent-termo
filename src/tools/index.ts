@@ -656,7 +656,7 @@ async function toolBash(args: Record<string, unknown>, projectRoot: string, onOu
 		return await new Promise<ToolResult>((resolve) => {
 			let settled = false;
 			let stdout = '';
-			let stderr = '';
+			const stderr = '';
 			let timer: ReturnType<typeof setTimeout> | null = null;
 			const finish = (success: boolean, exitCode: number | null, error?: string): void => {
 				if (settled) return;

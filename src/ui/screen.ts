@@ -1294,6 +1294,7 @@ export function parseKeys(chunk: string, state: { paste: string | null }): Key[]
 			continue;
 		}
 
+		// eslint-disable-next-line no-control-regex
 		const mouse = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/.exec(tok);
 		if (mouse) {
 			const button = Number(mouse[1]);
