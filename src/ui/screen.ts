@@ -185,7 +185,7 @@ function termOutputRows(): number {
 	return Math.max(1, panel - (S.term.exitCode === null ? 4 : 3));
 }
 
-function terminalPreviewLines(lines: string[], visibleRows = TERM_PANEL_LINES): string[] {
+export function terminalPanelPreview(lines: string[], visibleRows = TERM_PANEL_LINES): string[] {
 	if (lines.length <= visibleRows) return [...lines];
 	const tailRows = Math.max(1, visibleRows - 1);
 	const hidden = lines.length - tailRows;
@@ -244,8 +244,11 @@ export function startTerminalPanel(command: string): void {
 /** Feed PTY output through a terminal emulator so cursor-based prompts remain visible. */
 export function appendTerminalOutput(text: string): void {
 	if (!S.term || !terminalEmulator) return;
+	const wasHidden = !S.termOpen;
 	S.termOpen = true;
+	syncTermKeyListener();
 	syncTerminalMouseTracking();
+	if (wasHidden) paint();
 	terminalEmulator.write(text, () => {
 		snapshotTerminalScreen();
 		termPaint();
@@ -967,7 +970,7 @@ function terminalPanelString(): string {
 	const prefix = '╭─ TERMINAL · ';
 	const fill = '─'.repeat(Math.max(0, cols - prefix.length - command.length - suffix.length - 4));
 	const parts = [line(headerRow, c.cyan('╭─ ') + c.bold('TERMINAL') + c.dim(' · ') + c.white(command) + ' ' + status + c.dim(' · ' + suffix + ' ') + c.cyan(fill + '╮'))];
-	const output = running ? terminalPanelWindow(S.term.lines, 0, shown) : terminalPreviewLines(S.term.lines, shown);
+	const output = running ? terminalPanelWindow(S.term.lines, 0, shown) : terminalPanelPreview(S.term.lines, shown);
 	const width = Math.max(1, cols - 4);
 	for (let i = 0; i < shown; i++) {
 		const value = output[i] ?? (S.term.lines.length === 0 ? 'Waiting for terminal output…' : '');
