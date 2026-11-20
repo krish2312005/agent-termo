@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { appendTerminalOutput, clearTerminalPanel, finishTerminalPanel, handleTerminalMouseWheel, handleTerminalPanelKey, scrollTerminalPanel, startTerminalPanel, terminalPanelOutputBounds, terminalPanelState, terminalPanelVisible, terminalPanelWindow } from '../../src/ui/screen.js';
+import { appendTerminalOutput, clearTerminalPanel, finishTerminalPanel, handleTerminalMouseWheel, handleTerminalPanelKey, scrollTerminalPanel, startTerminalPanel, terminalPanelOutputBounds, terminalPanelState, terminalPanelVisible, terminalPanelWindow, toggleTerminalPanel } from '../../src/ui/screen.js';
 
 afterEach(() => clearTerminalPanel());
 
@@ -58,10 +58,9 @@ describe('live terminal panel', () => {
 	it('re-enables terminal mouse scrolling when new output reopens a hidden panel', async () => {
 		startTerminalPanel('node output');
 		expect(terminalPanelVisible()).toBe(true);
-		const { toggleTerminalPanel } = await import('../../src/ui/screen.js');
 		toggleTerminalPanel();
 		expect(terminalPanelVisible()).toBe(false);
-		appendTerminalOutput('new output\\r\\n');
+		appendTerminalOutput('new output\r\n');
 		await flushTerminalOutput();
 		expect(terminalPanelVisible()).toBe(true);
 	});
@@ -99,7 +98,7 @@ describe('live terminal panel', () => {
 	it('keeps terminal scrolling available after the command and agent turn finish', async () => {
 		startTerminalPanel('npm create vite');
 		const rows = Array.from({ length: 100 }, (_, index) => `History ${index + 1}`);
-		appendTerminalOutput(rows.map((row) => row + '\\r\\n').join(''));
+		appendTerminalOutput(rows.map((row) => row + '\r\n').join(''));
 		await flushTerminalOutput();
 
 		finishTerminalPanel(0);
