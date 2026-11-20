@@ -312,6 +312,35 @@ function updateTerminalInputDraft(): void {
 	termPaint();
 }
 
+/** Escape sequences sent to the child PTY for keys that control terminal UIs. */
+const TERMINAL_KEY_SEQUENCES: Readonly<Record<string, string>> = {
+	up: '\x1b[A',
+	down: '\x1b[B',
+	right: '\x1b[C',
+	left: '\x1b[D',
+	home: '\x1b[H',
+	end: '\x1b[F',
+	delete: '\x1b[3~',
+	pageup: '\x1b[5~',
+	pagedown: '\x1b[6~',
+	tab: '\t',
+	'shift+tab': '\x1b[Z',
+	backspace: '\x7f',
+	'ctrl+u': '\x15',
+	'ctrl+w': '\x17',
+	'ctrl+k': '\x0b',
+};
+
+/** Convert a parsed key into the byte sequence expected by a PTY application. */
+export function terminalInputForKey(name: string): string | null {
+	return TERMINAL_KEY_SEQUENCES[name] ?? null;
+}
+
+/** Full-screen terminal apps receive keystrokes immediately instead of line-buffered input. */
+function terminalUsesAlternateScreen(): boolean {
+	return terminalEmulator?.buffer.active.type === 'alternate';
+}
+
 /**
  * While a tool runs, reuse the raw-key listener for interactive input. Enter
  * sends one line to the active PTY; /subagents remains a UI command.
@@ -321,15 +350,28 @@ export function startBackgroundCommandListener(onCommand: (command: string) => v
 	bgTyped = '';
 	const stopKeys = listenKeys(
 		(key) => {
+			const directInput = S.term?.exitCode === null && terminalUsesAlternateScreen();
 			if (key.name === 'text' || key.name === 'paste') {
-				bgTyped += key.text ?? '';
+				const text = key.text ?? '';
+				if (directInput && terminalInputHandler?.(text)) return;
+				bgTyped += text;
 				updateTerminalInputDraft();
 			} else if (key.name === 'backspace') {
-				bgTyped = bgTyped.slice(0, -1);
-				updateTerminalInputDraft();
+				if (directInput && terminalInputHandler?.('\x7f')) return;
+				if (bgTyped.length > 0) {
+					bgTyped = bgTyped.slice(0, -1);
+					updateTerminalInputDraft();
+				} else if (S.term?.exitCode === null) {
+					terminalInputHandler?.('\x7f');
+				}
 			} else if (key.name === 'ctrl+u') {
-				bgTyped = '';
-				updateTerminalInputDraft();
+				if (directInput && terminalInputHandler?.('\x15')) return;
+				if (bgTyped.length > 0) {
+					bgTyped = '';
+					updateTerminalInputDraft();
+				} else if (S.term?.exitCode === null) {
+					terminalInputHandler?.('\x15');
+				}
 			} else if (key.name === 'enter') {
 				const command = bgTyped.trim();
 				if (/^\/subagents(?:\s|$)/i.test(command)) {
@@ -347,7 +389,7 @@ export function startBackgroundCommandListener(onCommand: (command: string) => v
 					bgTyped = '';
 					if (S.term) S.term.input = '';
 				}
-			} else if (key.name === 'escape') {
+			} else if (key.name === 'escape' || key.name === 'ctrl+c') {
 				bgTyped = '';
 				if (S.term) {
 					S.term.input = '';
@@ -356,6 +398,16 @@ export function startBackgroundCommandListener(onCommand: (command: string) => v
 					}
 				}
 				termPaint();
+			} else {
+				const sequence = terminalInputForKey(key.name);
+				if (sequence && S.term?.exitCode === null && terminalInputHandler) {
+					// Flush locally buffered text before a control key so PTY input order is preserved.
+					if (terminalInputHandler(bgTyped + sequence)) {
+						bgTyped = '';
+						S.term.input = '';
+						termPaint();
+					}
+				}
 			}
 		},
 		undefined,
@@ -430,6 +482,8 @@ function monitorString(firstRow: number, count: number): string {
 
 /** Offer a key to the monitor; true means it was used and must not reach anyone else. */
 function monitorKeyIntercept(key: Key): boolean {
+	// Navigation belongs to the foreground PTY while a terminal command is interactive.
+	if (S.term && S.term.exitCode === null) return false;
 	if (!monitorVisible()) return false;
 	const list = listRunSubAgents();
 	const panelRows = monitorPanelRows();
@@ -1003,10 +1057,15 @@ const NAMED: Record<string, string> = {
 	'\x1bOA': 'up',
 	'\x1b[B': 'down',
 	'\x1bOB': 'down',
+	'\x1b[1;1A': 'up',
+	'\x1b[1;1B': 'down',
+	'\x1b[1;1C': 'right',
+	'\x1b[1;1D': 'left',
 	'\x1b[C': 'right',
 	'\x1bOC': 'right',
 	'\x1b[D': 'left',
 	'\x1bOD': 'left',
+	'\x1b[Z': 'shift+tab',
 	'\x1b[H': 'home',
 	'\x1bOH': 'home',
 	'\x1b[1~': 'home',
