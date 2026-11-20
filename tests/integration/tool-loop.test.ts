@@ -13,6 +13,7 @@ describe('agent tool-loop orchestration', () => {
 		const filePath = 'fixture.ts';
 		const absolutePath = join(projectRoot, filePath);
 		const verificationCommand = 'npm test';
+		const initialFailingCommand = `node -e "console.error('TS2345: broken'); process.exit(1)"`;
 		writeFileSync(absolutePath, 'const status = "broken";\n', 'utf8');
 		writeFileSync(join(projectRoot, 'package.json'), JSON.stringify({
 			scripts: { test: `node -e "const fs=require('fs'); if (!fs.readFileSync('fixture.ts','utf8').includes('fixed')) process.exit(1)"` },
@@ -43,7 +44,7 @@ describe('agent tool-loop orchestration', () => {
 		];
 		const checkpoint = createCheckpoint(projectRoot, 'orchestration regression');
 		const taskState = { goal: 'Fix the TypeScript error.', status: 'running' as const, reason: '', lastActions: [] as string[] };
-		const initialCall: ToolCall = { id: 'bash-1', name: 'bash:execute', arguments: { command: verificationCommand } };
+		const initialCall: ToolCall = { id: 'bash-1', name: 'bash:execute', arguments: { command: initialFailingCommand } };
 
 		try {
 			const finalText = await runToolLoop(
