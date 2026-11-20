@@ -356,7 +356,7 @@ export function printToolResult(
 			const terminalOutput = (result.output || result.error || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 			const lineCount = terminalOutput ? terminalOutput.split('\n').filter((line, index, all) => line.length > 0 || index < all.length - 1).length : 0;
 			const summary = lineCount === 1 ? '1 line' : lineCount + ' lines';
-			out.write(c.dim('  ⎿  ') + (result.success ? c.green('✓ terminal output') : c.red('✗ terminal output')) + c.dim(' · ' + summary + ' · inspect the preview above to expand') + '\n');
+			out.write(c.dim('  ⎿  ') + (result.success ? c.green('✓ terminal output') : c.red('✗ terminal output')) + c.dim(' · ' + summary + ' · press Ctrl+O to reopen and inspect') + '\n');
 			return;
 		}
 		if (result.success) {
