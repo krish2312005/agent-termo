@@ -4,6 +4,7 @@
 // =============================================================================
 
 import Chalk from 'chalk';
+import { applyDiffContext } from '../diff/index.js';
 import { resolve } from 'node:path';
 import type { ProposedFileChange } from '../types/index.js';
 import { loadMemory, loadTimeline } from '../memory/index.js';
@@ -398,7 +399,7 @@ function highlightCode(text: string, filePath: string): string {
 }
 
 export function printDiffViewer(change: ProposedFileChange): void {
-	const diff = change.diff;
+	const diff = applyDiffContext(change.diff, { contextLines: 3 });
 	const room = Math.max(20, terminalWidth() - 14);
 
 	const label = change.isDeletion
@@ -412,11 +413,19 @@ export function printDiffViewer(change: ProposedFileChange): void {
 
 	for (const line of diff.lines) {
 		const prefix = line.type === 'add' ? '+' : line.type === 'remove' ? '-' : ' ';
-			const color = line.type === 'add' ? c.green : line.type === 'remove' ? c.red : c.dim;
-			const num = line.lineNumber > 0 ? String(line.lineNumber).padStart(4) : '    ';
-			const text = clipText(line.content.replace(/\t/g, '  '), room);
-			const coloredNumber = line.type === 'add' ? c.green(num) : line.type === 'remove' ? c.red(num) : c.dim(num);
-			out.write('  ' + color(prefix) + coloredNumber + c.dim(' │ ') + highlightCode(text, diff.file) + '\n');
+		const number = line.lineNumber > 0 ? String(line.lineNumber).padStart(4) : '    ';
+		const coloredNumber = line.type === 'add' ? c.green(number) : line.type === 'remove' ? c.red(number) : c.dim(number);
+		const gutter = '  ' + (line.type === 'add' ? c.green(prefix) : line.type === 'remove' ? c.red(prefix) : c.dim(prefix)) + coloredNumber + c.dim(' │ ');
+		const contentWidth = Math.max(1, terminalWidth() - visibleLength(gutter) - 4);
+		const text = clipText(line.content.replace(/\t/g, '  '), contentWidth);
+		const padding = ' '.repeat(Math.max(0, contentWidth - visibleLength(text)));
+		const row = gutter + highlightCode(text, diff.file) + padding + '  ';
+		const background = line.type === 'add'
+			? c.bgHex('#123d1b')
+			: line.type === 'remove'
+				? c.bgHex('#4a1111')
+				: undefined;
+		out.write((background ? background(row) : row) + '\n');
 	}
 	out.write('\n');
 }

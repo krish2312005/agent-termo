@@ -5,8 +5,9 @@ const IGNORED_DIRECTORIES = new Set([
   '.git', '.agent-termo', 'node_modules', 'dist', 'build', 'coverage',
   '.next', '.turbo', '.venv', 'vendor',
 ]);
-const CODE_FILE = /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|rb|c|cpp|h|hpp)$/i;
-const MAX_CODE_FILE_BYTES = 4 * 1024 * 1024;
+const TEXT_FILE = /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|rb|c|cpp|h|hpp|md|mdx|txt|rst|json|jsonc|yaml|yml|toml|xml|html|css|scss|sass|less|sql|sh|bash|zsh|fish|ini|cfg|conf|env|properties|csv|graphql|gql|proto|tf|hcl|svg|vue|svelte|astro|gradle|lock)$/i;
+const TEXT_FILE_NAMES = new Set(['.gitignore', '.npmrc', '.nvmrc', '.editorconfig', 'Dockerfile', 'Makefile', 'Procfile', 'LICENSE', 'README']);
+const MAX_TEXT_FILE_BYTES = 4 * 1024 * 1024;
 const MAX_SNAPSHOT_BYTES = 50 * 1024 * 1024;
 const MAX_SNAPSHOT_FILES = 5000;
 
@@ -40,7 +41,7 @@ export function isWorkspacePath(projectRoot: string, targetPath: string): boolea
   }
 }
 
-/** Snapshot only bounded, regular code files; symlinks and generated trees are not followed. */
+/** Snapshot bounded source and text files; symlinks and generated trees are not followed. */
 export function snapshotWorkspaceFiles(projectRoot: string): Map<string, string> {
   const snapshot = new Map<string, string>();
   let totalBytes = 0;
@@ -58,12 +59,12 @@ export function snapshotWorkspaceFiles(projectRoot: string): Map<string, string>
         if (!IGNORED_DIRECTORIES.has(entry.name)) walk(resolve(directory, entry.name));
         continue;
       }
-      if (!entry.isFile() || !CODE_FILE.test(entry.name)) continue;
+      if (!entry.isFile() || (!TEXT_FILE.test(entry.name) && !TEXT_FILE_NAMES.has(entry.name) && !/^\.env(?:\.|$)/.test(entry.name))) continue;
 
       const absolute = resolve(directory, entry.name);
       try {
         const stat = lstatSync(absolute);
-        if (stat.size > MAX_CODE_FILE_BYTES || totalBytes + stat.size > MAX_SNAPSHOT_BYTES) continue;
+        if (stat.size > MAX_TEXT_FILE_BYTES || totalBytes + stat.size > MAX_SNAPSHOT_BYTES) continue;
         const content = readFileSync(absolute, 'utf8');
         if (content.includes('\0')) continue;
         const relativePath = relative(projectRoot, absolute).split(sep).join('/');

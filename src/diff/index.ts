@@ -3,11 +3,15 @@
 // =============================================================================
 // Uses LCS (Longest Common Subsequence) to compute minimal line-level diffs.
 
-import type { DiffLine, DiffResult } from '../types/index.js';
+import type { DiffLine, DiffResult, ProposedFileChange } from '../types/index.js';
 
 // ── LCS-based Diff Algorithm ────────────────────────────────────────────────
 
 export function computeDiff(original: string, proposed: string): DiffResult {
+	if (original === proposed) {
+		return { file: '', lines: [], additions: 0, deletions: 0 };
+	}
+
 	const originalLines = original.split('\n');
 	const proposedLines = proposed.split('\n');
 
@@ -18,10 +22,6 @@ export function computeDiff(original: string, proposed: string): DiffResult {
 			content,
 		}));
 		return { file: '', lines, additions: proposedLines.length, deletions: 0 };
-	}
-
-	if (original === proposed) {
-		return { file: '', lines: [], additions: 0, deletions: 0 };
 	}
 
 	const m = originalLines.length;
@@ -146,6 +146,37 @@ function opsToDiffLines(ops: DiffOp[]): DiffLine[] {
 	}
 
 	return lines;
+}
+
+/** Build visual diffs for text files changed by shell commands or external tools. */
+export function computeFileChanges(
+	before: ReadonlyMap<string, string>,
+	after: ReadonlyMap<string, string>,
+): ProposedFileChange[] {
+	const paths = new Set([...before.keys(), ...after.keys()]);
+	const changes: ProposedFileChange[] = [];
+
+	for (const path of paths) {
+		const existed = before.has(path);
+		const existsNow = after.has(path);
+		const originalContent = before.get(path) ?? '';
+		const proposedContent = after.get(path) ?? '';
+		if (existed === existsNow && originalContent === proposedContent) continue;
+
+		const computed = originalContent === proposedContent
+			? { file: path, lines: [], additions: 0, deletions: 0 }
+			: { ...computeDiff(originalContent, proposedContent), file: path };
+		changes.push({
+			path,
+			originalContent,
+			proposedContent,
+			diff: computed,
+			isNewFile: !existed,
+			isDeletion: !existsNow,
+		});
+	}
+
+	return changes;
 }
 
 // ── Context Extraction for large files ──────────────────────────────────────

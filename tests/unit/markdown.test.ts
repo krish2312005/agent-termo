@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { MarkdownPrinter, printToolResult } from '../../src/ui/index.js';
+import { MarkdownPrinter, printDiffViewer, printToolResult } from '../../src/ui/index.js';
+import { computeDiff } from '../../src/diff/index.js';
 
 // eslint-disable-next-line no-control-regex
 const stripAnsi = (s: string): string => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
@@ -77,6 +78,27 @@ describe('MarkdownPrinter', () => {
 			'  │ <script type="module" src="/js/main.js"></script>',
 			'  └─',
 		]);
+	});
+
+	it('renders every file change as a colored unified diff with a focused context window', () => {
+		const originalContent = ['before', 'old value', 'after', ...Array.from({ length: 8 }, (_, i) => 'context ' + i)].join('\n');
+		const proposedContent = ['before', 'new value', 'after', ...Array.from({ length: 8 }, (_, i) => 'context ' + i)].join('\n');
+		const change = {
+			path: 'src/example.ts',
+			originalContent,
+			proposedContent,
+			diff: { ...computeDiff(originalContent, proposedContent), file: 'src/example.ts' },
+			isNewFile: false,
+			isDeletion: false,
+		};
+		const lines = capture(() => printDiffViewer(change)).filter(Boolean);
+
+		expect(lines[0]).toContain('src/example.ts');
+		expect(lines[0]).toContain('MODIFY');
+		expect(lines[0]).toContain('+1');
+		expect(lines[0]).toContain('-1');
+		expect(lines.some((line) => line.includes('-   2') && line.includes('old value'))).toBe(true);
+		expect(lines.some((line) => line.includes('+   2') && line.includes('new value'))).toBe(true);
 	});
 
 	it('prints terminal command output in the chat transcript', () => {

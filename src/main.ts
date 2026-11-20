@@ -22,6 +22,7 @@ import { runProjectChecks } from './runtime/checks.js';
 import { createRunJournal, type AgentRunJournal } from './runtime/engine.js';
 import { ApprovalBroker } from './runtime/approval.js';
 import { collectWorkspaceChanges, snapshotWorkspaceFiles } from './runtime/workspace.js';
+import { computeFileChanges } from './diff/index.js';
 import { createSession, forkSession, listSessions, loadLatestSession, loadSession, saveSession, type StoredSession } from './runtime/sessions.js';
 import {
 	addSubAgentProgress,
@@ -39,6 +40,7 @@ import {
 	printAssistantMessage,
 	printToolCall,
 	printToolResult,
+	printDiffViewer,
 	printError,
 	printSuccess,
 	printInfo,
@@ -409,6 +411,11 @@ function describeToolActivity(toolName: string, args: Record<string, unknown>, o
 	return { actions, notes };
 }
 
+
+function printWorkspaceFileChanges(before: ReadonlyMap<string, string>, after: ReadonlyMap<string, string>): void {
+	for (const change of computeFileChanges(before, after)) printDiffViewer(change);
+}
+
 interface InputController {
 	close(): void;
 	showPrompt(): void;
@@ -500,8 +507,10 @@ async function executeToolWithReview(
 	if (proposedChange) {
 		if (permissionMode === 'auto' || permissionMode === 'files') {
 			const applyResult = await applyWithCheckpoint(proposedChange, projectRoot, getCheckpointId);
-			if (applyResult.success) printSuccess('Auto-applied: ' + (applyResult.output ?? proposedChange.path));
-			else printError(applyResult.error ?? 'Failed to auto-apply change');
+			if (applyResult.success) {
+				printDiffViewer(proposedChange);
+				printSuccess('Auto-applied: ' + (applyResult.output ?? proposedChange.path));
+			} else printError(applyResult.error ?? 'Failed to auto-apply change');
 			return { toolResult: applyResult, change: proposedChange, applied: applyResult.success };
 		}
 			// Pause REPL input to prevent stale listeners from interfering with promptAcceptReject
@@ -677,12 +686,14 @@ async function runDelegatedAgent(
 				journal?.toolFinished(journalCallId, { ...toolResult, id: journalCallId });
 				if (execution.applied && execution.change) {
 					changedFiles.set(execution.change.path, execution.change.proposedContent);
+					workspaceSnapshot = snapshotWorkspaceFiles(projectRoot);
 					ranCommands.length = 0;
 				}
 				if (tc.name === 'bash:execute' || tc.name.startsWith('mcp_')) {
 					const nextSnapshot = snapshotWorkspaceFiles(projectRoot);
 					const workspaceChanges = collectWorkspaceChanges(workspaceSnapshot, nextSnapshot);
 					if (workspaceChanges.size > 0) {
+						printWorkspaceFileChanges(workspaceSnapshot, nextSnapshot);
 						for (const [path, content] of workspaceChanges) changedFiles.set(path, content);
 						ranCommands.length = 0;
 					}
@@ -896,6 +907,7 @@ export async function runToolLoop(
 		if (!toolResult.success) failedToolCalls.add(tc.name + ':' + JSON.stringify(tc.arguments));
 		if (execution.applied && execution.change) {
 			changedFiles.set(execution.change.path, execution.change.proposedContent);
+			runtime.workspaceSnapshot = snapshotWorkspaceFiles(projectRoot);
 			// Earlier checks are invalidated by every later accepted file change.
 			ranCommands.length = 0;
 		}
@@ -903,6 +915,7 @@ export async function runToolLoop(
 			const nextSnapshot = snapshotWorkspaceFiles(projectRoot);
 			const workspaceChanges = collectWorkspaceChanges(runtime.workspaceSnapshot, nextSnapshot);
 			if (workspaceChanges.size > 0) {
+				if (tc.name !== 'agent:delegate') printWorkspaceFileChanges(runtime.workspaceSnapshot, nextSnapshot);
 				for (const [path, content] of workspaceChanges) changedFiles.set(path, content);
 				ranCommands.length = 0;
 			}
