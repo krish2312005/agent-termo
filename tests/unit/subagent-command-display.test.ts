@@ -6,7 +6,7 @@ afterEach(() => resetSubAgents());
 
 describe('sub-agent bash command display', () => {
 	it('preserves the full command in registry storage and renders it with its working directory', () => {
-		const command = 'npm run typecheck && '.repeat(30) + 'npm test -- --run && printf "COMMAND_END_MARKER"\necho "second command line"';
+		const command = 'npm run typecheck && '.repeat(30) + '\nprintf "COMMAND_END_MARKER"\necho "second command line"';
 		const cwd = '/Users/example/project/deep/workspace';
 		const args = `Command:\n${command}\nWorking directory:\n${cwd}`;
 		const id = spawnSubAgent('request-1', 'test-agent', 'Run project checks', 8);
