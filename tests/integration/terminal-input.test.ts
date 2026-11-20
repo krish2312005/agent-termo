@@ -8,6 +8,7 @@ describe('interactive bash stdin', () => {
 	let projectRoot = '';
 
 	afterEach(() => {
+		setTerminalHooks({});
 		if (projectRoot) rmSync(projectRoot, { recursive: true, force: true });
 		projectRoot = '';
 	});
@@ -42,6 +43,7 @@ describe('interactive bash stdin', () => {
 		expect(terminalOutput).toContain('TERMO_READY:true:true');
 		expect(terminalExit).toBe(0);
 		setTerminalHooks({});
+	});
 
 	it('interrupts a running PTY command without waiting for its timeout', async () => {
 		projectRoot = mkdtempSync(join(tmpdir(), 'agent-termo-pty-interrupt-'));
@@ -66,5 +68,5 @@ describe('interactive bash stdin', () => {
 		expect(terminalExit).not.toBeNull();
 		expect(terminalExit).not.toBeUndefined();
 		setTerminalHooks({});
-	});	});
+	});
 });
