@@ -55,6 +55,14 @@ describe('live terminal panel', () => {
 		scrollTerminalPanel('down');
 		expect(terminalPanelState()?.scrollOffset).toBe(Math.max(0, rows.length - viewportRows * 2));
 	});
+	it('can hide and reopen the terminal workspace with Ctrl+O', () => {
+		startTerminalPanel('npm create vite');
+		expect(handleTerminalPanelKey('ctrl+o')).toBe(true);
+		expect(terminalPanelVisible()).toBe(false);
+		expect(handleTerminalPanelKey('ctrl+o')).toBe(true);
+		expect(terminalPanelVisible()).toBe(true);
+	});
+
 	it('keeps terminal scrolling available after the command and agent turn finish', async () => {
 		startTerminalPanel('npm create vite');
 		const rows = Array.from({ length: 100 }, (_, index) => `History ${index + 1}`);

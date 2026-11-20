@@ -313,11 +313,12 @@ export function scrollTerminalPanel(direction: 'up' | 'down'): void {
 
 /** Handle panel shortcuts from either the background listener or the chat composer. */
 export function handleTerminalPanelKey(keyName: string): boolean {
-	if (!S.term || !S.termOpen) return false;
+	if (!S.term) return false;
 	if (TERM_TOGGLE_KEYS.has(keyName)) {
 		toggleTerminalPanel();
 		return true;
 	}
+	if (!S.termOpen) return false;
 	if (keyName === 'shift+pageup' || (S.term.exitCode !== null && keyName === 'pageup')) {
 		scrollTerminalPanel('up');
 		return true;
@@ -540,6 +541,8 @@ function monitorString(firstRow: number, count: number): string {
 
 /** Offer a key to the monitor; true means it was used and must not reach anyone else. */
 function monitorKeyIntercept(key: Key): boolean {
+	// Terminal-panel scroll keys must not be consumed by the sub-agent inspector.
+	if (S.term && S.termOpen && ['pageup', 'pagedown', 'shift+pageup', 'shift+pagedown'].includes(key.name)) return false;
 	// Navigation belongs to the foreground PTY while a terminal command is interactive.
 	if (S.term && S.term.exitCode === null) return false;
 	if (!monitorVisible()) return false;
