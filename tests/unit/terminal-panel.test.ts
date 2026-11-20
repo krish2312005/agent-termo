@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { appendTerminalOutput, clearTerminalPanel, closeTerminalOutputViewer, finishTerminalPanel, handleTerminalMouseWheel, handleTerminalPanelClick, handleTerminalPanelKey, openTerminalOutputViewer, startTerminalPanel, terminalPanelOutputBounds, terminalPanelState, terminalPanelPreview, terminalPanelVisible, terminalPanelWindow, toggleTerminalPanel } from '../../src/ui/screen.js';
+import { appendTerminalOutput, clearTerminalPanel, closeTerminalOutputViewer, finishTerminalPanel, handleTerminalMouseWheel, handleTerminalPanelClick, handleTerminalPanelKey, openTerminalOutputViewer, popupLayoutForRows, startTerminalPanel, terminalPanelOutputBounds, terminalPanelState, terminalPanelPreview, terminalPanelVisible, terminalPanelWindow, toggleTerminalPanel } from '../../src/ui/screen.js';
 
 afterEach(() => {
 	closeTerminalOutputViewer();
@@ -7,6 +7,24 @@ afterEach(() => {
 });
 
 const flushTerminalOutput = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 20));
+
+describe('completion popup layout', () => {
+	it('uses the same top row for popup rendering and stale-row cleanup above the terminal panel', () => {
+		const rows = 40;
+		const monitorRows = 0;
+		const inputRows = 1;
+		const terminalRows = 10;
+		const inputTopBorderRow = rows - 1 - monitorRows - inputRows - 1;
+		const popupBaseRow = inputTopBorderRow - terminalRows - 1;
+		const chromeRows = inputRows + 3 + terminalRows + monitorRows;
+
+		expect(popupBaseRow).toBe(rows - chromeRows);
+		expect(popupLayoutForRows(popupBaseRow, 2)).toEqual({
+			top: popupBaseRow - 5,
+			count: 2,
+		});
+	});
+});
 
 describe('live terminal panel', () => {
 	it('loads the headless terminal implementation and shows an unterminated npm prompt', async () => {
@@ -34,15 +52,22 @@ describe('live terminal panel', () => {
 		await flushTerminalOutput();
 
 		const completed = terminalPanelState();
-		expect(completed?.panelRows).toBe(running?.panelRows);
-		expect(completed?.viewportRows).toBe(7);
-		// Every PTY output row must enter the terminal buffer exactly once.
+		expect(terminalPanelVisible()).toBe(false);
+		expect(completed?.panelRows).toBe(0);
+		expect(completed?.viewportRows).toBe(0);
+		expect(completed?.exitCode).toBe(0);
+		// Every PTY output row must remain available after the live panel closes.
 		expect(completed?.lines).toEqual(lines);
 		expect(new Set(completed?.lines).size).toBe(150);
 		expect(terminalPanelPreview(completed?.lines ?? [], 7)).toEqual([
 			'(144 earlier lines)',
 			...lines.slice(-6),
 		]);
+
+		expect(handleTerminalPanelKey('ctrl+o')).toBe(true);
+		expect(terminalPanelVisible()).toBe(true);
+		expect(terminalPanelState()?.panelRows).toBe(running?.panelRows);
+		expect(terminalPanelState()?.viewportRows).toBe(7);
 	});
 	it('renders cursor-addressed prompts from an alternate-screen terminal', async () => {
 		startTerminalPanel('npm create vite');
