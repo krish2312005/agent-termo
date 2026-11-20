@@ -15,7 +15,7 @@ describe('interactive bash stdin', () => {
 
 	it('runs commands in a TTY and forwards a response to the child', async () => {
 		projectRoot = mkdtempSync(join(tmpdir(), 'agent-termo-pty-'));
-		const script = "process.stdout.write('TERMO_READY:'+process.stdin.isTTY+':'+process.stdout.isTTY);process.stdin.once('data',data=>process.stdout.write('TERMO_RECEIVED:'+data.toString().trim()))";
+		const script = "process.stdout.write('TERMO_READY:'+process.stdin.isTTY+':'+process.stdout.isTTY);process.stdin.once('data',data=>{process.stdin.pause();process.stdout.write('TERMO_RECEIVED:'+data.toString().trim()+'\\n')})";
 		const command = JSON.stringify(process.execPath) + ' -e ' + JSON.stringify(script);
 		let sent = false;
 		let observed = '';
@@ -36,9 +36,9 @@ describe('interactive bash stdin', () => {
 		});
 
 		expect(sent).toBe(true);
-		expect(result.success).toBe(true);
 		expect(result.output).toContain('TERMO_READY:true:true');
 		expect(result.output).toContain('TERMO_RECEIVED:y');
+		expect(result.success, result.error).toBe(true);
 		expect(terminalStarted).toBe(command);
 		expect(terminalOutput).toContain('TERMO_READY:true:true');
 		expect(terminalExit).toBe(0);
