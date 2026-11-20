@@ -13,7 +13,7 @@
 // =============================================================================
 
 import Chalk from 'chalk';
-import { Terminal } from '@xterm/headless';
+import { createRequire } from 'node:module';
 import { createInterface } from 'node:readline';
 import { listRunSubAgents, subscribeSubAgents } from '../runtime/subagents.js';
 import {
@@ -27,6 +27,9 @@ import {
 } from './subagent-view.js';
 
 const c: typeof Chalk = Chalk as unknown as typeof Chalk;
+// The published 6.0.0 package has an invalid ESM module field and no exports map.
+// Load its valid CommonJS main entry explicitly; retain the package's official API types.
+const { Terminal } = createRequire(import.meta.url)('@xterm/headless') as typeof import('@xterm/headless');
 const out = process.stdout;
 
 const CSI = '\x1b[';

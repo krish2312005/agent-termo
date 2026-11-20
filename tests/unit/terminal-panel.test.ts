@@ -6,7 +6,7 @@ afterEach(() => clearTerminalPanel());
 const flushTerminalOutput = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 20));
 
 describe('live terminal panel', () => {
-	it('shows an unterminated npm confirmation prompt', async () => {
+	it('loads the headless terminal implementation and shows an unterminated npm prompt', async () => {
 		startTerminalPanel('npx vite');
 		appendTerminalOutput('Need to install the following packages:\nvite@8.3.8\nOk to proceed? (y)');
 		await flushTerminalOutput();
