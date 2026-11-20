@@ -13,6 +13,7 @@
 // =============================================================================
 
 import Chalk from 'chalk';
+import { Terminal } from '@xterm/headless';
 import { createInterface } from 'node:readline';
 import { listRunSubAgents, subscribeSubAgents } from '../runtime/subagents.js';
 import {
@@ -150,6 +151,7 @@ function shortPath(p: string): string {
 // =============================================================================
 
 let termPaintTimer: ReturnType<typeof setTimeout> | null = null;
+let terminalEmulator: Terminal | null = null;
 
 function termPanelRows(): number {
 	if (!S.term || !S.termOpen) return 0;
@@ -158,18 +160,20 @@ function termPanelRows(): number {
 	return shown + (S.term.exitCode === null ? 4 : 2); // header + output + input label + input + bottom
 }
 
-/** Strip terminal control sequences and fold carriage-return progress updates. */
-function termCleanLine(line: string): string {
-	// ANSI cursor, color, title, and terminal-mode sequences are not useful in this compact log.
-	// eslint-disable-next-line no-control-regex
-	const plain = line
-		.replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '')
-		.replace(/\x1b[P^_].*?\x1b\\/g, '')
-		.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
-		.replace(/\x1b[ -/]*[@-~]/g, '');
-	const last = plain.split('\r').pop() ?? '';
-	// eslint-disable-next-line no-control-regex
-	return last.replace(/\t/g, '  ').replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '').slice(0, 400);
+/** Copy the visible terminal screen after xterm has processed its ANSI control sequences. */
+function snapshotTerminalScreen(): void {
+	if (!S.term || !terminalEmulator) return;
+	const buffer = terminalEmulator.buffer.active;
+	const visible = Array.from({ length: terminalEmulator.rows }, (_, row) => ({
+		row,
+		text: buffer.getLine(buffer.viewportY + row)?.translateToString(true) ?? '',
+	})).filter((line) => line.text.trim().length > 0);
+
+	const cursorIndex = visible.findIndex((line) => line.row >= buffer.cursorY);
+	const focusIndex = cursorIndex >= 0 ? cursorIndex : visible.length - 1;
+	const start = Math.max(0, Math.min(visible.length - TERM_PANEL_LINES, focusIndex - Math.floor(TERM_PANEL_LINES / 2)));
+	S.term.lines = visible.slice(start, start + TERM_PANEL_LINES).map((line) => line.text);
+	S.term.pending = '';
 }
 
 function termPaint(): void {
@@ -185,34 +189,45 @@ function termPaint(): void {
 export function startTerminalPanel(command: string): void {
 	clearTerminalPanel();
 	S.term = { command, lines: [], pending: '', input: '', exitCode: null };
-	S.termOpen = false; // default hidden
+	terminalEmulator = new Terminal({
+		cols: Math.max(1, out.columns || 80),
+		rows: Math.max(1, out.rows || 24),
+		scrollback: 500,
+		allowProposedApi: true,
+		logLevel: 'off',
+	});
+	S.termOpen = false;
 	syncTermKeyListener();
-	termPaint(); // refresh the input hint without opening the output panel
+	termPaint();
 }
 
-/** Stream raw stdout/stderr text into the panel. */
+/** Feed PTY output through a terminal emulator so cursor-based prompts remain visible. */
 export function appendTerminalOutput(text: string): void {
-	if (!S.term) return;
-	S.term.pending += text;
-	const parts = S.term.pending.split('\n');
-	S.term.pending = parts.pop() ?? '';
-	for (const part of parts) S.term.lines.push(termCleanLine(part));
-	if (S.term.lines.length > 500) S.term.lines.splice(0, S.term.lines.length - 500);
-	if (S.term.pending && S.term.exitCode === null) S.termOpen = true;
-	if (S.termOpen) termPaint(); // only repaint if panel is visible
+	if (!S.term || !terminalEmulator) return;
+	S.termOpen = true;
+	terminalEmulator.write(text, () => {
+		snapshotTerminalScreen();
+		termPaint();
+	});
 }
 
-/** The terminal command finished; keep panel closed (Ctrl+O opens it). */
+/** The terminal command finished; flush queued output before disposing its emulator. */
 export function finishTerminalPanel(exitCode: number | null): void {
 	if (!S.term) return;
-	if (S.term.pending) {
-		S.term.lines.push(termCleanLine(S.term.pending));
-		S.term.pending = '';
-	}
-	S.term.exitCode = exitCode ?? -1;
-	S.term.input = '';
-	syncTermKeyListener();
-	termPaint(); // refresh the status hint; preserve panel visibility
+	const finish = (): void => {
+		snapshotTerminalScreen();
+		if (S.term) {
+			S.term.exitCode = exitCode ?? -1;
+			S.term.input = '';
+			S.term.pending = '';
+		}
+		terminalEmulator?.dispose();
+		terminalEmulator = null;
+		syncTermKeyListener();
+		termPaint();
+	};
+	if (terminalEmulator) terminalEmulator.write('', finish);
+	else finish();
 }
 
 /** Toggle the terminal panel open/closed (Ctrl+O / Ctrl+T). */
@@ -226,6 +241,8 @@ export function toggleTerminalPanel(): void {
 /** Close the terminal panel but keep the last term so it can be reopened with Ctrl+O. */
 export function clearTerminalPanel(): void {
 	S.termOpen = false;
+	terminalEmulator?.dispose();
+	terminalEmulator = null;
 	if (S.term) {
 		S.term.lines = [];
 		S.term.pending = '';
@@ -245,7 +262,7 @@ export function terminalPanelState(): { command: string; exitCode: number | null
 	return {
 		command: S.term.command,
 		exitCode: S.term.exitCode,
-		lines: [...S.term.lines, ...(S.term.pending ? [termCleanLine(S.term.pending)] : [])],
+		lines: [...S.term.lines],
 		input: S.term.input,
 	};
 }
@@ -786,7 +803,7 @@ function chromeString(): string {
 				c.cyan('╭─ ') + c.bold('TERMINAL') + c.dim(' · ') + c.white(visibleCommand) + ' ' + status + c.dim(' · ctrl+o hide ') + c.cyan(headerFill + '╮'),
 			),
 		);
-		const outputLines = [...S.term.lines, ...(S.term.pending ? [termCleanLine(S.term.pending)] : [])];
+		const outputLines = S.term.lines;
 		const content = outputLines.slice(-shown);
 		const panelWidth = Math.max(1, cols - 4);
 		for (let i = 0; i < shown; i++) {

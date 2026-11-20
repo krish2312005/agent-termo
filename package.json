@@ -55,7 +55,8 @@
     "simple-git": "^4.0.2",
     "node-pty": "1.2.0-beta.18",
     "zod": "^4.6.7",
-    "@modelcontextprotocol/client": "^2.4.0"
+    "@modelcontextprotocol/client": "^2.4.0",
+    "@xterm/headless": "6.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.13.10",
