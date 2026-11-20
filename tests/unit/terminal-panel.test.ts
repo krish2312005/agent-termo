@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { appendTerminalOutput, clearTerminalPanel, finishTerminalPanel, handleTerminalPanelKey, scrollTerminalPanel, startTerminalPanel, terminalPanelState, terminalPanelVisible, terminalPanelWindow } from '../../src/ui/screen.js';
+import { appendTerminalOutput, clearTerminalPanel, finishTerminalPanel, handleTerminalMouseWheel, handleTerminalPanelKey, scrollTerminalPanel, startTerminalPanel, terminalPanelOutputBounds, terminalPanelState, terminalPanelVisible, terminalPanelWindow } from '../../src/ui/screen.js';
 
 afterEach(() => clearTerminalPanel());
 
@@ -55,6 +55,28 @@ describe('live terminal panel', () => {
 		scrollTerminalPanel('down');
 		expect(terminalPanelState()?.scrollOffset).toBe(Math.max(0, rows.length - viewportRows * 2));
 	});
+	it('scrolls by mouse wheel only when the pointer is over terminal output', async () => {
+		startTerminalPanel('node output');
+		appendTerminalOutput(Array.from({ length: 100 }, (_, index) => `Output ${index + 1}\\r\\n`).join(''));
+		await flushTerminalOutput();
+
+		const bounds = terminalPanelOutputBounds();
+		expect(bounds).not.toBeNull();
+		expect(handleTerminalMouseWheel('up', bounds!.left + 1, bounds!.top)).toBe(true);
+		expect(terminalPanelState()?.scrollOffset).toBe(3);
+		expect(handleTerminalMouseWheel('down', bounds!.left + 1, bounds!.top)).toBe(true);
+		expect(terminalPanelState()?.scrollOffset).toBe(0);
+		expect(handleTerminalMouseWheel('up', bounds!.left + 1, bounds!.top - 1)).toBe(false);
+		expect(terminalPanelState()?.scrollOffset).toBe(0);
+	});
+
+	it('preserves intentional blank terminal rows without shifting later output', async () => {
+		startTerminalPanel('printf output');
+		appendTerminalOutput('first\\r\\n\\r\\nthird\\r\\n');
+		await flushTerminalOutput();
+		expect(terminalPanelState()?.lines.slice(0, 3)).toEqual(['first', '', 'third']);
+	});
+
 	it('can hide and reopen the terminal workspace with Ctrl+O', () => {
 		startTerminalPanel('npm create vite');
 		expect(handleTerminalPanelKey('ctrl+o')).toBe(true);

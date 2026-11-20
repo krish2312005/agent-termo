@@ -193,9 +193,14 @@ function snapshotTerminalScreen(): void {
 	const buffer = terminalEmulator.buffer.active;
 	const previousLineCount = S.term.lines.length;
 	const wasScrolledBack = S.term.scrollOffset > 0;
-	const lines = Array.from({ length: buffer.length }, (_, row) =>
+	const cursorRow = buffer.baseY + buffer.cursorY;
+	const rowCount = buffer.type === 'alternate' ? buffer.length : Math.min(buffer.length, cursorRow + 1);
+	const lines = Array.from({ length: rowCount }, (_, row) =>
 		buffer.getLine(row)?.translateToString(true) ?? '',
-	).filter((line) => line.trim().length > 0);
+	);
+	// A normal terminal's cursor sits on an unused row after a trailing newline.
+	// Remove only that final cursor row; retain intentional blank lines within the output.
+	if (buffer.type === 'normal' && lines.at(-1) === '') lines.pop();
 	if (wasScrolledBack && lines.length > previousLineCount) {
 		S.term.scrollOffset += lines.length - previousLineCount;
 	}
@@ -226,6 +231,7 @@ export function startTerminalPanel(command: string): void {
 	});
 	S.termOpen = true;
 	syncTermKeyListener();
+	syncTerminalMouseTracking();
 	termPaint();
 }
 
@@ -263,12 +269,14 @@ export function toggleTerminalPanel(): void {
 	if (!S.term) return;
 	S.termOpen = !S.termOpen;
 	syncTermKeyListener();
+	syncTerminalMouseTracking();
 	paint();
 }
 
 /** Close the terminal panel but keep the last term so it can be reopened with Ctrl+O. */
 export function clearTerminalPanel(): void {
 	S.termOpen = false;
+	syncTerminalMouseTracking();
 	terminalEmulator?.dispose();
 	terminalEmulator = null;
 	if (S.term) {
@@ -299,16 +307,37 @@ export function terminalPanelState(): { command: string; exitCode: number | null
 }
 
 /** Select an older or newer page of terminal output without sending keys to the child process. */
-export function scrollTerminalPanel(direction: 'up' | 'down'): void {
+export function scrollTerminalPanel(direction: 'up' | 'down', rows = termOutputRows()): void {
 	if (!S.term || !S.termOpen) return;
-	const pageRows = termOutputRows();
-	const maxOffset = Math.max(0, S.term.lines.length - pageRows);
+	const amount = Math.max(1, Math.trunc(rows));
+	const maxOffset = Math.max(0, S.term.lines.length - termOutputRows());
 	const nextOffset = direction === 'up'
-		? Math.min(maxOffset, S.term.scrollOffset + pageRows)
-		: Math.max(0, S.term.scrollOffset - pageRows);
+		? Math.min(maxOffset, S.term.scrollOffset + amount)
+		: Math.max(0, S.term.scrollOffset - amount);
 	if (nextOffset === S.term.scrollOffset) return;
 	S.term.scrollOffset = nextOffset;
 	paint();
+}
+
+/** Bounds of the visible terminal output, in 1-based terminal coordinates. */
+export function terminalPanelOutputBounds(): { left: number; right: number; top: number; bottom: number } | null {
+	if (!S.term || !S.termOpen) return null;
+	const panel = termPanelRows();
+	const { rows, cols } = dims();
+	const hasInputRow = S.term.exitCode === null;
+	const shown = panel - (hasInputRow ? 4 : 2);
+	const headerRow = rows - panel;
+	return { left: 1, right: cols, top: headerRow + 1, bottom: headerRow + shown };
+}
+
+/** Route mouse-wheel input to the output viewport, never to the prompt editor. */
+export function handleTerminalMouseWheel(direction: 'up' | 'down', x: number, y: number): boolean {
+	const bounds = terminalPanelOutputBounds();
+	if (!bounds || x < bounds.left || x > bounds.right || y < bounds.top || y > bounds.bottom) return false;
+	// OpenCode's ScrollBox uses a 3-row default wheel step; Codex similarly applies
+	// wheel movement to its transcript anchor rather than the terminal's native scrollback.
+	scrollTerminalPanel(direction, 3);
+	return true;
 }
 
 /** Handle panel shortcuts from either the background listener or the chat composer. */
@@ -1061,6 +1090,7 @@ export function resetScreen(): void {
 export function teardownScreen(): void {
 	if (!S.active) return;
 	S.active = false;
+	syncTerminalMouseTracking();
 	if (termKeyStop) {
 		termKeyStop();
 		termKeyStop = null;
@@ -1085,10 +1115,12 @@ export function teardownScreen(): void {
 export interface Key {
 	name: string;
 	text?: string;
+	mouseX?: number;
+	mouseY?: number;
 }
 
 // eslint-disable-next-line no-control-regex
-const TOKEN_RE = /\x1b\[200~|\x1b\[201~|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1bO[A-Za-z]|\x1b[\s\S]|[\s\S]/gu;
+const TOKEN_RE = /\x1b\[200~|\x1b\[201~|\x1b\[(?:<)?[0-9;?]*[ -/]*[@-~]|\x1bO[A-Za-z]|\x1b[\s\S]|[\s\S]/gu;
 
 const NAMED: Record<string, string> = {
 	'\r': 'enter',
@@ -1189,6 +1221,20 @@ export function parseKeys(chunk: string, state: { paste: string | null }): Key[]
 			continue;
 		}
 
+		const mouse = /^\\x1b\\[<(\\d+);(\\d+);(\\d+)([Mm])$/.exec(tok);
+		if (mouse) {
+			const button = Number(mouse[1]);
+			if ((button & 64) !== 0) {
+				flush();
+				keys.push({
+					name: (button & 1) !== 0 ? 'mouse-wheel-down' : 'mouse-wheel-up',
+					mouseX: Number(mouse[2]),
+					mouseY: Number(mouse[3]),
+				});
+			}
+			continue;
+		}
+
 		const named = NAMED[tok];
 		if (named) {
 			flush();
@@ -1214,6 +1260,16 @@ interface KeySub {
 const keySubs = new Set<KeySub>();
 const pumpState = { paste: null as string | null };
 let pumping = false;
+let mouseTrackingEnabled = false;
+
+/** Capture SGR mouse input only while the terminal output viewport is visible. */
+function syncTerminalMouseTracking(): void {
+	const enabled = pumping && S.active && Boolean(S.term && S.termOpen) && Boolean(out.isTTY);
+	if (enabled === mouseTrackingEnabled) return;
+	mouseTrackingEnabled = enabled;
+	if (out.isTTY) out.write(enabled ? `${CSI}?1000h${CSI}?1006h` : `${CSI}?1006l${CSI}?1000l`);
+}
+
 /** Gets first refusal on each key, but only while every attached listener is a background one. */
 let keyInterceptor: ((key: Key) => boolean) | null = monitorKeyIntercept;
 
@@ -1224,6 +1280,9 @@ export function setKeyInterceptor(interceptor: ((key: Key) => boolean) | null): 
 
 function onStdinData(chunk: string | Buffer): void {
 	for (const key of parseKeys(chunk.toString(), pumpState)) {
+		if (key.name === 'mouse-wheel-up' || key.name === 'mouse-wheel-down') {
+			if (handleTerminalMouseWheel(key.name === 'mouse-wheel-up' ? 'up' : 'down', key.mouseX ?? 0, key.mouseY ?? 0)) continue;
+		}
 		const subs = [...keySubs];
 		if (keyInterceptor && subs.length > 0 && subs.every((sub) => sub.background) && keyInterceptor(key)) continue;
 		for (const sub of subs) {
@@ -1246,6 +1305,7 @@ function removeKeySub(sub: KeySub): void {
 	const stdin = process.stdin;
 	stdin.off('data', onStdinData);
 	if (out.isTTY) out.write(`${CSI}?2004l${CSI}<u${CSI}>4;0m`);
+	syncTerminalMouseTracking();
 	stdin.setRawMode?.(false);
 	stdin.pause();
 }
@@ -1271,13 +1331,10 @@ export function listenKeys(
 		stdin.setRawMode?.(true);
 		stdin.resume();
 		stdin.setEncoding('utf8');
+		syncTerminalMouseTracking();
 		if (out.isTTY) {
 			// Bracketed paste + kitty keyboard flags (the same negotiation opencode
-			// uses). The kitty push makes supporting terminals report Shift+Enter
-			// distinctly (CSI 13;2u) and the Esc key as CSI 27u. Terminals without
-			// kitty support fall back to xterm modifyOtherKeys (mode 1), which also
-			// encodes Shift+Enter as CSI 13;2u; terminals with neither simply ignore
-			// both sequences and keep their legacy encoding.
+			// uses). SGR mouse mode is enabled separately while the terminal panel is visible.
 			out.write(`${CSI}?2004h${CSI}>1u${CSI}>4;1m`);
 		}
 		stdin.on('data', onStdinData);

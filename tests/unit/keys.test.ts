@@ -25,6 +25,16 @@ describe('parseKeys', () => {
     expect(names('\x1b[1;5D\x1b[1;5C')).toEqual(['word-left', 'word-right']);
   });
 
+  it('parses SGR mouse wheel events and their pointer coordinates', () => {
+    expect(parse('\\x1b[<64;18;35M')).toEqual([
+      { name: 'mouse-wheel-up', mouseX: 18, mouseY: 35 },
+    ]);
+    expect(parse('\\x1b[<65;22;40M')).toEqual([
+      { name: 'mouse-wheel-down', mouseX: 22, mouseY: 40 },
+    ]);
+    expect(parse('\\x1b[<0;22;40M')).toEqual([]);
+  });
+
   it('encodes navigation keys for the active PTY', () => {
     expect(terminalInputForKey('up')).toBe('\x1b[A');
     expect(terminalInputForKey('down')).toBe('\x1b[B');
