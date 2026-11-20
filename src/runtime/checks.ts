@@ -11,23 +11,25 @@
 // real process output, not a claim.
 // =============================================================================
 
+import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { executeTool } from '../tools/index.js';
+import { executeTool, type ToolOutputHandler } from '../tools/index.js';
+import type { AgentRunJournal } from './engine.js';
 
 export interface CheckRun {
-	/** Which kind of check this was: 'typecheck' | 'lint' | 'test'. */
 	kind: string;
-	/** The exact command that was run (never invented -- taken from package.json). */
 	command: string;
 	success: boolean;
-	/** Tail of combined stdout/stderr. */
+	exitCode?: number | null;
+	completedAt?: number;
 	output: string;
 }
 
 const LOCKFILE_RUNNER: Array<{ file: string; runner: string }> = [
 	{ file: 'pnpm-lock.yaml', runner: 'pnpm run' },
 	{ file: 'yarn.lock', runner: 'yarn run' },
+	{ file: 'bun.lock', runner: 'bun run' },
 	{ file: 'bun.lockb', runner: 'bun run' },
 	{ file: 'package-lock.json', runner: 'npm run' },
 ];
@@ -37,9 +39,15 @@ const SCRIPT_KINDS: Array<{ kind: string; names: string[] }> = [
 	{ kind: 'typecheck', names: ['typecheck', 'type-check', 'tsc'] },
 	{ kind: 'lint', names: ['lint'] },
 	{ kind: 'test', names: ['test', 'test:unit'] },
+	{ kind: 'build', names: ['build', 'build:prod', 'build:production'] },
 ];
 
 function detectRunner(projectRoot: string): string {
+	try {
+		const pkg = JSON.parse(readFileSync(resolve(projectRoot, 'package.json'), 'utf-8')) as { packageManager?: string };
+		const manager = pkg.packageManager?.split('@')[0];
+		if (manager === 'pnpm' || manager === 'yarn' || manager === 'bun' || manager === 'npm') return manager + ' run';
+	} catch { /* Lockfiles provide the fallback. */ }
 	for (const { file, runner } of LOCKFILE_RUNNER) {
 		if (existsSync(resolve(projectRoot, file))) return runner;
 	}
@@ -59,12 +67,15 @@ function readScripts(projectRoot: string): Record<string, string> {
 
 /**
  * Run every real typecheck/lint/test script this project defines (at most
- * one per kind -- the first matching name), in that order, stopping at the
- * first failure so the caller gets one actionable result instead of a wall
- * of cascading errors from a broken build. Returns [] when the project
- * defines none of these scripts at all (nothing invented to fill the gap).
+ * one per kind -- the first matching name), in typecheck/lint/test/build order.
+ * All configured kinds run so independent failures are reported together.
+ * Returns [] when the project defines none of these scripts (nothing invented).
  */
-export async function runProjectChecks(projectRoot: string, timeoutMs = 180_000): Promise<CheckRun[]> {
+export async function runProjectChecks(
+	projectRoot: string,
+	timeoutMs = 180_000,
+	journal?: AgentRunJournal,
+): Promise<CheckRun[]> {
 	const scripts = readScripts(projectRoot);
 	if (Object.keys(scripts).length === 0) return [];
 	const runner = detectRunner(projectRoot);
@@ -74,9 +85,16 @@ export async function runProjectChecks(projectRoot: string, timeoutMs = 180_000)
 		const name = names.find((candidate) => typeof scripts[candidate] === 'string');
 		if (!name) continue;
 		const command = `${runner} ${name}`;
-		const result = await executeTool('bash:execute', { command, timeout: timeoutMs }, projectRoot);
-		runs.push({ kind, command, success: result.success, output: (result.success ? result.output : result.error) ?? '' });
-		if (!result.success) break;
+		const callId = randomUUID();
+		journal?.toolCalled({ id: callId, name: 'bash:execute', arguments: { command, timeout: timeoutMs } });
+		journal?.toolStarted(callId);
+		const outputHandler: ToolOutputHandler | undefined = journal
+			? (stream, text) => journal.toolOutputDelta(callId, stream, text)
+			: undefined;
+		const result = await executeTool('bash:execute', { command, timeout: timeoutMs }, projectRoot, outputHandler);
+		journal?.toolFinished(callId, { ...result, id: callId });
+		runs.push({ kind, command, success: result.success, exitCode: result.exitCode ?? null, completedAt: Date.now(), output: (result.success ? result.output : result.error) ?? '' });
+		// Run all configured kinds to expose independent build blockers as well.
 	}
 	return runs;
 }

@@ -78,7 +78,7 @@ describe('execution plans', () => {
     const ordered = parseTaskPlan(validPlan, 'Add the feature');
     ordered.status = 'in_progress';
     ordered.steps[1]!.dependsOn = [];
-    expect(() => updatePlanStep(ordered, 2, 'in_progress')).toThrow(/Complete step 1/);
+    expect(updatePlanStep(ordered, 2, 'in_progress')).toContain('marked in_progress');
     expect(updatePlanStep(plan, 1, 'in_progress')).toContain('marked in_progress');
     expect(updatePlanStep(plan, 1, 'completed', 'Typecheck passed')).toContain('marked completed');
     expect(updatePlanStep(plan, 2, 'in_progress')).toContain('marked in_progress');

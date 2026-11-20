@@ -25,7 +25,7 @@ describe('verify', () => {
 
   it('rejects completion when a changed file is a stub, even with a passing report', () => {
     const files = new Map([['src/Budgets.tsx', 'export function Budgets() { return null; }']]);
-    const result = verifyCompletion('implement the budgets component', files, ['npm run test']);
+    const result = verifyCompletion('implement the budgets component', files, [{ command: 'npm run test', success: true, output: 'ok' }]);
     expect(result.ok).toBe(false);
     expect(result.issues[0]?.kind).toBe('placeholder');
     expect(formatIssues(result.issues)).toContain('Budgets.tsx');
@@ -33,16 +33,46 @@ describe('verify', () => {
 
   it('rejects completion when code was changed for an implementation task but nothing was ever run to check it', () => {
     const files = new Map([['src/api.ts', 'export function handler() { return doWork(); }']]);
-    const result = verifyCompletion('fix the login endpoint bug', files, ['ls -la']);
+    const result = verifyCompletion('fix the login endpoint bug', files, [{ command: 'ls -la', success: true, output: '' }]);
     expect(result.ok).toBe(false);
     expect(result.issues[0]?.kind).toBe('unverified');
   });
 
-  it('accepts completion when a real implementation was written and a check command ran', () => {
+  it('accepts completion when a real implementation was written and a successful check ran', () => {
     const files = new Map([['src/api.ts', 'export function handler() { return doWork(); }']]);
-    const result = verifyCompletion('fix the login endpoint bug', files, ['npm run typecheck && npm test']);
+    const result = verifyCompletion('fix the login endpoint bug', files, [{ command: 'npm run typecheck && npm test', success: true, output: 'ok' }]);
     expect(result.ok).toBe(true);
     expect(result.issues).toHaveLength(0);
+  });
+
+  it('does not treat a failed compiler command as verification evidence', () => {
+    const files = new Map([['src/api.ts', 'export function handler() { return doWork(); }']]);
+    const result = verifyCompletion('fix the login endpoint bug', files, [{ command: 'npx tsc --noEmit', success: false, exitCode: 2, output: 'src/api.ts: TS2307 cannot find module' }]);
+    expect(result.ok).toBe(false);
+    expect(result.issues[0]?.kind).toBe('check-failed');
+    expect(result.issues[0]?.detail).toContain('TS2307');
+  });
+
+  it('uses the latest check result, allowing a successful rerun to supersede an earlier failure', () => {
+    const files = new Map([['src/api.ts', 'export function handler() { return doWork(); }']]);
+    const result = verifyCompletion('fix the login endpoint bug', files, [
+      { command: 'npx tsc --noEmit', success: false, exitCode: 2, output: 'TS2307' },
+      { command: 'npx tsc --noEmit', success: true, exitCode: 0, output: 'ok' },
+    ]);
+    expect(result.ok).toBe(true);
+  });
+
+  it('does not treat incidental words like echo test as check evidence', () => {
+    const files = new Map([['src/api.ts', 'export function handler() { return doWork(); }']]);
+    const result = verifyCompletion('fix the login endpoint bug', files, [{ command: 'echo test', success: true, output: 'test' }]);
+    expect(result.ok).toBe(false);
+    expect(result.issues[0]?.kind).toBe('unverified');
+  });
+
+  it('requires an observed source change for implementation tasks', () => {
+    const result = verifyCompletion('implement an API endpoint', new Map(), []);
+    expect(result.ok).toBe(false);
+    expect(result.issues[0]?.kind).toBe('no-changes');
   });
 
   it('does not require a check command for tasks that are not implementation work', () => {
@@ -76,19 +106,20 @@ describe('verifyCompletionWithChecks', () => {
     expect(result.issues[0]?.kind).toBe('unverified');
   });
 
-  it('never calls runChecks when the agent already ran a matching command itself', async () => {
+  it('runs deterministic project checks even when the agent already ran a check', async () => {
     let called = false;
-    const runChecks = async () => { called = true; return []; };
-    const result = await verifyCompletionWithChecks('fix the login endpoint bug', files, ['npm run test'], runChecks);
-    expect(called).toBe(false);
-    expect(result.ok).toBe(true);
+    const runChecks = async () => { called = true; return [{ command: 'npm run build', success: false, exitCode: 1, output: 'build failed' }]; };
+    const result = await verifyCompletionWithChecks('fix the login endpoint bug', files, [{ command: 'npm run test', success: true, output: 'ok' }], runChecks);
+    expect(called).toBe(true);
+    expect(result.ok).toBe(false);
+    expect(result.issues[0]?.kind).toBe('check-failed');
   });
 
   it('never calls runChecks for a placeholder-only failure (nothing to re-verify by running tests)', async () => {
     let called = false;
     const stubFiles = new Map([['src/Budgets.tsx', 'export function Budgets() { return null; }']]);
     const runChecks = async () => { called = true; return []; };
-    const result = await verifyCompletionWithChecks('implement the budgets component', stubFiles, ['npm run test'], runChecks);
+    const result = await verifyCompletionWithChecks('implement the budgets component', stubFiles, [{ command: 'npm run test', success: true, output: 'ok' }], runChecks);
     expect(called).toBe(false);
     expect(result.ok).toBe(false);
     expect(result.issues[0]?.kind).toBe('placeholder');

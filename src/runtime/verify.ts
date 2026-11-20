@@ -12,7 +12,7 @@
 // =============================================================================
 
 export interface VerificationIssue {
-	kind: 'placeholder' | 'unverified' | 'check-failed';
+	kind: 'placeholder' | 'unverified' | 'check-failed' | 'no-changes';
 	detail: string;
 }
 
@@ -21,6 +21,8 @@ export interface RanCheck {
 	command: string;
 	success: boolean;
 	output: string;
+	exitCode?: number | null;
+	completedAt?: number;
 }
 
 export interface VerificationResult {
@@ -47,7 +49,11 @@ const VERIFIABLE_TASK = /\b(build|implement|fix|feature|component|api|endpoint|b
 
 /** Shell commands that count as real verification evidence for code changes. */
 const CHECK_COMMAND =
-	/\b(test|vitest|jest|mocha|pytest|tsc|typecheck|type-check|lint|eslint|flake8|ruff)\b|\bnpm run (test|build|lint|typecheck)\b|\b(pnpm|yarn) (test|build|lint|typecheck)\b/i;
+	/^(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test(?:[:\w-]+)?|build|lint|typecheck|type-check|tsc)\b|npx\s+(?:tsc|eslint|vitest|jest|mocha|pytest|ruff|flake8)\b|(?:tsc|vitest|jest|mocha|pytest|eslint|ruff|flake8)\b)/i;
+
+export function requiresImplementationEvidence(task: string): boolean {
+	return VERIFIABLE_TASK.test(task);
+}
 
 /** Scan one file's final content for placeholder/stub implementations. */
 export function scanForPlaceholders(path: string, content: string): VerificationIssue[] {
@@ -74,23 +80,32 @@ export function scanForPlaceholders(path: string, content: string): Verification
  * lists every `bash:execute` command the run actually invoked. Both must come
  * from what was observed happening, never from the agent's self-report.
  */
-export function verifyCompletion(task: string, changedFiles: ReadonlyMap<string, string>, ranCommands: readonly string[]): VerificationResult {
+export function verifyCompletion(task: string, changedFiles: ReadonlyMap<string, string>, ranCommands: readonly RanCheck[]): VerificationResult {
 	const issues: VerificationIssue[] = [];
-
-	for (const [path, content] of changedFiles) {
-		issues.push(...scanForPlaceholders(path, content));
-	}
+	for (const [path, content] of changedFiles) issues.push(...scanForPlaceholders(path, content));
 
 	const touchedCode = [...changedFiles.keys()].some((path) => CODE_FILE.test(path));
-	if (touchedCode && VERIFIABLE_TASK.test(task) && !ranCommands.some((cmd) => CHECK_COMMAND.test(cmd))) {
-		issues.push({
-			kind: 'unverified',
-			detail:
-				`code was written or edited for a task that implies working functionality ("${task.replace(/\s+/g, ' ').trim().slice(0, 100)}"), ` +
-				'but no test, build, lint or type-check command was recorded during the run.',
-		});
+	if (requiresImplementationEvidence(task) && !touchedCode) {
+		issues.push({ kind: 'no-changes', detail: 'The task requested implementation work, but no changed source files were observed in the workspace. Do not report completion without an actual implementation.' });
+		return { ok: false, issues };
 	}
 
+	if (touchedCode && requiresImplementationEvidence(task)) {
+		const checksByKind = new Map<string, RanCheck>();
+		for (const entry of ranCommands) {
+			if (!CHECK_COMMAND.test(entry.command.trim())) continue;
+			const kind = /build/i.test(entry.command) ? 'build'
+				: /lint|eslint|ruff|flake8/i.test(entry.command) ? 'lint'
+				: /test|vitest|jest|mocha|pytest/i.test(entry.command) ? 'test' : 'typecheck';
+			checksByKind.set(kind, entry);
+		}
+		const failed = [...checksByKind.values()].filter((entry) => !entry.success);
+		if (failed.length > 0) {
+			issues.push({ kind: 'check-failed', detail: failed.map((entry) => `${entry.command} failed (exit code ${entry.exitCode ?? 'unknown'}): ${entry.output.replace(/\s+/g, ' ').trim().slice(0, 250)}`).join('\n') });
+		} else if (checksByKind.size === 0) {
+			issues.push({ kind: 'unverified', detail: `code was changed for an implementation task ("${task.replace(/\s+/g, ' ').trim().slice(0, 100)}"), but no successful test, build, lint or type-check command was recorded after the latest source change.` });
+		}
+	}
 	return { ok: issues.length === 0, issues };
 }
 
@@ -118,22 +133,22 @@ export function formatIssues(issues: readonly VerificationIssue[]): string {
 export async function verifyCompletionWithChecks(
 	task: string,
 	changedFiles: ReadonlyMap<string, string>,
-	ranCommands: readonly string[],
+	ranCommands: readonly RanCheck[],
 	runChecks: () => Promise<readonly RanCheck[]>,
 ): Promise<VerificationResult> {
-	const result = verifyCompletion(task, changedFiles, ranCommands);
-	if (!result.issues.some((issue) => issue.kind === 'unverified')) return result;
+	const initial = verifyCompletion(task, changedFiles, ranCommands);
+	const hasCodeChanges = [...changedFiles.keys()].some((path) => CODE_FILE.test(path));
+	if (!requiresImplementationEvidence(task) || !hasCodeChanges ||
+		initial.issues.some((issue) => issue.kind === 'placeholder' || issue.kind === 'no-changes')) return initial;
 
+	// Agent-reported commands are context; configured project scripts are the
+	// authoritative completion gate and always run after the final edits.
 	const checks = await runChecks();
-	if (checks.length === 0) return result;
-
-	const issues = result.issues.filter((issue) => issue.kind !== 'unverified');
+	if (checks.length === 0) return initial;
+	const issues = initial.issues.filter((issue) => issue.kind === 'placeholder');
 	const failed = checks.find((check) => !check.success);
 	if (failed) {
-		issues.push({
-			kind: 'check-failed',
-			detail: `\`${failed.command}\` failed:\n${failed.output.replace(/\s+/g, ' ').trim().slice(0, 400)}`,
-		});
+		issues.push({ kind: 'check-failed', detail: `${failed.command} failed (exit code ${failed.exitCode ?? 'unknown'}):\n${failed.output.replace(/\s+/g, ' ').trim().slice(0, 500)}` });
 	}
 	return { ok: issues.length === 0, issues };
 }

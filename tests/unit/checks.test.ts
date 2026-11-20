@@ -38,13 +38,16 @@ describe('runProjectChecks', () => {
     expect(runs[0]?.output).toContain('boom');
   }, 15_000);
 
-  it('stops at the first failing kind instead of running the rest', async () => {
+  it('continues after a failing kind and reports independent checks', async () => {
     const dir = makeProject({
       typecheck: 'node -e "process.exit(1)"',
       test: 'node -e "console.log(1)"',
     });
     const runs = await runProjectChecks(dir, 10_000);
-    expect(runs).toHaveLength(1);
+    expect(runs).toHaveLength(2);
     expect(runs[0]?.kind).toBe('typecheck');
+    expect(runs[0]?.success).toBe(false);
+    expect(runs[1]?.kind).toBe('test');
+    expect(runs[1]?.success).toBe(true);
   }, 15_000);
 });

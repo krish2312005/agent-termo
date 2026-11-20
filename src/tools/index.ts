@@ -2,23 +2,34 @@
 // Agent-Termo Tool Executor — routes tool calls to implementations
 // =============================================================================
 
-import { readFile as readFileAsync, writeFile as writeFileAsync, unlink as unlinkAsync } from 'node:fs/promises';
-import { resolve, isAbsolute, relative } from 'node:path';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { readFile as readFileAsync, writeFile as writeFileAsync, unlink as unlinkAsync, mkdir as mkdirAsync, rename as renameAsync } from 'node:fs/promises';
+import { resolve, isAbsolute, relative, dirname } from 'node:path';
+import { spawn } from 'node:child_process';
 import { glob as globPromise } from 'glob';
 import { simpleGit } from 'simple-git';
-import { statSync, existsSync, mkdirSync } from 'node:fs';
+import { createReadStream, statSync, existsSync } from 'node:fs';
 import { getConfig } from '../utils/config.js';
 import { resolveShell } from '../utils/shell.js';
 import { fromWireToolName } from '../llm/client.js';
 import { computeDiff } from '../diff/index.js';
 import type { ToolResult, ProposedFileChange } from '../types/index.js';
 import { readSkillFile } from '../runtime/skills.js';
+import { isWorkspacePath } from '../runtime/workspace.js';
+import { validateJsonSchema } from '../runtime/tool-validation.js';
+import { ProcessManager } from '../runtime/process-manager.js';
+import { TOOL_DEFINITIONS } from '../llm/tools.js';
 
 const MAX_GLOB_RESULTS = 500;
 const MAX_GREP_MATCHES = 300;
 const MAX_GREP_FILE_BYTES = 5 * 1024 * 1024;
+const MAX_FILE_READ_LINES = 2000;
+const MAX_FILE_READ_BYTES = 1024 * 1024;
+const MAX_FILE_SCAN_BYTES = 50 * 1024 * 1024;
 const MAX_BASH_OUTPUT = 60_000;
+
+export type ToolOutputStream = 'stdout' | 'stderr';
+export type ToolOutputHandler = (stream: ToolOutputStream, text: string) => void;
 
 interface ReadCacheEntry { mtimeMs: number; size: number; output: string }
 const readCache = new Map<string, ReadCacheEntry>();
@@ -108,33 +119,14 @@ export function setTerminalHooks(hooks: TerminalHooks): void {
 	terminalHooks = hooks;
 }
 
-/** The currently running bash child process, so a stuck agent terminal can be killed. */
-let activeBashChild: ChildProcess | null = null;
+/** Process handles are owned and cancelled by the runtime, not by a single global child slot. */
+const processManager = new ProcessManager();
 
-/** Kill a shell and the commands it started (npm/node grandchildren on Windows). */
-function killProcessTree(child: ChildProcess): void {
-	if (process.platform === 'win32' && child.pid) {
-		try {
-			spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true });
-			return;
-		} catch {
-			// Fall through to the direct kill below.
-		}
-	}
-	try {
-		child.kill('SIGKILL');
-	} catch {
-		// best effort
-	}
-}
-
-/** Kill the currently running agent terminal command, if any. Returns true when something was killed. */
+/** Kill all active shell invocations and their descendants. */
 export function killRunningTerminal(): boolean {
-	if (!activeBashChild) return false;
-	killProcessTree(activeBashChild);
-	activeBashChild = null;
-	terminalHooks.onEnd?.(null);
-	return true;
+	const killed = processManager.killAll();
+	if (killed) terminalHooks.onEnd?.(null);
+	return killed;
 }
 
 // ── Public API ──────────────────────────────────────────────────────────────
@@ -143,6 +135,7 @@ export async function executeTool(
 	name: string,
 	args: Record<string, unknown>,
 	projectRoot: string,
+	onOutput?: ToolOutputHandler,
 ): Promise<ToolResult> {
 	const start = Date.now();
 	const id = crypto.randomUUID();
@@ -166,12 +159,18 @@ export async function executeTool(
 					durationMs: Date.now() - start,
 				};
 			}
-			const fn = TOOL_MAP[fromWireToolName(name)];
+			const canonicalName = fromWireToolName(name);
+			const fn = TOOL_MAP[canonicalName];
 		if (!fn) {
 			return { id, name, success: false, error: 'Unknown tool: ' + name, durationMs: Date.now() - start };
 		}
-			const result = await fn(toolArgs, projectRoot);
-			if (result.success && fromWireToolName(name) === 'bash:execute') invalidateToolCache(projectRoot);
+			const definition = TOOL_DEFINITIONS.find((tool) => tool.name === canonicalName);
+			const validationError = definition ? validateJsonSchema(definition.parameters, toolArgs) : undefined;
+			if (validationError) {
+				return { id, name: canonicalName, success: false, error: 'Invalid tool arguments: ' + validationError, durationMs: Date.now() - start };
+			}
+			const result = await fn(toolArgs, projectRoot, onOutput);
+			if (fromWireToolName(name) === 'bash:execute') invalidateToolCache(projectRoot);
 			return result;
 	} catch (err) {
 		return {
@@ -192,13 +191,11 @@ function toProjectPath(path: string, projectRoot: string): string {
 }
 
 function withinProject(path: string, projectRoot: string): boolean {
-	try {
-		const resolved = toProjectPath(path, projectRoot);
-		const rel = relative(projectRoot, resolved);
-		return !rel.startsWith('..') && !isAbsolute(rel);
-	} catch {
-		return false;
-	}
+	return isWorkspacePath(projectRoot, path);
+}
+
+function hasParentTraversal(pattern: string): boolean {
+	return pattern.replace(/\\/g, '/').split('/').includes('..');
 }
 
 // ── Propose a file change (returns ProposedFileChange without writing) ───────
@@ -258,31 +255,35 @@ export async function applyFileChange(change: ProposedFileChange, projectRoot: s
 		return { id: '', name: 'file:write', success: false, error: 'Access denied: ' + change.path, durationMs: Date.now() - start };
 	}
 
+	let temporaryPath = '';
 	try {
-		if (change.isDeletion) {
-			if (existsSync(fullPath)) {
-					await unlinkAsync(fullPath);
-			}
-		} else {
-			const dir = resolve(fullPath, '..');
-			if (!existsSync(dir)) {
-				mkdirSync(dir, { recursive: true });
-			}
-				await writeFileAsync(fullPath, change.proposedContent, 'utf-8');
-			}
-			invalidateToolCache(projectRoot);
+		const targetExists = existsSync(fullPath);
+		const currentContent = targetExists ? await readFileAsync(fullPath, 'utf-8') : '';
+		if (currentContent !== change.originalContent || (change.isNewFile && targetExists) || (!change.isNewFile && !targetExists)) {
 			return {
-			id: '',
-			name: 'file:write',
-			success: true,
-			output: `Applied: ${change.path}`,
-			durationMs: Date.now() - start,
-		};
+				id: '', name: 'file:write', success: false,
+				error: 'Stale file change rejected for ' + change.path + ': the file changed after the proposal was generated. Read the latest file and create a new proposal.',
+				durationMs: Date.now() - start,
+			};
+		}
+
+		if (change.isDeletion) {
+			if (targetExists) await unlinkAsync(fullPath);
+		} else {
+			await mkdirAsync(dirname(fullPath), { recursive: true });
+			temporaryPath = fullPath + '.' + randomUUID() + '.tmp';
+			await writeFileAsync(temporaryPath, change.proposedContent, 'utf-8');
+			await renameAsync(temporaryPath, fullPath);
+			temporaryPath = '';
+		}
+		invalidateToolCache(projectRoot);
+		return { id: '', name: 'file:write', success: true, output: 'Applied: ' + change.path, durationMs: Date.now() - start };
 	} catch (err) {
+		if (temporaryPath) {
+			try { await unlinkAsync(temporaryPath); } catch { /* Temporary file may not exist. */ }
+		}
 		return {
-			id: '',
-			name: 'file:write',
-			success: false,
+			id: '', name: 'file:write', success: false,
 			error: 'Cannot apply ' + change.path + ': ' + (err instanceof Error ? err.message : String(err)),
 			durationMs: Date.now() - start,
 		};
@@ -290,6 +291,69 @@ export async function applyFileChange(change: ProposedFileChange, projectRoot: s
 }
 
 // ── File Tools ──────────────────────────────────────────────────────────────
+
+async function readFileWindow(path: string, offset: number, requestedLimit: number, projectRoot: string): Promise<string> {
+	if (!isWorkspacePath(projectRoot, path)) throw new Error('Access denied: path escaped the project root before it could be opened.');
+	const lines: string[] = [];
+	const lineLimit = Math.min(requestedLimit > 0 ? requestedLimit : MAX_FILE_READ_LINES, MAX_FILE_READ_LINES);
+	const startLine = Math.max(0, Math.floor(offset));
+	let scannedBytes = 0;
+	let selectedBytes = 0;
+	let lineNumber = 0;
+	let currentLine = '';
+	let currentLineBytes = 0;
+	let skippingLongLine = false;
+	let truncated = false;
+	const stream = createReadStream(path, { encoding: 'utf8' });
+
+	const consumeLine = (): boolean => {
+		if (lineNumber >= startLine && !skippingLongLine) {
+			if (lines.length >= lineLimit || selectedBytes + currentLineBytes > MAX_FILE_READ_BYTES) {
+				truncated = true;
+				return false;
+			}
+			lines.push(currentLine);
+			selectedBytes += currentLineBytes;
+		}
+		lineNumber++;
+		currentLine = '';
+		currentLineBytes = 0;
+		skippingLongLine = false;
+		return lines.length < lineLimit;
+	};
+
+	try {
+		for await (const chunk of stream) {
+			const text = String(chunk);
+			scannedBytes += Buffer.byteLength(text, 'utf8');
+			if (scannedBytes > MAX_FILE_SCAN_BYTES) { truncated = true; break; }
+			let start = 0;
+			for (let index = 0; index < text.length; index++) {
+				if (text[index] !== '\n') continue;
+				const part = text.slice(start, index).replace(/\r$/, '');
+				const bytes = Buffer.byteLength(part, 'utf8');
+				if (currentLineBytes + bytes <= MAX_FILE_READ_BYTES) currentLine += part;
+				else skippingLongLine = true;
+				currentLineBytes += bytes + 1;
+				if (!consumeLine()) { truncated = true; break; }
+				start = index + 1;
+			}
+			if (truncated) break;
+			const tail = text.slice(start);
+			const tailBytes = Buffer.byteLength(tail, 'utf8');
+			if (currentLineBytes + tailBytes <= MAX_FILE_READ_BYTES) currentLine += tail;
+			else skippingLongLine = true;
+			currentLineBytes += tailBytes;
+		}
+		if (!truncated && (currentLine.length > 0 || currentLineBytes > 0)) consumeLine();
+	} finally {
+		stream.destroy();
+	}
+
+	const summary = '[Showing lines ' + (startLine + 1) + '-' + (startLine + lines.length) +
+		(truncated ? '; more content may be available' : '; end of file') + ']';
+	return lines.length > 0 ? summary + '\n' + lines.join('\n') : (truncated ? summary + '\n[Requested window exceeds the bounded read limit]' : summary);
+}
 
 async function toolFileRead(args: Record<string, unknown>, projectRoot: string): Promise<ToolResult> {
 	const path = String(args.path ?? '');
@@ -301,25 +365,21 @@ async function toolFileRead(args: Record<string, unknown>, projectRoot: string):
 	const fullPath = toProjectPath(path, projectRoot);
 	const limit = Number(args.limit ?? 0);
 	const offset = Number(args.offset ?? 0);
-
-		try {
-			const statResult = statSync(fullPath);
-			if (statResult.isDirectory()) {
-				return { id: '', name: 'file:read', success: false, error: 'Path "' + path + '" is a directory', durationMs: 0 };
-			}
-
-			const cacheKey = `${projectRoot}\0${fullPath}\0${offset}\0${limit}`;
-			const cached = readCache.get(cacheKey);
-			if (cached && cached.mtimeMs === statResult.mtimeMs && cached.size === statResult.size) {
-				return { id: '', name: 'file:read', success: true, output: cached.output, durationMs: 0 };
-			}
-			const content = await readFileAsync(fullPath, 'utf-8');
-			const lines = content.split('\n');
-			const sliced = lines.slice(offset, limit > 0 ? offset + limit : undefined);
-			const summary = limit > 0 ? '[Showing lines ' + (offset + 1) + '-' + (offset + sliced.length) + ' of ' + lines.length + ']' : '';
-			const output = (summary ? summary + '\n' : '') + sliced.join('\n');
-			readCache.set(cacheKey, { mtimeMs: statResult.mtimeMs, size: statResult.size, output });
-			return { id: '', name: 'file:read', success: true, output, durationMs: 0 };
+	try {
+		const statResult = statSync(fullPath);
+		if (statResult.isDirectory()) {
+			return { id: '', name: 'file:read', success: false, error: 'Path "' + path + '" is a directory', durationMs: 0 };
+		}
+		const safeLimit = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 0;
+		const safeOffset = Number.isFinite(offset) && offset > 0 ? Math.floor(offset) : 0;
+		const cacheKey = `${projectRoot}\0${fullPath}\0${safeOffset}\0${safeLimit}`;
+		const cached = readCache.get(cacheKey);
+		if (cached && cached.mtimeMs === statResult.mtimeMs && cached.size === statResult.size) {
+			return { id: '', name: 'file:read', success: true, output: cached.output, durationMs: 0 };
+		}
+		const output = await readFileWindow(fullPath, safeOffset, safeLimit, projectRoot);
+		readCache.set(cacheKey, { mtimeMs: statResult.mtimeMs, size: statResult.size, output });
+		return { id: '', name: 'file:read', success: true, output, durationMs: 0 };
 	} catch (err) {
 		return { id: '', name: 'file:read', success: false, error: 'Cannot read ' + path + ': ' + (err instanceof Error ? err.message : String(err)), durationMs: 0 };
 	}
@@ -366,8 +426,8 @@ async function toolFileEdit(args: Record<string, unknown>, projectRoot: string):
 
 	try {
 		const existingContent = existsSync(fullPath) ? await readFileAsync(fullPath, 'utf-8') : '';
-		if (!existingContent) {
-			return { id: '', name: 'file:edit', success: false, error: 'File not found or empty: ' + path + '. Use file:write to create it.', durationMs: 0 };
+		if (!existsSync(fullPath)) {
+			return { id: '', name: 'file:edit', success: false, error: 'File not found: ' + path + '. Use file:write to create it.', durationMs: 0 };
 		}
 		// Models usually emit LF even when the file on disk uses CRLF. Match on a
 		// normalized copy, then restore the file's line endings.
@@ -429,8 +489,8 @@ async function toolFileDelete(args: Record<string, unknown>, projectRoot: string
 async function toolFileGlob(args: Record<string, unknown>, projectRoot: string): Promise<ToolResult> {
 	const globPattern = String(args.pattern ?? '').replace(/\\/g, '/');
 	if (!globPattern) return { id: '', name: 'file:glob', success: false, error: 'pattern is required', durationMs: 0 };
-	if (isAbsolute(globPattern) && !withinProject(globPattern, projectRoot)) {
-		return { id: '', name: 'file:glob', success: false, error: 'Access denied', durationMs: 0 };
+	if (hasParentTraversal(globPattern) || (isAbsolute(globPattern) && !withinProject(globPattern, projectRoot))) {
+		return { id: '', name: 'file:glob', success: false, error: 'Access denied: glob patterns must stay inside the project root', durationMs: 0 };
 	}
 
 	const cwd = args.cwd ? String(args.cwd) : projectRoot;
@@ -444,11 +504,12 @@ async function toolFileGlob(args: Record<string, unknown>, projectRoot: string):
 		const cached = globCache.get(cacheKey);
 		if (cached !== undefined) return { id: '', name: 'file:glob', success: true, output: cached, durationMs: 0 };
 		const files = await globPromise(globPattern, {
-			cwd: fullCwd,
-			absolute: false,
-			dot: true,
+			cwd: fullCwd, absolute: false, dot: true,
 			ignore: ['**/node_modules/**', '**/.git/**'],
 		});
+		if (files.some((file) => !withinProject(resolve(fullCwd, file), projectRoot))) {
+			return { id: '', name: 'file:glob', success: false, error: 'Access denied: glob matched a path outside the project root', durationMs: 0 };
+		}
 		const shown = files.slice(0, MAX_GLOB_RESULTS);
 		const suffix = files.length > shown.length ? `\n(${files.length - shown.length} more files not shown; narrow the pattern)` : '';
 		const output = shown.length > 0 ? shown.join('\n') + suffix : '(no files matched)';
@@ -491,6 +552,9 @@ async function toolGrep(args: Record<string, unknown>, projectRoot: string): Pro
 			if (isAbsolute(globPattern) && !withinProject(globPattern, projectRoot)) {
 				return { id: '', name: 'grep', success: false, error: 'Access denied', durationMs: 0 };
 			}
+			if (hasParentTraversal(globPattern)) {
+				return { id: '', name: 'grep', success: false, error: 'Access denied: grep patterns must stay inside the project root', durationMs: 0 };
+			}
 			files = await globPromise(globPattern, {
 				cwd: fullPath,
 				absolute: true,
@@ -500,6 +564,9 @@ async function toolGrep(args: Record<string, unknown>, projectRoot: string): Pro
 			});
 		} else {
 			files = [fullPath];
+		}
+		if (files.some((file) => !withinProject(file, projectRoot))) {
+			return { id: '', name: 'grep', success: false, error: 'Access denied: grep matched a path outside the project root', durationMs: 0 };
 		}
 
 		const matches: string[] = [];
@@ -549,7 +616,7 @@ const DANGEROUS_PATTERNS = [
 	/:\s*\(\)\s*\{\s*:\|:&?\s*\};?\s*:/i,
 ];
 
-async function toolBash(args: Record<string, unknown>, projectRoot: string): Promise<ToolResult> {
+async function toolBash(args: Record<string, unknown>, projectRoot: string, onOutput?: ToolOutputHandler): Promise<ToolResult> {
 	if (typeof args.command !== 'string' || !args.command.trim()) {
 		return { id: '', name: 'bash:execute', success: false, error: 'command must be a non-empty string. Do not pass an object or shell syntax in another field.', durationMs: 0 };
 	}
@@ -585,7 +652,7 @@ async function toolBash(args: Record<string, unknown>, projectRoot: string): Pro
 				if (settled) return;
 				settled = true;
 				if (timer) clearTimeout(timer);
-				terminalHooks.onEnd?.(exitCode);
+				if (!onOutput) terminalHooks.onEnd?.(exitCode);
 				const combinedOutput = [stdout, stderr].filter(Boolean).join('');
 				const metadata = { command, cwd: fullCwd, stdout, stderr, exitCode };
 				resolve(
@@ -610,26 +677,28 @@ async function toolBash(args: Record<string, unknown>, projectRoot: string): Pro
 				);
 		};
 
-		terminalHooks.onStart?.(command);
+		if (!onOutput) terminalHooks.onStart?.(command);
 		const child = spawn(command, {
 			cwd: fullCwd,
 			shell: resolveShell(),
 			windowsHide: true,
+			detached: process.platform !== 'win32',
 			env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' },
 		});
-		activeBashChild = child;
+		const processId = processManager.register(child);
 		const releaseChild = (): void => {
-			if (activeBashChild === child) activeBashChild = null;
+			processManager.unregister(processId);
 		};
 		child.on('close', releaseChild);
 		child.on('error', releaseChild);
 
-			const capture = (stream: 'stdout' | 'stderr') => (chunk: Buffer | string): void => {
+			const capture = (stream: ToolOutputStream) => (chunk: Buffer | string): void => {
 				const text = chunk.toString();
+				onOutput?.(stream, text);
 				// Keep the tail: build errors are usually at the end of the output.
 				if (stream === 'stdout') stdout = (stdout + text).slice(-MAX_BASH_OUTPUT);
 				else stderr = (stderr + text).slice(-MAX_BASH_OUTPUT);
-				terminalHooks.onOutput?.(text);
+				if (!onOutput) terminalHooks.onOutput?.(text);
 			};
 			child.stdout?.setEncoding('utf8');
 			child.stderr?.setEncoding('utf8');
@@ -639,8 +708,10 @@ async function toolBash(args: Record<string, unknown>, projectRoot: string): Pro
 		child.on('close', (code) => finish(code === 0, code));
 
 		timer = setTimeout(() => {
-			terminalHooks.onOutput?.(`\n[agent-termo] timed out after ${timeoutMs}ms`);
-			killProcessTree(child);
+			const timeoutMessage = `\n[agent-termo] timed out after ${timeoutMs}ms`;
+			if (onOutput) onOutput('stderr', timeoutMessage);
+			else terminalHooks.onOutput?.(timeoutMessage);
+			processManager.kill(processId);
 			finish(false, null, `Command timed out after ${timeoutMs}ms`);
 		}, timeoutMs);
 	});
@@ -678,11 +749,32 @@ async function toolGitCommit(args: Record<string, unknown>, projectRoot: string)
 	const message = String(args.message ?? '');
 	const cwd = args.cwd ? String(args.cwd) : projectRoot;
 	const fullCwd = toProjectPath(cwd, projectRoot);
+	const paths = Array.isArray(args.paths)
+		? args.paths.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+		: typeof args.paths === 'string' ? args.paths.split(',').map((value) => value.trim()).filter(Boolean) : [];
 	if (!message) return { id: '', name: 'git:commit', success: false, error: 'message is required', durationMs: 0 };
-	if (!withinProject(fullCwd, projectRoot)) return { id: '', name: 'git:commit', success: false, error: 'Access denied: Git cwd must be inside the project root', durationMs: 0 };
+	if (paths.length === 0) return { id: '', name: 'git:commit', success: false, error: 'paths is required. Specify exact files to stage; the whole working tree is never staged implicitly.', durationMs: 0 };
+	if (paths.some((path) => path.includes('*') || path.includes('?') || path.split(/[\\/]/).includes('..'))) {
+		return { id: '', name: 'git:commit', success: false, error: 'Commit paths must be exact project-relative file paths without globs or parent traversal.', durationMs: 0 };
+	}
+	if (!withinProject(fullCwd, projectRoot) || paths.some((path) => !withinProject(resolve(fullCwd, path), projectRoot))) {
+		return { id: '', name: 'git:commit', success: false, error: 'Access denied: Git paths must be inside the project root', durationMs: 0 };
+	}
 	try {
 		const git = simpleGit(fullCwd);
-		await git.add('.');
+		const status = await git.status();
+		const selected = new Set(paths.map((path) => resolve(fullCwd, path)));
+		const unrelatedStaged = status.files
+			.filter((file) => file.index !== ' ' && file.index !== '?')
+			.filter((file) => !selected.has(resolve(fullCwd, file.path)));
+		if (unrelatedStaged.length > 0) {
+			return {
+				id: '', name: 'git:commit', success: false,
+				error: 'Commit aborted because unrelated files are already staged: ' + unrelatedStaged.map((file) => file.path).join(', ') + '. Commit them separately or include them explicitly in paths.',
+				durationMs: 0,
+			};
+		}
+		await git.add(paths);
 		const result = await git.commit(message);
 		return { id: '', name: 'git:commit', success: true, output: 'Committed ' + result.commit + ' — ' + message, durationMs: 0 };
 	} catch (err) {

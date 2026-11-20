@@ -12,8 +12,12 @@ describe('agent tool-loop orchestration', () => {
 		const projectRoot = mkdtempSync(join(tmpdir(), 'agent-termo-loop-'));
 		const filePath = 'fixture.ts';
 		const absolutePath = join(projectRoot, filePath);
-		const verificationCommand = `node -e "const fs=require('fs'); const s=fs.readFileSync('${filePath}','utf8'); if (!s.includes('fixed')) { console.error('TS2345: broken'); process.exit(1); }"`;
+		const verificationCommand = 'npm test';
+		const initialFailingCommand = `node -e "console.error('TS2345: broken'); process.exit(1)"`;
 		writeFileSync(absolutePath, 'const status = "broken";\n', 'utf8');
+		writeFileSync(join(projectRoot, 'package.json'), JSON.stringify({
+			scripts: { test: `node -e "const fs=require('fs'); if (!fs.readFileSync('fixture.ts','utf8').includes('fixed')) process.exit(1)"` },
+		}), 'utf8');
 
 		const responses: Array<{ content: string; toolCalls: ToolCall[] }> = [
 			{ content: '', toolCalls: [{ id: 'read-1', name: 'file:read', arguments: { path: filePath } }] },
@@ -40,7 +44,7 @@ describe('agent tool-loop orchestration', () => {
 		];
 		const checkpoint = createCheckpoint(projectRoot, 'orchestration regression');
 		const taskState = { goal: 'Fix the TypeScript error.', status: 'running' as const, reason: '', lastActions: [] as string[] };
-		const initialCall: ToolCall = { id: 'bash-1', name: 'bash:execute', arguments: { command: verificationCommand } };
+		const initialCall: ToolCall = { id: 'bash-1', name: 'bash:execute', arguments: { command: initialFailingCommand } };
 
 		try {
 			const finalText = await runToolLoop(
@@ -63,6 +67,32 @@ describe('agent tool-loop orchestration', () => {
 			expect(conversation.filter((message) => message.role === 'tool').map((message) => message.id)).toEqual(['bash-1', 'read-1', 'edit-1', 'verify-1']);
 			expect(providerRequests.some((messages) => messages.some((message) => message.role === 'tool' && message.content.includes('Error:')))).toBe(true);
 			expect(formatToolResultForModel({ name: 'bash:execute', success: false, error: '' })).toContain('without details');
+		} finally {
+			rmSync(projectRoot, { recursive: true, force: true });
+		}
+	});
+
+	it('pauses after repeated successful read-only discovery without workspace progress', async () => {
+		const projectRoot = mkdtempSync(join(tmpdir(), 'agent-termo-loop-discovery-'));
+		writeFileSync(join(projectRoot, 'fixture.ts'), 'export const value = 1;\\n', 'utf8');
+		let providerCalls = 0;
+		const fakeClient = {
+			buildToolDefs: () => [],
+			async *streamComplete() {
+				providerCalls++;
+				yield { content: '', toolCalls: [{ id: 'read-' + providerCalls, name: 'file:read', arguments: { path: 'fixture.ts' } }] };
+			},
+			complete: async () => ({ content: '', toolCalls: [] }),
+			formatUsage: () => '0 tokens',
+		} as unknown as NimClient;
+		const conversation: ConversationMessage[] = [{ id: 'system', role: 'system', content: 'You are a coding agent.', timestamp: new Date() }];
+		const taskState = { goal: 'Implement a feature in this project.', status: 'running' as const, reason: '', lastActions: [] as string[] };
+		try {
+			await runToolLoop(conversation, projectRoot, [{ id: 'read-initial', name: 'file:read', arguments: { path: 'fixture.ts' } }],
+				{ close() {}, showPrompt() {} }, fakeClient, 'files', new Set(), taskState, () => '', () => undefined);
+			expect(taskState.status).toBe('interrupted');
+			expect(taskState.reason).toContain('ten consecutive read-only');
+			expect(providerCalls).toBe(9);
 		} finally {
 			rmSync(projectRoot, { recursive: true, force: true });
 		}

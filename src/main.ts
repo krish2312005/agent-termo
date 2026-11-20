@@ -6,7 +6,7 @@ import { NimClient, parseToolCallsFromText, type ThinkingCapacity } from './llm/
 import { buildPlanContext, formatTaskPlanMarkdown, parseTaskPlan, PLAN_PROGRESS_TOOL, updatePlanStep, writeTaskPlanFile, type TaskPlan } from './runtime/plans.js';
 import { activeManualCheckpointIds, createCheckpoint, findCheckpoint, latestRedoableCheckpoint, latestUndoableCheckpoint, listCheckpoints, recordCheckpointAfter, recordCheckpointBefore, redoCheckpoint, undoCheckpoint } from './runtime/checkpoints.js';
 import { TOOL_DEFINITIONS } from './llm/tools.js';
-import { executeTool, applyFileChange, setTerminalHooks, killRunningTerminal } from './tools/index.js';
+import { executeTool, applyFileChange, setTerminalHooks, killRunningTerminal, type ToolOutputHandler } from './tools/index.js';
 import { loadMemory, loadTimeline, logToTimeline, logAgentTermoTimeline, appendToSessionLog, appendToTimeline, loadSessionLog } from './memory/index.js';
 import { buildSystemPrompt, filterAgentTools, resolveDelegation } from './agents/index.js';
 import { resolveProjectRoot, saveNimModel, saveNimThinking, savePermissionMode } from './utils/config.js';
@@ -17,8 +17,11 @@ import { loadTermoInstructions } from './runtime/termo-md.js';
 import { createSkill, deleteSkill, importSkill, listSkills, loadSkillCatalogPrompt, loadSkillInstructions, readSkillFile, type SkillDefinition, type SkillScope } from './runtime/skills.js';
 import { initializeMcpServers, getMcpServerStatuses, getMcpToolDefinitions, isMcpToolName, executeMcpTool, shutdownMcpServers, saveMcpServerConfigs, type McpServerConfig } from './runtime/mcp.js';
 import { commandApprovalKey, isCommandApprovalRequired, loadAllowedCommands, saveAllowedCommands } from './runtime/permissions.js';
-import { verifyCompletionWithChecks, formatIssues } from './runtime/verify.js';
+import { verifyCompletionWithChecks, formatIssues, requiresImplementationEvidence, type RanCheck } from './runtime/verify.js';
 import { runProjectChecks } from './runtime/checks.js';
+import { createRunJournal, type AgentRunJournal } from './runtime/engine.js';
+import { ApprovalBroker } from './runtime/approval.js';
+import { collectWorkspaceChanges, snapshotWorkspaceFiles } from './runtime/workspace.js';
 import { createSession, forkSession, listSessions, loadLatestSession, loadSession, saveSession, type StoredSession } from './runtime/sessions.js';
 import {
 	addSubAgentProgress,
@@ -40,7 +43,6 @@ import {
 	printSuccess,
 	printInfo,
 	printHelp,
-	MarkdownPrinter,
 	printAgentsList,
 	printMemoryFile,
 	printTimelineFile,
@@ -170,6 +172,11 @@ class RequestCancelledError extends Error {
 
 type PermissionMode = 'ask' | 'files' | 'auto';
 
+const approvalBroker = new ApprovalBroker();
+const READ_ONLY_TOOL_NAMES = new Set(['file:read', 'file:glob', 'grep', 'skill:read', 'git:status', 'git:log']);
+const READ_ONLY_NUDGE_ROUND = 6;
+const MAX_READ_ONLY_ROUNDS = 10;
+
 function isRequestCancelled(err: unknown): boolean {
 	return err instanceof RequestCancelledError || (err instanceof Error && /abort|cancel/i.test(err.name + ' ' + err.message));
 }
@@ -298,7 +305,8 @@ export function finishTaskState(state: TaskState): void {
 
 /** Does this input mean "keep going from where you stopped"? */
 function isContinueRequest(input: string): boolean {
-	return /^(?:\/)?continue\b/i.test(input.trim()) || input.trim().toLowerCase() === 'c';
+	const value = input.trim();
+	return /^(?:(?:\/)?continue|resume|go\s+ahead|proceed|keep\s+going|pick\s+up(?:\s+where\s+you\s+left\s+off)?)(?:\b|$)/i.test(value) || value.toLowerCase() === 'c';
 }
 
 
@@ -445,17 +453,21 @@ async function executeToolWithReview(
 	/** Called with true while the user is being asked to approve something (sub-agents show "waiting"). */
 	onWaiting?: (waiting: boolean) => void,
 	getCheckpointId?: () => string,
-): Promise<{ toolResult: { success: boolean; output?: string; error?: string }; change?: ProposedFileChange; applied: boolean }> {
+	onOutput?: ToolOutputHandler,
+): Promise<{ toolResult: ToolResult; change?: ProposedFileChange; applied: boolean }> {
 	printToolCall(toolName, args);
 	const approvalKey = commandApprovalKey(toolName, args);
 	const hasPersistentApproval = !toolName.startsWith('mcp_') && allowedCommands.has(approvalKey);
 	if (permissionMode !== 'auto' && isCommandApprovalRequired(toolName) && !hasPersistentApproval) {
-		input.close();
-		onWaiting?.(true);
-		const decision = await promptCommandApproval(typeof args.command === 'string' ? args.command : approvalKey);
-		onWaiting?.(false);
-		input.showPrompt();
-		if (decision === 'reject') return { toolResult: { success: false, error: 'Command rejected by user' }, applied: false };
+		const decision = await approvalBroker.run(
+			() => promptCommandApproval(typeof args.command === 'string' ? args.command : approvalKey),
+			() => { input.close(); onWaiting?.(true); },
+			() => { onWaiting?.(false); input.showPrompt(); },
+		);
+		if (decision === 'reject') return {
+			toolResult: { id: '', name: toolName, success: false, error: 'Command rejected by user', durationMs: 0 },
+			applied: false,
+		};
 		if (decision === 'always' && !toolName.startsWith('mcp_')) {
 			allowedCommands.add(approvalKey);
 			try { saveAllowedCommands(projectRoot, allowedCommands); } catch { printInfo('Command allowed for this session but could not be saved.'); }
@@ -464,9 +476,21 @@ async function executeToolWithReview(
 		}
 	}
 	startSpinner('Running ' + toolName);
-	const toolResult = isMcpToolName(toolName)
+	const toolStartedAt = Date.now();
+	const rawToolResult = isMcpToolName(toolName)
 		? await executeMcpTool(toolName, args)
-		: await executeTool(toolName, args, projectRoot);
+		: await executeTool(toolName, args, projectRoot, onOutput);
+	const toolResult: ToolResult = {
+		id: 'id' in rawToolResult && typeof rawToolResult.id === 'string' ? rawToolResult.id : '',
+		name: 'name' in rawToolResult && typeof rawToolResult.name === 'string' ? rawToolResult.name : toolName,
+		success: rawToolResult.success, output: rawToolResult.output, error: rawToolResult.error,
+		command: 'command' in rawToolResult && typeof rawToolResult.command === 'string' ? rawToolResult.command : undefined,
+		cwd: 'cwd' in rawToolResult && typeof rawToolResult.cwd === 'string' ? rawToolResult.cwd : undefined,
+		stdout: 'stdout' in rawToolResult && typeof rawToolResult.stdout === 'string' ? rawToolResult.stdout : undefined,
+		stderr: 'stderr' in rawToolResult && typeof rawToolResult.stderr === 'string' ? rawToolResult.stderr : undefined,
+		exitCode: 'exitCode' in rawToolResult && (typeof rawToolResult.exitCode === 'number' || rawToolResult.exitCode === null) ? rawToolResult.exitCode : undefined,
+		durationMs: 'durationMs' in rawToolResult && typeof rawToolResult.durationMs === 'number' ? rawToolResult.durationMs : Date.now() - toolStartedAt,
+	};
 	stopSpinner(toolResult.success);
 
 	const proposedChange = extractProposedChange(toolName, toolResult.output ?? '');
@@ -479,17 +503,15 @@ async function executeToolWithReview(
 			return { toolResult: applyResult, change: proposedChange, applied: applyResult.success };
 		}
 			// Pause REPL input to prevent stale listeners from interfering with promptAcceptReject
-		input.close();
-
-		// Show terminal diff viewer
-		printToolResult(toolName, { success: toolResult.success, output: toolResult.output, error: toolResult.error }, { needsApproval: true, proposedChange });
-
-			onWaiting?.(true);
-			const decision = await promptAcceptReject('Accept this change?');
-			onWaiting?.(false);
-
-		// Restore input for next REPL iteration
-		input.showPrompt();
+		const decision = await approvalBroker.run(
+			() => promptAcceptReject('Accept this change?'),
+			() => {
+				input.close();
+				printToolResult(toolName, { success: toolResult.success, output: toolResult.output, error: toolResult.error }, { needsApproval: true, proposedChange });
+				onWaiting?.(true);
+			},
+			() => { onWaiting?.(false); input.showPrompt(); },
+		);
 
 		if (decision === 'accept') {
 			startSpinner('Writing to disk');
@@ -537,6 +559,7 @@ async function runDelegatedAgent(
 	allowedCommands: Set<string>,
 	taskState: TaskState,
 	getCheckpointId: () => string,
+	journal?: AgentRunJournal,
 ): Promise<ToolResult> {
 	const started = Date.now();
 	const agents = loadProjectAgents(projectRoot);
@@ -582,7 +605,8 @@ async function runDelegatedAgent(
 	// ran, not what it claims in its final report. Keyed by path so only each
 	// file's last applied content is kept.
 	const changedFiles = new Map<string, string>();
-	const ranCommands: string[] = [];
+	const ranCommands: RanCheck[] = [];
+	let workspaceSnapshot = snapshotWorkspaceFiles(projectRoot);
 
 	try {
 		for (let iteration = 0; iteration < DELEGATED_TOOL_BUDGET; iteration++) {
@@ -624,12 +648,35 @@ async function runDelegatedAgent(
 				timestamp: new Date(),
 			});
 
-			for (const tc of toolCalls) {
+			for (const [toolIndex, tc] of toolCalls.entries()) {
 				startSubAgentTool(subId, tc.name, describeArgs(tc.arguments) || task);
-				const execution = await executeToolWithReview(tc.name, tc.arguments, projectRoot, input, permissionMode, allowedCommands, (waiting) => setSubAgentWaiting(subId, waiting), getCheckpointId);
+				const journalCallId = String(toolCall.id) + ":" + iteration + ":" + toolIndex + ":" + tc.id;
+				const journalCall = { ...tc, id: journalCallId };
+				journal?.toolCalled(journalCall);
+				journal?.toolStarted(journalCallId);
+				const outputHandler: ToolOutputHandler | undefined = journal
+					? (stream, text) => journal.toolOutputDelta(journalCallId, stream, text)
+					: undefined;
+				const execution = await executeToolWithReview(tc.name, tc.arguments, projectRoot, input, permissionMode, allowedCommands, (waiting) => setSubAgentWaiting(subId, waiting), getCheckpointId, outputHandler);
 				const toolResult = execution.toolResult;
-				if (execution.applied && execution.change) changedFiles.set(execution.change.path, execution.change.proposedContent);
-				if (tc.name === 'bash:execute') ranCommands.push(typeof tc.arguments.command === 'string' ? tc.arguments.command : '[invalid command arguments]');
+				journal?.toolFinished(journalCallId, { ...toolResult, id: journalCallId });
+				if (execution.applied && execution.change) {
+					changedFiles.set(execution.change.path, execution.change.proposedContent);
+					ranCommands.length = 0;
+				}
+				if (tc.name === 'bash:execute' || tc.name.startsWith('mcp_')) {
+					const nextSnapshot = snapshotWorkspaceFiles(projectRoot);
+					const workspaceChanges = collectWorkspaceChanges(workspaceSnapshot, nextSnapshot);
+					if (workspaceChanges.size > 0) {
+						for (const [path, content] of workspaceChanges) changedFiles.set(path, content);
+						ranCommands.length = 0;
+					}
+					workspaceSnapshot = nextSnapshot;
+				}
+				if (tc.name === 'bash:execute') {
+					const command = typeof tc.arguments.command === 'string' ? tc.arguments.command : '[invalid command arguments]';
+					ranCommands.push({ command, success: toolResult.success, exitCode: toolResult.exitCode ?? null, output: (toolResult.error ?? toolResult.output ?? '').slice(-4000), completedAt: Date.now() });
+				}
 				const target = String(tc.arguments.path ?? tc.arguments.command ?? task).slice(0, 80);
 				endSubAgentTool(
 					subId,
@@ -666,7 +713,7 @@ async function runDelegatedAgent(
 		// for any code work the task called for. If the agent didn't run one
 		// itself, run the project's own test/lint/typecheck scripts for real
 		// rather than trust the narration. See runtime/verify.ts, runtime/checks.ts.
-		const verification = await verifyCompletionWithChecks(task, changedFiles, ranCommands, () => runProjectChecks(projectRoot));
+		const verification = await verifyCompletionWithChecks(task, changedFiles, ranCommands, () => runProjectChecks(projectRoot, 180_000, journal));
 		if (!verification.ok) {
 			const detail =
 				`Sub-agent ${agent.name} reported completion, but its own evidence does not support that claim — rejected:\n` +
@@ -693,6 +740,18 @@ async function runDelegatedAgent(
  * Run the tool-call loop: execute tools, feed results back to the LLM,
  * and repeat until the LLM stops issuing tool calls.
  */
+interface ToolLoopRuntime {
+	journal?: AgentRunJournal;
+	changedFiles: Map<string, string>;
+	ranCommands: RanCheck[];
+	failedToolCalls: Set<string>;
+	iterations: number;
+	readOnlyRounds: number;
+	workspaceSnapshot: Map<string, string>;
+	recoveryAttempts: number;
+	initialCallRecorded: boolean;
+}
+
 export async function runToolLoop(
 	conversation: ConversationMessage[],
 	projectRoot: string,
@@ -706,24 +765,58 @@ export async function runToolLoop(
 	onConversationChanged: () => void,
 	taskPlan?: TaskPlan,
 	agentToolDefinitions?: ToolDef[],
+	sessionId?: string,
+	runtimeState?: ToolLoopRuntime,
 ): Promise<string> {
 	const MAX_TOOL_ITERATIONS = 40;
 	let toolCalls = initialToolCalls;
 	let finalText = '';
-	let iterations = 0;
-	const failedToolCalls = new Set<string>();
-	// Same evidence gate as delegated runs (runtime/verify.ts): track what this
-	// turn actually wrote and ran, independent of direct file:write/file:edit
-	// tool calls made without going through agent:delegate at all.
-	const changedFiles = new Map<string, string>();
-	const ranCommands: string[] = [];
+	const runtime: ToolLoopRuntime = runtimeState ?? {
+		journal: sessionId ? createRunJournal(projectRoot, sessionId) : undefined,
+		changedFiles: new Map<string, string>(),
+		ranCommands: [],
+		failedToolCalls: new Set<string>(),
+		iterations: 0,
+		readOnlyRounds: 0,
+		workspaceSnapshot: snapshotWorkspaceFiles(projectRoot),
+		recoveryAttempts: 0,
+		initialCallRecorded: false,
+	};
+	const journal = runtime.journal;
+	if (!runtimeState && journal) {
+		const terminalCommands = new Map<string, string>();
+		journal.subscribe((event) => {
+			const callId = typeof event.data.callId === 'string' ? event.data.callId : '';
+			if (event.type === 'tool.called' && event.data.name === 'bash:execute') {
+				const args = event.data.arguments as Record<string, unknown> | undefined;
+				if (typeof args?.command === 'string') terminalCommands.set(callId, args.command);
+			} else if (event.type === 'tool.started') {
+				const command = terminalCommands.get(callId);
+				if (command) startTerminalPanel(command);
+			} else if (event.type === 'tool.output.delta') {
+				appendTerminalOutput(String(event.data.text ?? ''));
+			} else if (event.type === 'tool.completed' || event.type === 'tool.failed' || event.type === 'tool.interrupted') {
+				const command = terminalCommands.get(callId);
+				if (command) {
+					finishTerminalPanel(typeof event.data.exitCode === 'number' ? event.data.exitCode : null);
+					terminalCommands.delete(callId);
+				}
+			}
+		});
+	}
+	if (!runtimeState) journal?.startRun(taskState.goal);
+
+	const changedFiles = runtime.changedFiles;
+	const ranCommands = runtime.ranCommands;
+	const failedToolCalls = runtime.failedToolCalls;
 
 	// Continue looping while the LLM keeps issuing tool calls
 	while (toolCalls.length > 0) {
-		iterations++;
-		if (iterations > MAX_TOOL_ITERATIONS) {
+		runtime.iterations++;
+		if (runtime.iterations > MAX_TOOL_ITERATIONS) {
 			taskState.status = 'interrupted';
 			taskState.reason = `Tool loop stopped after ${MAX_TOOL_ITERATIONS} iterations without reaching a final response.`;
+			journal?.pause(taskState.reason);
 			printError(taskState.reason);
 			onConversationChanged();
 			return '';
@@ -738,8 +831,13 @@ export async function runToolLoop(
 			toolCalls,
 			timestamp: new Date(),
 		});
+		if (!runtime.initialCallRecorded) {
+			journal?.assistantCompleted(finalText || '', toolCalls);
+			for (const call of toolCalls) journal?.toolCalled(call);
+			runtime.initialCallRecorded = true;
+		}
 
-			onConversationChanged();
+		onConversationChanged();
 			// Execute all delegation calls in parallel. Ordinary tools stay sequential
 			// because concurrent writes or terminal commands can race with each other.
 			// Do not use completedOperations as an execution cache: a model is allowed
@@ -747,10 +845,14 @@ export async function runToolLoop(
 			// The conversation history is the source of truth for continuation; replay
 			// suppression here makes stale results look like current filesystem state.
 						const allDelegations = shouldRunDelegationsInParallel(toolCalls);
-		const executions: Array<{ toolResult: { success: boolean; output?: string; error?: string; name?: string }; applied: boolean; change?: ProposedFileChange }> = [];
+		const executions: Array<{ toolResult: Partial<ToolResult> & Pick<ToolResult, 'success'>; applied: boolean; change?: ProposedFileChange }> = [];
 		let repeatedFailure = false;
 		if (allDelegations) {
-						executions.push(...await Promise.all(toolCalls.map((tc) => runDelegatedAgent(projectRoot, tc, nimClient, input, permissionMode, allowedCommands, taskState, getCheckpointId).then((toolResult) => ({ toolResult, applied: false })) )));
+			executions.push(...await Promise.all(toolCalls.map((tc) => {
+				journal?.toolStarted(tc.id);
+				return runDelegatedAgent(projectRoot, tc, nimClient, input, permissionMode, allowedCommands, taskState, getCheckpointId, journal)
+					.then((toolResult) => ({ toolResult, applied: false }));
+			})));
 		} else {
 			for (const tc of toolCalls) {
 				const signature = tc.name + ':' + JSON.stringify(tc.arguments);
@@ -766,6 +868,7 @@ export async function runToolLoop(
 					});
 					continue;
 				}
+				journal?.toolStarted(tc.id);
 				if (tc.name === 'plan:update') {
 							let result: { success: boolean; output?: string; error?: string };
 							try {
@@ -778,8 +881,11 @@ export async function runToolLoop(
 							executions.push({ toolResult: result, applied: false });
 						} else {
 							executions.push(tc.name === 'agent:delegate'
-								? { toolResult: await runDelegatedAgent(projectRoot, tc, nimClient, input, permissionMode, allowedCommands, taskState, getCheckpointId), applied: false }
-								: await executeToolWithReview(tc.name, tc.arguments, projectRoot, input, permissionMode, allowedCommands, undefined, getCheckpointId));
+								? { toolResult: await runDelegatedAgent(projectRoot, tc, nimClient, input, permissionMode, allowedCommands, taskState, getCheckpointId, journal), applied: false }
+								: await executeToolWithReview(
+									tc.name, tc.arguments, projectRoot, input, permissionMode, allowedCommands, undefined,
+									getCheckpointId, journal ? (stream, text) => journal.toolOutputDelta(tc.id, stream, text) : undefined,
+								));
 						}
 					}
 				}
@@ -790,8 +896,37 @@ export async function runToolLoop(
 		const toolResult = execution.toolResult;
 		if (execution.applied) failedToolCalls.clear();
 		if (!toolResult.success) failedToolCalls.add(tc.name + ':' + JSON.stringify(tc.arguments));
-						if (execution.applied && execution.change) changedFiles.set(execution.change.path, execution.change.proposedContent);
-					if (tc.name === 'bash:execute') ranCommands.push(typeof tc.arguments.command === 'string' ? tc.arguments.command : '[invalid command arguments]');
+		if (execution.applied && execution.change) {
+			changedFiles.set(execution.change.path, execution.change.proposedContent);
+			// Earlier checks are invalidated by every later accepted file change.
+			ranCommands.length = 0;
+		}
+		if (tc.name === 'bash:execute' || tc.name.startsWith('mcp_') || tc.name === 'agent:delegate') {
+			const nextSnapshot = snapshotWorkspaceFiles(projectRoot);
+			const workspaceChanges = collectWorkspaceChanges(runtime.workspaceSnapshot, nextSnapshot);
+			if (workspaceChanges.size > 0) {
+				for (const [path, content] of workspaceChanges) changedFiles.set(path, content);
+				ranCommands.length = 0;
+			}
+			runtime.workspaceSnapshot = nextSnapshot;
+		}
+		if (tc.name === 'bash:execute') {
+			const command = typeof tc.arguments.command === 'string' ? tc.arguments.command : '[invalid command arguments]';
+			ranCommands.push({ command, success: toolResult.success, exitCode: toolResult.exitCode ?? null, output: (toolResult.error ?? toolResult.output ?? '').slice(-4000), completedAt: Date.now() });
+		}
+		journal?.toolFinished(tc.id, {
+			id: tc.id,
+			name: toolResult.name ?? tc.name,
+			success: toolResult.success,
+			output: toolResult.output,
+			error: toolResult.error,
+			command: (toolResult as Partial<ToolResult>).command,
+			cwd: (toolResult as Partial<ToolResult>).cwd,
+			stdout: (toolResult as Partial<ToolResult>).stdout,
+			stderr: (toolResult as Partial<ToolResult>).stderr,
+			exitCode: (toolResult as Partial<ToolResult>).exitCode,
+			durationMs: (toolResult as Partial<ToolResult>).durationMs ?? 0,
+		});
 				// Delegated runs bypass executeToolWithReview, so show their
 				// result explicitly instead of only feeding it to the model.
 				if (tc.name === 'agent:delegate') printToolResult(tc.name, toolResult);
@@ -815,9 +950,25 @@ export async function runToolLoop(
 				const activity = describeToolActivity(tc.name, tc.arguments, toolResult.output, execution.change, execution.applied, toolResult.success);
 			void appendToTimeline(projectRoot, 'Agent-Termo', 'Tool execution: ' + tc.name, activity.actions, activity.notes);
 		}
+		const readOnlyRound = toolCalls.length > 0 && toolCalls.every((call) => READ_ONLY_TOOL_NAMES.has(call.name));
+		runtime.readOnlyRounds = readOnlyRound ? runtime.readOnlyRounds + 1 : 0;
+		if (requiresImplementationEvidence(taskState.goal) && runtime.readOnlyRounds === READ_ONLY_NUDGE_ROUND) {
+			conversation.push({ id: crypto.randomUUID(), role: 'user', content: 'Runtime progress check: six consecutive read-only discovery rounds have completed. Stop re-listing or re-reading files unless a specific missing fact blocks implementation. Use the evidence already gathered to make the requested code changes, run relevant checks, or state the concrete blocker.', timestamp: new Date() });
+			onConversationChanged();
+		}
+		if (requiresImplementationEvidence(taskState.goal) && runtime.readOnlyRounds >= MAX_READ_ONLY_ROUNDS) {
+			taskState.status = 'interrupted';
+			taskState.reason = 'The run was paused after ten consecutive read-only tool rounds without a workspace change or verification command. The transcript is saved; continue after choosing a concrete implementation step.';
+			journal?.pause(taskState.reason);
+			onConversationChanged();
+			printError(taskState.reason);
+			return '';
+		}
+
 		if (repeatedFailure) {
 			taskState.status = 'interrupted';
 			taskState.reason = 'The model repeated an unchanged failed tool call. The previous diagnostic must be addressed before continuing.';
+			journal?.pause(taskState.reason);
 			onConversationChanged();
 			printInfo('Task paused: the same failed tool call was requested again. Inspect the diagnostic and type "continue" after correcting the approach.');
 			return '';
@@ -826,24 +977,23 @@ export async function runToolLoop(
 			// Send conversation (including tool results) back to the LLM
 			// The LLM will either produce text or more tool calls
 			startSpinner('Working');
+		journal?.assistantStarted();
 		let result: { content: string; toolCalls: ToolCall[] };
 			try {
 				const tools = nimClient.buildToolDefs([...(agentToolDefinitions ?? [...TOOL_DEFINITIONS, ...getMcpToolDefinitions()]), ...(taskPlan?.status === 'in_progress' ? [PLAN_PROGRESS_TOOL] : [])]);
-				const streamed = new MarkdownPrinter(stopSpinner);
-				result = await withEscapeCancellation(nimClient, () => completeWithRetry(nimClient, conversation, tools, (chunk) => { streamed.push(chunk); streamed.flushPartial(); }));
-				streamed.end();
-				if (!streamed.printed) {
-					stopSpinner();
-					const fallbackText = result.content.trim().replace(/^null$/, '').trim();
-					if (fallbackText && !fallbackText.includes('"tool_calls"') && !fallbackText.includes('<tool_call>')) printAssistantMessage(fallbackText);
-				}
+				result = await withEscapeCancellation(nimClient, () => completeWithRetry(nimClient, conversation, tools, (chunk) => {
+					journal?.assistantTextDelta(chunk);
+				}));
+				stopSpinner();
 				setScreenStatus({ usage: nimClient.formatUsage() });
+				journal?.assistantCompleted(result.content, result.toolCalls);
 			} catch (err) {
 				if (isRequestCancelled(err)) {
 					stopSpinner();
 					// The task can be resumed with "continue".
 					taskState.status = 'interrupted';
 					taskState.reason = 'cancelled by user';
+					journal?.pause(taskState.reason);
 					printInfo('Task paused. Type "continue" to resume from where it stopped.');
 					return '';
 				}
@@ -852,26 +1002,30 @@ export async function runToolLoop(
 					printError('The response stream stopped after partial output: ' + providerError(err));
 					taskState.status = 'interrupted';
 					taskState.reason = providerError(err);
+					journal?.pause(taskState.reason);
 					printInfo('The task is paused. Type "continue" to resume without replaying the partial response.');
 					return '';
 				}
 // and parse any JSON tool calls emitted in the content.
 					try {
-						const fallbackStream = new MarkdownPrinter(stopSpinner);
-					const fallback = await withEscapeCancellation(nimClient, () => completeWithRetry(nimClient, conversation, undefined, (chunk) => { fallbackStream.push(chunk); fallbackStream.flushPartial(); }));
-					fallbackStream.end();
-					if (!fallbackStream.printed) stopSpinner();
+						journal?.assistantStarted();
+					const fallback = await withEscapeCancellation(nimClient, () => completeWithRetry(nimClient, conversation, undefined, (chunk) => {
+						journal?.assistantTextDelta(chunk);
+					}));
+					stopSpinner();
 				setScreenStatus({ usage: nimClient.formatUsage() });
 				result = {
 					content: fallback.content,
 					toolCalls: fallback.toolCalls.length > 0 ? fallback.toolCalls : parseToolCallsFromText(fallback.content),
 				};
-				} catch (err2) {
+				journal?.assistantCompleted(result.content, result.toolCalls);
+					} catch (err2) {
 					stopSpinner();
 					printError('NVIDIA NIM provider error: ' + providerError(err2));
 					// Keep everything done so far and let "continue" resume the task.
 					taskState.status = 'interrupted';
 					taskState.reason = providerError(err2);
+					journal?.pause(taskState.reason);
 					appendToSessionLog('### Interrupted task\n\nGoal: ' + taskState.goal + '\nReason: ' + taskState.reason + '\nLast actions: ' + taskState.lastActions.join('; '), projectRoot);
 					printInfo('The task was interrupted. Type "continue" to resume from where it stopped.');
 					// Do not return stale narration from an earlier turn; the
@@ -883,6 +1037,7 @@ export async function runToolLoop(
 
 		finalText = result.content;
 		toolCalls = dedup(result.toolCalls);
+		for (const call of toolCalls) journal?.toolCalled(call);
 
 		// If the LLM produced text alongside tool calls, save it
 		if (finalText && finalText.trim() && finalText.trim() !== 'null') {
@@ -897,7 +1052,7 @@ export async function runToolLoop(
 				}
 			// Narration that comes with more tool calls is shown now; the
 			// final answer (no tool calls) is printed by the caller.
-			if (toolCalls.length > 0) { /* Narration was streamed while the model generated it. */ }
+			if (toolCalls.length > 0 && finalText.trim() && !finalText.includes('"tool_calls"')) printAssistantMessage(finalText.trim());
 		}
 	}
 
@@ -909,14 +1064,70 @@ export async function runToolLoop(
 	// time we get here, so this can't retract a false "done" — but it can run
 	// the project's own checks for real and make sure an unsupported claim
 	// doesn't go unchallenged. See runtime/verify.ts, runtime/checks.ts.
-	if (changedFiles.size > 0) {
-		const verification = await verifyCompletionWithChecks(taskState.goal || finalText, changedFiles, ranCommands, () => runProjectChecks(projectRoot));
+	if (changedFiles.size > 0 || requiresImplementationEvidence(taskState.goal || finalText)) {
+		const verification = await verifyCompletionWithChecks(taskState.goal || finalText, changedFiles, ranCommands, () => runProjectChecks(projectRoot, 180_000, journal));
 		if (!verification.ok) {
-			printError('Completion check: this turn\'s own evidence does not back up "done" yet.', formatIssues(verification.issues));
-			logAgentTermoTimeline('Evidence gate flagged unresolved issues: ' + formatIssues(verification.issues).replace(/\s+/g, ' ').slice(0, 300), projectRoot);
+			const details = formatIssues(verification.issues);
+			const directive = [
+				'## Completion verification failed — the implementation is not complete.',
+				'This is the runtime verification result, not a suggestion. Do not claim success or repeat the same failed command unchanged.',
+				'',
+				details,
+				'',
+				'Inspect the exact failing source and diagnostic, identify the root cause, make the required code changes, and rerun the relevant check after the final edit.',
+				'Continue using tools until the verification gate passes. If the failure is environmental, explain the blocker and do not claim the project is fixed.',
+			].join('\n');
+			printError('Completion check blocked this run. Sending the diagnostics back for repair.', details);
+			logAgentTermoTimeline('Evidence gate blocked completion: ' + details.replace(/\s+/g, ' ').slice(0, 300), projectRoot);
+			if (runtime.recoveryAttempts >= 2) {
+				taskState.status = 'interrupted';
+				taskState.reason = 'Completion verification is still failing after two automatic repair turns: ' + details;
+				journal?.pause(taskState.reason);
+				onConversationChanged();
+				return '';
+			}
+			runtime.recoveryAttempts++;
+			conversation.push({ id: crypto.randomUUID(), role: 'user', content: directive, timestamp: new Date() });
+			onConversationChanged();
+			try {
+				const repairTools = nimClient.buildToolDefs([
+					...(agentToolDefinitions ?? [...TOOL_DEFINITIONS, ...getMcpToolDefinitions()]),
+					...(taskPlan?.status === 'in_progress' ? [PLAN_PROGRESS_TOOL] : []),
+				]);
+				startSpinner('Repairing verification failures');
+				journal?.assistantStarted();
+				const repair = await withEscapeCancellation(nimClient, () => completeWithRetry(nimClient, conversation, repairTools));
+				stopSpinner();
+				journal?.assistantCompleted(repair.content, repair.toolCalls);
+				const repairCalls = dedup(repair.toolCalls);
+				for (const call of repairCalls) journal?.toolCalled(call);
+				if (repairCalls.length > 0) {
+					return runToolLoop(conversation, projectRoot, repairCalls, input, nimClient, permissionMode, allowedCommands,
+						taskState, getCheckpointId, onConversationChanged, taskPlan, agentToolDefinitions, sessionId, runtime);
+				}
+				if (repair.content.trim()) {
+					conversation.push({ id: crypto.randomUUID(), role: 'assistant', content: repair.content.trim(), timestamp: new Date() });
+					onConversationChanged();
+				}
+				taskState.status = 'interrupted';
+				taskState.reason = 'The model did not produce a repair tool call for the failed completion checks.';
+				journal?.pause(taskState.reason);
+				printInfo('The task is paused because the verification failure was not repaired. Type "/continue" to resume.');
+				return '';
+			} catch (error) {
+				stopSpinner();
+				taskState.status = 'interrupted';
+				taskState.reason = providerError(error);
+				journal?.pause(taskState.reason);
+				onConversationChanged();
+				printError('Could not complete the automatic verification-repair turn: ' + taskState.reason);
+				return '';
+			}
 		}
 	}
 
+	journal?.complete(finalText);
+	if (finalText.trim()) printAssistantMessage(finalText.trim());
 	return finalText;
 }
 
@@ -925,17 +1136,24 @@ function compactConversation(conversation: ConversationMessage[]): string {
 	const prior = conversation.slice(1, -keep);
 	if (prior.length === 0) return 'Nothing to compact yet.';
 	const summary = prior
-		.filter((message) => message.role === 'user' || message.role === 'assistant')
-		.map((message) => `${message.role}: ${message.content.replace(/\s+/g, ' ').slice(0, 500)}`)
+		.map((message) => {
+			if (message.role === 'assistant' && message.toolCalls?.length) {
+				return `assistant tool calls: ${message.toolCalls.map((call) => call.name + ' ' + JSON.stringify(call.arguments).slice(0, 160)).join('; ')}`;
+			}
+			const role = message.role === 'tool' ? 'tool result' : message.role;
+			return `${role}: ${message.content.replace(/\s+/g, ' ').slice(0, 500)}`;
+		})
 		.join('\n');
 	const base = conversation[0];
 	if (base) {
 		base.content = base.content.replace(/\n\n## Compacted Conversation Context[\s\S]*$/, '') + '\n\n## Compacted Conversation Context\n' + summary.slice(0, 6000);
 	}
-	const recent = conversation.slice(-keep).filter((message) => message.role !== 'tool' && !message.toolCalls);
+	let recentStart = Math.max(1, conversation.length - keep);
+	if (conversation[recentStart]?.role === 'tool') recentStart = Math.max(1, recentStart - 1);
+	const recent = conversation.slice(recentStart);
 	conversation.splice(1);
 	conversation.push(...recent);
-	return `Compacted ${prior.length} earlier messages; preserved the latest ${recent.length} messages.`;
+	return `Compacted ${prior.length} earlier messages; preserved the latest ${recent.length} messages including tool results.`;
 }
 
 /**
@@ -1510,7 +1728,18 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					}
 					continue mainLoop;
 				}
-				if (cmd === '/mcp') {
+				if (cmd === '/mcp' || cmd === '/mcp reconnect') {
+					if (cmd === '/mcp reconnect') {
+						startSpinner('Reconnecting MCP servers');
+						const reconnected = await initializeMcpServers(projectRoot);
+						stopSpinner();
+						refreshSystemPrompt();
+						for (const status of reconnected) {
+							if (status.connected) printSuccess('MCP server connected: ' + status.name + ' (' + status.tools + ' tools)');
+							else printError('MCP server unavailable: ' + status.name + (status.error ? ' — ' + status.error : ''));
+						}
+						continue mainLoop;
+					}
 					const statuses = getMcpServerStatuses();
 					const tools = getMcpToolDefinitions();
 					if (statuses.length === 0) {
@@ -2050,10 +2279,8 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				{
 					startSpinner('Working');
 					try {
-							const streamed = new MarkdownPrinter(stopSpinner);
-						const result = await withEscapeCancellation(nimClient, () => completeWithRetry(nimClient, conversation, tools, (chunk) => { streamed.push(chunk); streamed.flushPartial(); }));
-						streamed.end();
-						if (!streamed.printed) stopSpinner();
+							const result = await withEscapeCancellation(nimClient, () => completeWithRetry(nimClient, conversation, tools));
+						stopSpinner();
 						setScreenStatus({ usage: nimClient.formatUsage() });
 					const fullText = result.content;
 						const toolCalls = dedup(result.toolCalls);
@@ -2071,15 +2298,15 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				});
 				rememberChat(projectRoot, 'Assistant', cleanText);
 							persistSession();
-							if (!streamed.printed) printAssistantMessage(cleanText);
+							if (!requiresImplementationEvidence(taskState.goal)) printAssistantMessage(cleanText);
+						}
+						if (requiresImplementationEvidence(taskState.goal)) {
+							await runToolLoop(conversation, projectRoot, [], input, nimClient, permissionMode, allowedCommands, taskState, ensureTaskCheckpoint, persistSession, activePlan, activeAgentToolDefinitions, session.id);
 						}
 					} else {
 						// Show any narration that came with the first tool calls
-						const narration = (fullText ?? '').trim().replace(/^null$/, '').trim();
-						if (narration && !streamed.printed) printAssistantMessage(narration);
-
 						// Run the tool-call loop: execute tools, feed results back, repeat
-						await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, permissionMode, allowedCommands, taskState, ensureTaskCheckpoint, persistSession, activePlan, activeAgentToolDefinitions);
+						await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, permissionMode, allowedCommands, taskState, ensureTaskCheckpoint, persistSession, activePlan, activeAgentToolDefinitions, session.id);
 					}
 					} catch (err) {
 						stopSpinner();
@@ -2107,24 +2334,23 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					// any JSON tool calls the model may have emitted as plain text.
 						printInfo('NVIDIA NIM tool request failed: ' + providerError(err) + ' — retrying without tools.');
 						try {
-								const fallbackStream = new MarkdownPrinter(stopSpinner);
-					const fallback = await withEscapeCancellation(nimClient, () => completeWithRetry(nimClient, conversation, undefined, (chunk) => { fallbackStream.push(chunk); fallbackStream.flushPartial(); }));
-					fallbackStream.end();
-					if (!fallbackStream.printed) stopSpinner();
+								const fallback = await withEscapeCancellation(nimClient, () => completeWithRetry(nimClient, conversation, undefined));
+						stopSpinner();
 							setScreenStatus({ usage: nimClient.formatUsage() });
 						const toolCalls = dedup(
 							fallback.toolCalls.length > 0 ? fallback.toolCalls : parseToolCallsFromText(fallback.content),
 						);
 						if (toolCalls.length > 0) {
-							const narration = (fallback.content ?? '').trim().replace(/^null$/, '').trim();
-							if (narration && !fallbackStream.printed && !narration.includes('"tool_calls"')) printAssistantMessage(narration);
-							await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, permissionMode, allowedCommands, taskState, ensureTaskCheckpoint, persistSession, activePlan, activeAgentToolDefinitions);
+							await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, permissionMode, allowedCommands, taskState, ensureTaskCheckpoint, persistSession, activePlan, activeAgentToolDefinitions, session.id);
 						} else {
 							const cleanText = (fallback.content ?? '').trim().replace(/^null$/, '').trim();
 							if (cleanText) {
 								conversation.push({ id: crypto.randomUUID(), role: 'assistant', content: cleanText, timestamp: new Date() });
 								persistSession();
-								if (!fallbackStream.printed) printAssistantMessage(cleanText);
+								if (!requiresImplementationEvidence(taskState.goal)) printAssistantMessage(cleanText);
+							}
+							if (requiresImplementationEvidence(taskState.goal)) {
+								await runToolLoop(conversation, projectRoot, [], input, nimClient, permissionMode, allowedCommands, taskState, ensureTaskCheckpoint, persistSession, activePlan, activeAgentToolDefinitions, session.id);
 							}
 							}
 					} catch (err2) {

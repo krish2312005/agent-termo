@@ -1,0 +1,184 @@
+// Session-scoped execution journal and run lifecycle.
+// The engine owns durable state transitions; the CLI is only an event consumer.
+
+import { randomUUID } from "node:crypto";
+import type { ToolCall, ToolResult } from "../types/index.js";
+import {
+  projectRunEvents,
+  SessionEventStore,
+  type RunSnapshot,
+  type RuntimeEvent,
+  type RuntimeEventType,
+} from "./events.js";
+
+const MAX_OUTPUT_CHARS = 100_000;
+
+function bounded(value: string | undefined): string {
+  if (!value) return "";
+  return value.length > MAX_OUTPUT_CHARS ? value.slice(-MAX_OUTPUT_CHARS) : value;
+}
+
+export type RuntimeEventListener = (event: RuntimeEvent) => void;
+
+export class AgentRunJournal {
+  private readonly store: SessionEventStore;
+  private currentRunId: string | undefined;
+  private readonly streamedOutput = new Map<string, number>();
+  private readonly listeners = new Set<RuntimeEventListener>();
+
+  constructor(projectRoot: string, sessionId: string) {
+    this.store = new SessionEventStore(projectRoot, sessionId);
+    this.recoverInterruptedWork();
+  }
+
+  get runId(): string | undefined {
+    return this.currentRunId;
+  }
+
+  subscribe(listener: RuntimeEventListener): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  private append(type: RuntimeEventType, data: Record<string, unknown> = {}, durable = true): void {
+    const event = this.store.append(this.requireRun(), type, data, durable);
+    for (const listener of this.listeners) {
+      try {
+        listener(event);
+      } catch {
+        // A UI observer must never be able to break tool execution or persistence.
+      }
+    }
+  }
+
+  private recoverInterruptedWork(): void {
+    const runs = projectRunEvents(this.store.read());
+    for (const run of runs) {
+      if (run.status !== "running") continue;
+      for (const tool of run.tools) {
+        if (tool.status === "pending" || tool.status === "running") {
+          this.store.append(run.runId, "tool.interrupted", {
+            callId: tool.callId,
+            name: tool.name,
+            reason: "The process stopped before a durable tool result was recorded.",
+            stdout: tool.stdout,
+            stderr: tool.stderr,
+          });
+        }
+      }
+      this.store.append(run.runId, "run.interrupted", {
+        reason: "The process restarted before this run reached a terminal state.",
+      });
+    }
+  }
+
+  startRun(goal: string): string {
+    if (this.currentRunId) throw new Error("A run is already active in this journal.");
+    this.currentRunId = randomUUID();
+    this.append("run.started", { goal });
+    return this.currentRunId;
+  }
+
+  assistantStarted(): void {
+    this.append("assistant.started");
+  }
+
+  assistantTextDelta(text: string): void {
+    if (text) this.append("assistant.text.delta", { text }, false);
+  }
+
+  assistantCompleted(content: string, toolCalls: readonly ToolCall[] = []): void {
+    this.append("assistant.completed", {
+      content,
+      toolCalls: toolCalls.map((call) => ({
+        id: call.id,
+        name: call.name,
+        arguments: call.arguments,
+      })),
+    });
+  }
+
+  toolCalled(call: ToolCall): void {
+    this.append("tool.called", {
+      callId: call.id,
+      name: call.name,
+      arguments: call.arguments,
+    });
+  }
+
+  toolStarted(callId: string): void {
+    this.append("tool.started", { callId });
+  }
+
+  toolOutputDelta(callId: string, stream: "stdout" | "stderr", text: string): void {
+    const key = callId + ":" + stream;
+    const stored = this.streamedOutput.get(key) ?? 0;
+    const remaining = Math.max(0, MAX_OUTPUT_CHARS - stored);
+    if (remaining === 0 || !text) return;
+    const chunk = text.slice(0, remaining);
+    this.streamedOutput.set(key, stored + chunk.length);
+    this.append("tool.output.delta", { callId, stream, text: chunk }, false);
+  }
+
+  toolFinished(callId: string, result: ToolResult): void {
+    const output = bounded(result.stdout ?? result.output);
+    const stderr = bounded(result.stderr);
+    const appendMissingOutput = (stream: "stdout" | "stderr", value: string): void => {
+      const stored = this.streamedOutput.get(callId + ":" + stream) ?? 0;
+      if (stored === 0 && value) {
+        for (let offset = 0; offset < value.length; offset += 8192) {
+          this.append("tool.output.delta", {
+            callId, stream, text: value.slice(offset, offset + 8192),
+          }, false);
+        }
+      }
+    };
+    appendMissingOutput("stdout", output);
+    appendMissingOutput("stderr", stderr);
+    const data = {
+      callId,
+      name: result.name,
+      command: result.command,
+      cwd: result.cwd,
+      exitCode: result.exitCode,
+      durationMs: result.durationMs,
+      success: result.success,
+      output: bounded(result.output),
+      error: bounded(result.error),
+      stdout: output,
+      stderr,
+    };
+    this.append(result.success ? "tool.completed" : "tool.failed", data);
+    this.streamedOutput.delete(callId + ":stdout");
+    this.streamedOutput.delete(callId + ":stderr");
+  }
+
+  complete(summary: string): void {
+    this.append("run.completed", { summary });
+    this.currentRunId = undefined;
+  }
+
+  pause(reason: string): void {
+    this.append("run.paused", { reason });
+    this.currentRunId = undefined;
+  }
+
+  fail(error: string): void {
+    this.append("run.failed", { reason: error });
+    this.currentRunId = undefined;
+  }
+
+  private requireRun(): string {
+    if (!this.currentRunId) throw new Error("No active run exists in this journal.");
+    return this.currentRunId;
+  }
+}
+
+export function createRunJournal(projectRoot: string, sessionId: string): AgentRunJournal {
+  return new AgentRunJournal(projectRoot, sessionId);
+}
+
+export function loadRunHistory(projectRoot: string, sessionId: string): RunSnapshot[] {
+  const store = new SessionEventStore(projectRoot, sessionId);
+  return projectRunEvents(store.read());
+}

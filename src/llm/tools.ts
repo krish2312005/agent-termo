@@ -193,7 +193,7 @@ export const TOOL_DEFINITIONS: ToolDef[] = [
   },
   {
     name: 'git:commit',
-    description: 'Stage and commit all changes with a conventional commit message.',
+    description: 'Stage only explicitly listed files and commit them. Unrelated staged changes cause the commit to be rejected.',
     parameters: {
       type: 'object',
       properties: {
@@ -205,8 +205,12 @@ export const TOOL_DEFINITIONS: ToolDef[] = [
           type: 'string',
           description: 'Repository root (default: project root)',
         },
+        paths: {
+          type: 'string',
+          description: 'Comma-separated exact project-relative file paths to stage and commit. Required.',
+        },
       },
-      required: ['message'],
+      required: ['message', 'paths'],
     },
   },
   {

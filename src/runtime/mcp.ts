@@ -4,6 +4,7 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { getAgentTermoDir } from '../utils/config.js';
 import type { ToolDef, ToolParameter } from '../types/index.js';
+import { validateJsonSchema } from './tool-validation.js';
 
 export type McpConfigScope = 'project' | 'user';
 
@@ -45,6 +46,7 @@ const CLIENT_VERSION = '1.0.15';
 const activeServers = new Map<string, ActiveServer>();
 const serverStatuses = new Map<string, ServerStatus>();
 const discoveredTools = new Map<string, DiscoveredTool>();
+const pendingToolNames = new Set<string>();
 
 function configPath(projectRoot: string, scope: McpConfigScope): string {
 	return scope === 'user'
@@ -242,12 +244,13 @@ export async function initializeMcpServers(projectRoot: string): Promise<ServerS
 		return [{ name: 'configuration', connected: false, tools: 0, error: error instanceof Error ? error.message : String(error) }];
 	}
 
-	for (const [name, config] of Object.entries(configs)) {
+	await Promise.all(Object.entries(configs).map(async ([name, config]) => {
 		const status: ServerStatus = { name, connected: false, tools: 0 };
 		serverStatuses.set(name, status);
 		let pendingConnection: ActiveServer | undefined;
+		let reservedToolNames: string[] = [];
 		try {
-			if (config?.disabled === true) continue;
+			if (config?.disabled === true) return;
 			validateServerConfig(name, config);
 			const connected = await connectServer(projectRoot, name, config);
 			const connection: ActiveServer = { name, client: connected.client, transport: connected.transport };
@@ -279,9 +282,18 @@ export async function initializeMcpServers(projectRoot: string): Promise<ServerS
 				}]);
 			}
 
+			const collisions = pending.map(([modelName]) => modelName).filter((modelName) => discoveredTools.has(modelName) || pendingToolNames.has(modelName));
+			if (collisions.length > 0) {
+				throw new Error('MCP tool name collision for "' + collisions[0] + '". Rename the server or tool to make its name unique.');
+			}
+			reservedToolNames = pending.map(([modelName]) => modelName);
+			for (const modelName of reservedToolNames) pendingToolNames.add(modelName);
+
 			activeServers.set(name, connection);
 			pendingConnection = undefined;
 			for (const [modelName, tool] of pending) discoveredTools.set(modelName, tool);
+			for (const modelName of reservedToolNames) pendingToolNames.delete(modelName);
+			reservedToolNames = [];
 			status.connected = true;
 			status.tools = pending.length;
 
@@ -298,11 +310,12 @@ export async function initializeMcpServers(projectRoot: string): Promise<ServerS
 				status.error = error.message;
 			};
 		} catch (error) {
+			for (const modelName of reservedToolNames) pendingToolNames.delete(modelName);
 			if (pendingConnection) await closeConnection(pendingConnection);
 			status.error = error instanceof Error ? error.message : String(error);
 			status.connected = false;
 		}
-	}
+	}));
 	return getMcpServerStatuses();
 }
 
@@ -327,6 +340,8 @@ export async function executeMcpTool(name: string, args: Record<string, unknown>
 	if (!tool) return { success: false, error: 'MCP tool is not connected: ' + name };
 
 	try {
+		const validationError = validateJsonSchema(tool.definition.parameters, args);
+		if (validationError) return { success: false, error: 'Invalid MCP tool arguments: ' + validationError };
 		const result = await tool.client.callTool({ name: tool.toolName, arguments: args });
 		const content = Array.isArray(result.content) ? result.content.map((item: any) => {
 			if (item.type === 'text') return item.text;
