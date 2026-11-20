@@ -55,6 +55,17 @@ describe('live terminal panel', () => {
 		scrollTerminalPanel('down');
 		expect(terminalPanelState()?.scrollOffset).toBe(Math.max(0, rows.length - viewportRows * 2));
 	});
+	it('re-enables terminal mouse scrolling when new output reopens a hidden panel', async () => {
+		startTerminalPanel('node output');
+		expect(terminalPanelVisible()).toBe(true);
+		const { toggleTerminalPanel } = await import('../../src/ui/screen.js');
+		toggleTerminalPanel();
+		expect(terminalPanelVisible()).toBe(false);
+		appendTerminalOutput('new output\\r\\n');
+		await flushTerminalOutput();
+		expect(terminalPanelVisible()).toBe(true);
+	});
+
 	it('scrolls by mouse wheel only when the pointer is over terminal output', async () => {
 		startTerminalPanel('node output');
 		appendTerminalOutput(Array.from({ length: 100 }, (_, index) => `Output ${index + 1}\r\n`).join(''));

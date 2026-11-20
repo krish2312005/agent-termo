@@ -239,6 +239,7 @@ export function startTerminalPanel(command: string): void {
 export function appendTerminalOutput(text: string): void {
 	if (!S.term || !terminalEmulator) return;
 	S.termOpen = true;
+	syncTerminalMouseTracking();
 	terminalEmulator.write(text, () => {
 		snapshotTerminalScreen();
 		termPaint();
