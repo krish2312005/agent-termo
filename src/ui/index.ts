@@ -40,6 +40,8 @@ export {
 	toggleTerminalPanel,
 	terminalPanelVisible,
 	terminalPanelState,
+	scrollTerminalPanel,
+	terminalPanelWindow,
 	type InputController,
 	type PickItem,
 } from './screen.js';

@@ -92,6 +92,8 @@ const S = {
 		pending: string;
 		/** Current line being composed for the running command's stdin. */
 		input: string;
+		/** Number of rows scrolled back from the latest terminal output. */
+		scrollOffset: number;
 		/** True after Escape sends an interrupt to the active command. */
 		interrupting: boolean;
 		/** null = still running; number = exit code. */
@@ -176,15 +178,10 @@ function termPanelRows(): number {
 function snapshotTerminalScreen(): void {
 	if (!S.term || !terminalEmulator) return;
 	const buffer = terminalEmulator.buffer.active;
-	const visible = Array.from({ length: terminalEmulator.rows }, (_, row) => ({
-		row,
-		text: buffer.getLine(buffer.viewportY + row)?.translateToString(true) ?? '',
-	})).filter((line) => line.text.trim().length > 0);
-
-	const cursorIndex = visible.findIndex((line) => line.row >= buffer.cursorY);
-	const focusIndex = cursorIndex >= 0 ? cursorIndex : visible.length - 1;
-	const start = Math.max(0, Math.min(visible.length - TERM_PANEL_LINES, focusIndex - Math.floor(TERM_PANEL_LINES / 2)));
-	S.term.lines = visible.slice(start, start + TERM_PANEL_LINES).map((line) => line.text);
+	S.term.lines = Array.from({ length: buffer.length }, (_, row) =>
+		buffer.getLine(row)?.translateToString(true) ?? '',
+	).filter((line) => line.trim().length > 0);
+	S.term.scrollOffset = Math.min(S.term.scrollOffset, Math.max(0, S.term.lines.length - TERM_PANEL_LINES));
 	S.term.pending = '';
 }
 
@@ -200,7 +197,7 @@ function termPaint(): void {
 /** A terminal command started: track it but keep panel closed by default. */
 export function startTerminalPanel(command: string): void {
 	clearTerminalPanel();
-	S.term = { command, lines: [], pending: '', input: '', interrupting: false, exitCode: null };
+	S.term = { command, lines: [], pending: '', input: '', scrollOffset: 0, interrupting: false, exitCode: null };
 	terminalEmulator = new Terminal({
 		cols: Math.max(1, out.columns || 80),
 		rows: Math.max(1, out.rows || 24),
@@ -259,6 +256,7 @@ export function clearTerminalPanel(): void {
 		S.term.lines = [];
 		S.term.pending = '';
 		S.term.input = '';
+		S.term.scrollOffset = 0;
 		S.term.exitCode = null;
 	}
 	syncTermKeyListener();
@@ -269,14 +267,35 @@ export function terminalPanelVisible(): boolean {
 	return Boolean(S.term && S.termOpen);
 }
 
-export function terminalPanelState(): { command: string; exitCode: number | null; lines: string[]; input: string } | null {
+export function terminalPanelState(): { command: string; exitCode: number | null; lines: string[]; input: string; scrollOffset: number } | null {
 	if (!S.term) return null;
 	return {
 		command: S.term.command,
 		exitCode: S.term.exitCode,
 		lines: [...S.term.lines],
 		input: S.term.input,
+		scrollOffset: S.term.scrollOffset,
 	};
+}
+
+/** Select an older or newer page of terminal output without sending keys to the child process. */
+export function scrollTerminalPanel(direction: 'up' | 'down'): void {
+	if (!S.term || !S.termOpen) return;
+	const maxOffset = Math.max(0, S.term.lines.length - TERM_PANEL_LINES);
+	const nextOffset = direction === 'up'
+		? Math.min(maxOffset, S.term.scrollOffset + TERM_PANEL_LINES)
+		: Math.max(0, S.term.scrollOffset - TERM_PANEL_LINES);
+	if (nextOffset === S.term.scrollOffset) return;
+	S.term.scrollOffset = nextOffset;
+	paint();
+}
+
+/** The rows currently shown in the fixed-height terminal panel viewport. */
+export function terminalPanelWindow(lines: string[], scrollOffset: number, visibleRows = TERM_PANEL_LINES): string[] {
+	const maxOffset = Math.max(0, lines.length - visibleRows);
+	const offset = Math.max(0, Math.min(maxOffset, Math.trunc(scrollOffset)));
+	const end = lines.length - offset;
+	return lines.slice(Math.max(0, end - visibleRows), end);
 }
 
 // A background key listener while the user is NOT editing (during the agent
@@ -389,6 +408,10 @@ export function startBackgroundCommandListener(onCommand: (command: string) => v
 					bgTyped = '';
 					if (S.term) S.term.input = '';
 				}
+			} else if (key.name === 'shift+pageup') {
+				scrollTerminalPanel('up');
+			} else if (key.name === 'shift+pagedown') {
+				scrollTerminalPanel('down');
 			} else if (key.name === 'escape' || key.name === 'ctrl+c') {
 				bgTyped = '';
 				if (S.term) {
@@ -875,7 +898,7 @@ function chromeString(): string {
 			),
 		);
 		const outputLines = S.term.lines;
-		const content = outputLines.slice(-shown);
+		const content = terminalPanelWindow(outputLines, S.term.scrollOffset, shown);
 		const panelWidth = Math.max(1, cols - 4);
 		for (let i = 0; i < shown; i++) {
 			const text = content[i] ?? (outputLines.length === 0 ? 'Waiting for terminal output…' : '');
@@ -887,7 +910,7 @@ function chromeString(): string {
 			const labelFill = '─'.repeat(Math.max(0, cols - labelPrefix.length - 1));
 			parts.push(line(headerRow + 1 + shown, c.cyan('├─ ') + c.bold('INPUT') + c.cyan(' ' + labelFill + '┤')));
 
-			const inputHint = 'Enter sends · Esc stops command';
+			const inputHint = 'Enter sends · Esc stops · ⇧PgUp/PgDn scroll';
 			const inputText = S.term.input ? '› ' + S.term.input : '› Type a response…';
 			const inputWidth = Math.max(0, panelWidth - inputHint.length - 2);
 			const inputValue = clipText(inputText, inputWidth).padEnd(inputWidth);
@@ -1075,6 +1098,8 @@ const NAMED: Record<string, string> = {
 	'\x1b[3~': 'delete',
 	'\x1b[5~': 'pageup',
 	'\x1b[6~': 'pagedown',
+	'\x1b[5;2~': 'shift+pageup',
+	'\x1b[6;2~': 'shift+pagedown',
 	'\x1b[1;5D': 'word-left',
 	'\x1b[1;3D': 'word-left',
 	'\x1bb': 'word-left',

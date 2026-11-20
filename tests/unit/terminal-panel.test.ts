@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { appendTerminalOutput, clearTerminalPanel, startTerminalPanel, terminalPanelState } from '../../src/ui/screen.js';
+import { appendTerminalOutput, clearTerminalPanel, scrollTerminalPanel, startTerminalPanel, terminalPanelState, terminalPanelWindow } from '../../src/ui/screen.js';
 
 afterEach(() => clearTerminalPanel());
 
@@ -26,6 +26,28 @@ describe('live terminal panel', () => {
 		expect(output).toContain('Select a framework:');
 		expect(output).toContain('Vanilla');
 		expect(output).toContain('React');
+	});
+
+	it('scrolls through the full terminal buffer without changing the live process input', async () => {
+		startTerminalPanel('npm create vite');
+		appendTerminalOutput(Array.from({ length: 12 }, (_, index) => `Row ${index + 1}\r\n`).join(''));
+		await flushTerminalOutput();
+
+		const initial = terminalPanelState();
+		expect(initial?.lines).toHaveLength(12);
+		expect(terminalPanelWindow(initial?.lines ?? [], initial?.scrollOffset ?? 0)).toEqual([
+			'Row 7', 'Row 8', 'Row 9', 'Row 10', 'Row 11', 'Row 12',
+		]);
+
+		scrollTerminalPanel('up');
+		const older = terminalPanelState();
+		expect(older?.scrollOffset).toBe(6);
+		expect(terminalPanelWindow(older?.lines ?? [], older?.scrollOffset ?? 0)).toEqual([
+			'Row 1', 'Row 2', 'Row 3', 'Row 4', 'Row 5', 'Row 6',
+		]);
+
+		scrollTerminalPanel('down');
+		expect(terminalPanelState()?.scrollOffset).toBe(0);
 	});
 
 	it('renders carriage-return progress updates instead of exposing control codes', async () => {
