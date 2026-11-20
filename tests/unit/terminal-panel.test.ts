@@ -38,7 +38,7 @@ describe('live terminal panel', () => {
 	it('scrolls the expanded terminal viewport through the full buffer', async () => {
 		startTerminalPanel('npm create vite');
 		const rows = Array.from({ length: 200 }, (_, index) => `Row ${index + 1}`);
-		appendTerminalOutput(rows.map((row) => row + '\\r\\n').join(''));
+		appendTerminalOutput(rows.map((row) => row + '\r\n').join(''));
 		await flushTerminalOutput();
 
 		const initial = terminalPanelState();
