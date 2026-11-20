@@ -155,16 +155,21 @@ function termPanelRows(): number {
 	if (!S.term || !S.termOpen) return 0;
 	const outputCount = S.term.lines.length + (S.term.pending ? 1 : 0);
 	const shown = Math.min(TERM_PANEL_LINES, Math.max(1, outputCount));
-	return shown + (S.term.exitCode === null ? 3 : 2); // header + output + input + bottom
+	return shown + (S.term.exitCode === null ? 4 : 2); // header + output + input label + input + bottom
 }
 
-/** Strip ANSI escapes and fold \r progress-bar rewrites into single lines. */
+/** Strip terminal control sequences and fold carriage-return progress updates. */
 function termCleanLine(line: string): string {
-	// These ANSI ESC/BEL sequences are intentional terminal control characters.
+	// ANSI cursor, color, title, and terminal-mode sequences are not useful in this compact log.
 	// eslint-disable-next-line no-control-regex
-	const plain = line.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '');
+	const plain = line
+		.replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '')
+		.replace(/\x1b[P^_].*?\x1b\\/g, '')
+		.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+		.replace(/\x1b[ -/]*[@-~]/g, '');
 	const last = plain.split('\r').pop() ?? '';
-	return last.replace(/\t/g, '  ').slice(0, 400);
+	// eslint-disable-next-line no-control-regex
+	return last.replace(/\t/g, '  ').replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '').slice(0, 400);
 }
 
 function termPaint(): void {
@@ -761,35 +766,45 @@ function chromeString(): string {
 	// ── Terminal panel: live output of the agent's bash commands ──────────
 	if (S.term && panel > 0) {
 		const hasInputRow = S.term.exitCode === null;
-		const shown = panel - (hasInputRow ? 3 : 2);
+		const shown = panel - (hasInputRow ? 4 : 2);
 		const headerRow = rows - panel;
-		const status =
-			S.term.exitCode === null
-				? c.yellow('● running')
-				: S.term.exitCode === 0
-					? c.green(`✓ exit ${S.term.exitCode}`)
-					: c.red(`✗ exit ${S.term.exitCode}`);
-		const title = 'bash output';
-		const hint = c.dim(' ctrl+o close ');
+		const statusText = S.term.exitCode === null ? 'RUNNING' : `EXIT ${S.term.exitCode}`;
+		const status = S.term.exitCode === null
+			? c.yellow(statusText)
+			: S.term.exitCode === 0
+				? c.green(statusText)
+				: c.red(statusText);
+		const commandText = S.term.command.trim().replace(/\s+/g, ' ');
+		const headerPrefix = '╭─ TERMINAL · ';
+		const headerSuffix = ` ${statusText} · ctrl+o hide `;
+		const commandWidth = Math.max(0, cols - headerPrefix.length - headerSuffix.length - 1);
+		const visibleCommand = clipText(commandText, commandWidth);
+		const headerFill = '─'.repeat(Math.max(0, cols - headerPrefix.length - visibleCommand.length - headerSuffix.length - 1));
 		parts.push(
 			line(
 				headerRow,
-				c.cyan('╭─ bash ─ ') + c.bold(clipText(title, cols - 30)) + ' ' + status + c.cyan('─'.repeat(Math.max(1, cols - 30 - title.length - 20))) + hint + c.cyan('╮'),
+				c.cyan('╭─ ') + c.bold('TERMINAL') + c.dim(' · ') + c.white(visibleCommand) + ' ' + status + c.dim(' · ctrl+o hide ') + c.cyan(headerFill + '╮'),
 			),
 		);
 		const outputLines = [...S.term.lines, ...(S.term.pending ? [termCleanLine(S.term.pending)] : [])];
 		const content = outputLines.slice(-shown);
+		const panelWidth = Math.max(1, cols - 4);
 		for (let i = 0; i < shown; i++) {
-			const text = content[i] ?? '';
-			const body = clipText(text, width).padEnd(width);
+			const text = content[i] ?? (outputLines.length === 0 ? 'Waiting for terminal output…' : '');
+			const body = clipText(text, panelWidth).padEnd(panelWidth);
 			parts.push(line(headerRow + 1 + i, c.cyan('│') + ' ' + body + ' ' + c.cyan('│')));
 		}
 		if (hasInputRow) {
-			const inputText = S.term.input ? '› ' + S.term.input : 'Type input and press Enter to send';
-			const inputBody = S.term.input
-				? c.yellow(clipText(inputText, width).padEnd(width))
-				: c.dim(clipText(inputText, width).padEnd(width));
-			parts.push(line(headerRow + 1 + shown, c.cyan('│') + ' ' + inputBody + ' ' + c.cyan('│')));
+			const labelPrefix = '├─ INPUT ';
+			const labelFill = '─'.repeat(Math.max(0, cols - labelPrefix.length - 1));
+			parts.push(line(headerRow + 1 + shown, c.cyan('├─ ') + c.bold('INPUT') + c.cyan(' ' + labelFill + '┤')));
+
+			const inputHint = 'Enter sends · Esc clears';
+			const inputText = S.term.input ? '› ' + S.term.input : '› Type a response…';
+			const inputWidth = Math.max(0, panelWidth - inputHint.length - 2);
+			const inputValue = clipText(inputText, inputWidth).padEnd(inputWidth);
+			const inputBody = (S.term.input ? c.yellow(inputValue) : c.dim(inputValue)) + c.dim('  ' + inputHint);
+			parts.push(line(headerRow + 2 + shown, c.cyan('│') + ' ' + inputBody + ' ' + c.cyan('│')));
 		}
 		parts.push(line(rows - 1, c.cyan('╰' + '─'.repeat(cols - 2) + '╯')));
 	}

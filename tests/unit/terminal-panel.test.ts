@@ -15,4 +15,11 @@ describe('live terminal panel', () => {
 			'Ok to proceed? (y)',
 		]);
 	});
+	it('removes ANSI terminal controls and keeps the final carriage-return update', () => {
+		startTerminalPanel('npm install');
+		appendTerminalOutput('\\x1b[?25l\\x1b[32mDownloading\\x1b[0m\\r\\x1b[2K\\x1b[32mReady\\x1b[0m\\n');
+
+		expect(terminalPanelState()?.lines).toEqual(['Ready']);
+	});
+
 });
