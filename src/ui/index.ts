@@ -4,6 +4,7 @@
 // =============================================================================
 
 import Chalk from 'chalk';
+import { resolve } from 'node:path';
 import type { ProposedFileChange } from '../types/index.js';
 import { loadMemory, loadTimeline } from '../memory/index.js';
 import { getSubAgent, listSubAgents, subscribeSubAgents } from '../runtime/subagents.js';
@@ -14,6 +15,7 @@ import {
 	resetScreen,
 	setCommands,
 	terminalWidth,
+	currentProjectRoot,
 	type CommandInfo,
 } from './screen.js';
 
@@ -295,6 +297,28 @@ export function printSubAgents(selectedId?: string): void {
 // =============================================================================
 
 export function printToolCall(toolName: string, args: Record<string, unknown>): void {
+	if (toolName === 'bash:execute') {
+		const command = typeof args.command === 'string'
+			? args.command
+			: typeof args.cmd === 'string'
+				? args.cmd
+				: typeof args.command_line === 'string'
+					? args.command_line
+					: undefined;
+		if (command !== undefined) {
+			const projectRoot = currentProjectRoot() || process.cwd();
+			const requestedCwd = typeof args.cwd === 'string' && args.cwd ? args.cwd : projectRoot;
+			const cwd = resolve(projectRoot, requestedCwd);
+			out.write('\n' + c.blue('● ') + c.bold(toolName) + '\n');
+			out.write(c.dim('  Command:\n'));
+			out.write(command);
+			if (!command.endsWith('\n')) out.write('\n');
+			out.write(c.dim('  Working directory:\n') + '    ' + c.cyan(cwd) + '\n');
+			if (args.timeout !== undefined) out.write(c.dim('  Timeout: ') + String(args.timeout) + 'ms\n');
+			out.write('\n');
+			return;
+		}
+	}
 	const summary = Object.entries(args)
 		.map(([k, v]) => {
 			const raw = typeof v === 'string' ? v : JSON.stringify(v);

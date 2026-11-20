@@ -140,7 +140,7 @@ export function setSubAgentActivity(id: string, text: string, step?: number): vo
 export function startSubAgentTool(id: string, name: string, args: string): void {
 	const activity = live(id);
 	if (!activity) return;
-	activity.tools.push({ name, args: oneLine(args, 160), startedAt: Date.now() });
+	activity.tools.push({ name, args: name === 'bash:execute' ? args : oneLine(args, 160), startedAt: Date.now() });
 	if (activity.tools.length > MAX_TOOLS) activity.tools.splice(0, activity.tools.length - MAX_TOOLS);
 	activity.activity = oneLine(`${name} ${args}`, 160);
 	emit({ type: 'tool-start', id });

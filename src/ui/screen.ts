@@ -117,6 +117,11 @@ export function terminalWidth(): number {
 	return out.columns || 80;
 }
 
+/** Active workspace root used by tool-call displays when cwd is omitted. */
+export function currentProjectRoot(): string {
+	return S.project || process.cwd();
+}
+
 export function clipText(text: string, max: number): string {
 	if (max <= 0) return '';
 	return text.length <= max ? text : text.slice(0, Math.max(0, max - 1)) + '…';
@@ -714,7 +719,7 @@ function chromeString(): string {
 				: S.term.exitCode === 0
 					? c.green(`✓ exit ${S.term.exitCode}`)
 					: c.red(`✗ exit ${S.term.exitCode}`);
-		const title = clipText(S.term.command, Math.max(8, cols - 34));
+		const title = 'bash output';
 		const hint = c.dim(' ctrl+o close ');
 		parts.push(
 			line(

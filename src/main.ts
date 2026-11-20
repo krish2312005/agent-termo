@@ -536,8 +536,21 @@ async function executeToolWithReview(
 
 const DELEGATED_TOOL_BUDGET = 24;
 
-/** One-line summary of a tool call's arguments for the sub-agent monitor. */
-function describeArgs(args: Record<string, unknown>): string {
+/** Summary for the sub-agent monitor; shell commands retain their complete details. */
+function describeArgs(args: Record<string, unknown>, toolName: string, projectRoot: string): string {
+	if (toolName === 'bash:execute') {
+		const command = typeof args.command === 'string'
+			? args.command
+			: typeof args.cmd === 'string'
+				? args.cmd
+				: typeof args.command_line === 'string'
+					? args.command_line
+					: '';
+		const requestedCwd = typeof args.cwd === 'string' && args.cwd ? args.cwd : projectRoot;
+		const cwd = resolve(projectRoot, requestedCwd);
+		const timeout = args.timeout === undefined ? '' : `\nTimeout: ${String(args.timeout)}ms`;
+		return `Command:\n${command}\nWorking directory:\n${cwd}${timeout}`;
+	}
 	return String(args.path ?? args.command ?? args.pattern ?? args.glob ?? args.message ?? '').slice(0, 160);
 }
 
@@ -649,7 +662,7 @@ async function runDelegatedAgent(
 			});
 
 			for (const [toolIndex, tc] of toolCalls.entries()) {
-				startSubAgentTool(subId, tc.name, describeArgs(tc.arguments) || task);
+				startSubAgentTool(subId, tc.name, describeArgs(tc.arguments, tc.name, projectRoot) || task);
 				const journalCallId = String(toolCall.id) + ":" + iteration + ":" + toolIndex + ":" + tc.id;
 				const journalCall = { ...tc, id: journalCallId };
 				journal?.toolCalled(journalCall);
