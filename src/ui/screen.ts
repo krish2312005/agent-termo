@@ -30,6 +30,7 @@ const c: typeof Chalk = Chalk as unknown as typeof Chalk;
 // The published 6.0.0 package has an invalid ESM module field and no exports map.
 // Load its valid CommonJS main entry explicitly; retain the package's official API types.
 const { Terminal } = createRequire(import.meta.url)('@xterm/headless') as typeof import('@xterm/headless');
+type TerminalEmulator = InstanceType<typeof Terminal>;
 const out = process.stdout;
 
 const CSI = '\x1b[';
@@ -165,7 +166,7 @@ function shortPath(p: string): string {
 // =============================================================================
 
 let termPaintTimer: ReturnType<typeof setTimeout> | null = null;
-let terminalEmulator: Terminal | null = null;
+let terminalEmulator: TerminalEmulator | null = null;
 
 function termPanelRows(): number {
 	if (!S.term || !S.termOpen) return 0;

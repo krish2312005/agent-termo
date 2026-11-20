@@ -29,6 +29,7 @@ export class ProcessManager {
           continue;
         }
       }
+      if (!('stdin' in child)) continue;
       const stdin = child.stdin;
       if (!stdin || stdin.destroyed || stdin.writableEnded || !stdin.writable) continue;
       try {
