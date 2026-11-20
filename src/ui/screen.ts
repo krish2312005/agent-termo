@@ -267,8 +267,10 @@ export function finishTerminalPanel(exitCode: number | null): void {
 		}
 		terminalEmulator?.dispose();
 		terminalEmulator = null;
+		S.termOpen = false;
 		syncTermKeyListener();
-		termPaint();
+		syncTerminalMouseTracking();
+		paint();
 	};
 	if (terminalEmulator) terminalEmulator.write('', finish);
 	else finish();
@@ -837,13 +839,9 @@ function popupString(topBorderRow: number): string {
 	const descWidth = inner - nameWidth - 3;
 
 	const items = popup.items;
-	// Fit the popup into the rows available above the input box; one blank
-	// row of breathing space keeps it visually separate from the input border.
-	const room = Math.max(0, topBorderRow - 2);
-	const count = Math.min(items.length, MAX_POPUP_ROWS, room);
+	const { top, count } = popupLayoutForRows(topBorderRow, items.length);
 	if (count < 1) return '';
-	const height = count + 2;
-	const top = topBorderRow - height - 1; // one blank row below the popup
+	const height = count + 2; // one blank row below the popup
 
 	// Window the list around the selection.
 	let first = 0;
@@ -903,16 +901,21 @@ function popupClearString(): string {
 	return clear;
 }
 
+/** Share the popup's exact row calculation between drawing and stale-row cleanup. */
+export function popupLayoutForRows(topBorderRow: number, itemCount: number): { top: number; count: number } {
+	const room = Math.max(0, topBorderRow - 2);
+	const count = Math.min(itemCount, MAX_POPUP_ROWS, room);
+	return { top: count < 1 ? 1 : topBorderRow - (count + 2) - 1, count };
+}
+
 /** Row the given popup starts on (mirrors the geometry in popupString). */
 function popupTopRow(popup: NonNullable<ReturnType<typeof activePopup>>): number {
 	const { cols, rows } = dims();
 	const width = Math.min(cols - 4, 64);
 	if (width < 30) return 1;
-	const topBorderRow = rows - chromeRows() + 1; // input box top border row
-	const room = Math.max(0, topBorderRow - 2);
-	const count = Math.min(popup.items.length, MAX_POPUP_ROWS, room);
-	if (count < 1) return 1;
-	return topBorderRow - (count + 2) - 1;
+	// popupString receives this same row from chromeString:
+	// input top border - terminal panel - one spacing row.
+	return popupLayoutForRows(rows - chromeRows(), popup.items.length).top;
 }
 
 // =============================================================================
