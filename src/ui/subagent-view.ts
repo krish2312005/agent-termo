@@ -147,6 +147,31 @@ function wrap(text: string, width: number): string[] {
 	return lines;
 }
 
+/** Wrap literal command text without trimming or dropping any characters. */
+function wrapVerbatim(text: string, width: number): string[] {
+	const columns = Math.max(1, width);
+	const rows: string[] = [];
+	let line = '';
+	let lineLength = 0;
+	for (const character of text) {
+		if (character === '\n') {
+			rows.push(line);
+			line = '';
+			lineLength = 0;
+			continue;
+		}
+		line += character;
+		lineLength++;
+		if (lineLength === columns) {
+			rows.push(line);
+			line = '';
+			lineLength = 0;
+		}
+	}
+	if (line || rows.length === 0 || text.endsWith('\n')) rows.push(line);
+	return rows;
+}
+
 export interface Inspector {
 	/** Fixed rows above the scrolling log: task, status, current activity. */
 	head: string[];
@@ -179,8 +204,13 @@ export function buildInspector(a: SubAgentActivity, width: number, now: number =
 			const running = tool.endedAt === undefined;
 			const icon = running ? c.yellow('◐') : tool.ok ? c.green('✓') : c.red('✗');
 			const time = formatDuration((tool.endedAt ?? now) - tool.startedAt) + (running ? '…' : '');
-			const label = `${tool.name} ${tool.args}`.trim();
-			body.push('  ' + icon + ' ' + clip(label, Math.max(4, room - 4 - time.length - 1)) + ' ' + c.dim(time));
+			if (tool.name === 'bash:execute') {
+				body.push('  ' + icon + ' ' + c.bold(tool.name) + ' ' + c.dim(time));
+				for (const line of wrapVerbatim(tool.args, Math.max(1, room - 8))) body.push('      ' + line);
+			} else {
+				const label = `${tool.name} ${tool.args}`.trim();
+				body.push('  ' + icon + ' ' + clip(label, Math.max(4, room - 4 - time.length - 1)) + ' ' + c.dim(time));
+			}
 			if (tool.result) body.push(c.dim('    ↳ ' + clip(tool.result, room - 6)));
 		}
 	}
