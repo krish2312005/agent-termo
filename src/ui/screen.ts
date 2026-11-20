@@ -311,6 +311,24 @@ export function scrollTerminalPanel(direction: 'up' | 'down'): void {
 	paint();
 }
 
+/** Handle panel shortcuts from either the background listener or the chat composer. */
+export function handleTerminalPanelKey(keyName: string): boolean {
+	if (!S.term || !S.termOpen) return false;
+	if (TERM_TOGGLE_KEYS.has(keyName)) {
+		toggleTerminalPanel();
+		return true;
+	}
+	if (keyName === 'shift+pageup' || (S.term.exitCode !== null && keyName === 'pageup')) {
+		scrollTerminalPanel('up');
+		return true;
+	}
+	if (keyName === 'shift+pagedown' || (S.term.exitCode !== null && keyName === 'pagedown')) {
+		scrollTerminalPanel('down');
+		return true;
+	}
+	return false;
+}
+
 /** The rows currently shown in the fixed-height terminal panel viewport. */
 export function terminalPanelWindow(lines: string[], scrollOffset: number, visibleRows = TERM_PANEL_LINES): string[] {
 	const maxOffset = Math.max(0, lines.length - visibleRows);
@@ -328,7 +346,7 @@ function syncTermKeyListener(): void {
 	const want = Boolean(S.term) && !S.editing && S.active;
 	if (want && !termKeyStop) {
 		termKeyStop = listenKeys((key) => {
-			if (TERM_TOGGLE_KEYS.has(key.name)) toggleTerminalPanel();
+			handleTerminalPanelKey(key.name);
 		}, undefined, { background: true });
 	} else if (!want && termKeyStop) {
 		termKeyStop();
@@ -429,10 +447,6 @@ export function startBackgroundCommandListener(onCommand: (command: string) => v
 					bgTyped = '';
 					if (S.term) S.term.input = '';
 				}
-			} else if (key.name === 'shift+pageup') {
-				scrollTerminalPanel('up');
-			} else if (key.name === 'shift+pagedown') {
-				scrollTerminalPanel('down');
 			} else if (key.name === 'escape' || key.name === 'ctrl+c') {
 				bgTyped = '';
 				if (S.term) {
@@ -908,7 +922,8 @@ function chromeString(): string {
 				: c.red(statusText);
 		const commandText = S.term.command.trim().replace(/\s+/g, ' ');
 		const headerPrefix = '╭─ TERMINAL · ';
-		const headerSuffix = ` ${statusText} · ctrl+o hide `;
+		const scrollHint = hasInputRow ? '⇧PgUp/PgDn scroll' : 'PgUp/PgDn scroll';
+		const headerSuffix = ` ${statusText} · ${scrollHint} · ctrl+o hide `;
 		const commandWidth = Math.max(0, cols - headerPrefix.length - headerSuffix.length - 1);
 		const visibleCommand = clipText(commandText, commandWidth);
 		const headerFill = '─'.repeat(Math.max(0, cols - headerPrefix.length - visibleCommand.length - headerSuffix.length - 1));
@@ -1507,6 +1522,12 @@ export function createInput(): InputController {
 						case 'ctrl+t':
 							toggleTerminalPanel();
 							return;
+						case 'shift+pageup':
+						case 'shift+pagedown':
+						case 'pageup':
+						case 'pagedown':
+							if (handleTerminalPanelKey(key.name)) return;
+							break;
 						case 'tab': {
 							if (popup) {
 								const item = popup.items[S.popupSel] ?? popup.items[0];

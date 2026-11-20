@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { appendTerminalOutput, clearTerminalPanel, scrollTerminalPanel, startTerminalPanel, terminalPanelState, terminalPanelVisible, terminalPanelWindow } from '../../src/ui/screen.js';
+import { appendTerminalOutput, clearTerminalPanel, finishTerminalPanel, handleTerminalPanelKey, scrollTerminalPanel, startTerminalPanel, terminalPanelState, terminalPanelVisible, terminalPanelWindow } from '../../src/ui/screen.js';
 
 afterEach(() => clearTerminalPanel());
 
@@ -55,6 +55,24 @@ describe('live terminal panel', () => {
 		scrollTerminalPanel('down');
 		expect(terminalPanelState()?.scrollOffset).toBe(Math.max(0, rows.length - viewportRows * 2));
 	});
+	it('keeps terminal scrolling available after the command and agent turn finish', async () => {
+		startTerminalPanel('npm create vite');
+		const rows = Array.from({ length: 100 }, (_, index) => `History ${index + 1}`);
+		appendTerminalOutput(rows.map((row) => row + '\\r\\n').join(''));
+		await flushTerminalOutput();
+
+		finishTerminalPanel(0);
+		await flushTerminalOutput();
+
+		const before = terminalPanelState();
+		expect(before?.exitCode).toBe(0);
+		expect(before?.scrollOffset).toBe(0);
+		expect(handleTerminalPanelKey('pageup')).toBe(true);
+		expect(terminalPanelState()?.scrollOffset).toBeGreaterThan(0);
+		expect(handleTerminalPanelKey('pagedown')).toBe(true);
+		expect(terminalPanelState()?.scrollOffset).toBe(0);
+	});
+
 	it('renders carriage-return progress updates instead of exposing control codes', async () => {
 		startTerminalPanel('npm install');
 		appendTerminalOutput('\x1b[?25l\x1b[32mDownloading\x1b[0m\r\x1b[2K\x1b[32mReady\x1b[0m\n');
