@@ -219,7 +219,7 @@ function termPaint(): void {
 	termPaintTimer = setTimeout(() => {
 		termPaintTimer = null;
 		if (S.termViewerOpen) renderTerminalOutputViewer();
-		else out.write(terminalPanelString());
+		else out.write(SAVE + terminalPanelString() + RESTORE);
 	}, 60);
 }
 
@@ -346,15 +346,15 @@ export function openTerminalOutputViewer(): boolean {
 	if (!S.term || S.term.exitCode === null || S.termViewerOpen) return false;
 	S.termViewerOpen = true;
 	S.term.scrollOffset = 0;
-	out.write(CSI + '?1049h' + CSI + '1;' + dims().rows + 'r');
-	renderTerminalOutputViewer();
+	if (out.isTTY) out.write(CSI + '?1049h' + CSI + '1;' + dims().rows + 'r');
+	if (out.isTTY) renderTerminalOutputViewer();
 	return true;
 }
 
 export function closeTerminalOutputViewer(): void {
 	if (!S.termViewerOpen) return;
 	S.termViewerOpen = false;
-	out.write(CSI + '?1049l' + CSI + '?25h');
+	if (out.isTTY) out.write(CSI + '?1049l' + CSI + '?25h');
 }
 
 export function scrollTerminalPanel(direction: 'up' | 'down', rows?: number): void {
@@ -1158,7 +1158,7 @@ export function teardownScreen(): void {
 	S.active = false;
 	if (S.termViewerOpen) {
 		S.termViewerOpen = false;
-		out.write(`${CSI}?1049l`);
+		if (out.isTTY) out.write(`${CSI}?1049l`);
 	}
 	syncTerminalMouseTracking();
 	if (termKeyStop) {
