@@ -99,21 +99,16 @@ describe('live terminal panel', () => {
 		expect(terminalPanelVisible()).toBe(true);
 	});
 
-	it('scrolls by mouse wheel only when the pointer is over terminal output', async () => {
+	it('does not scroll the compact preview; wheel scrolling belongs to the expanded viewer', async () => {
 		startTerminalPanel('node output');
-		appendTerminalOutput(Array.from({ length: 100 }, (_, index) => `Output ${index + 1}\r\n`).join(''));
+		appendTerminalOutput(Array.from({ length: 100 }, (_, index) => 'Output ' + (index + 1) + '\r\n').join(''));
+		await flushTerminalOutput();
+		finishTerminalPanel(0);
 		await flushTerminalOutput();
 
-		const bounds = terminalPanelOutputBounds();
-		expect(bounds).not.toBeNull();
-		expect(handleTerminalMouseWheel('up', bounds!.left + 1, bounds!.top)).toBe(true);
-		expect(terminalPanelState()?.scrollOffset).toBe(3);
-		expect(handleTerminalMouseWheel('down', bounds!.left + 1, bounds!.top)).toBe(true);
-		expect(terminalPanelState()?.scrollOffset).toBe(0);
-		expect(handleTerminalMouseWheel('up', bounds!.left + 1, bounds!.top - 1)).toBe(false);
+		expect(handleTerminalMouseWheel('up', 10, 2)).toBe(false);
 		expect(terminalPanelState()?.scrollOffset).toBe(0);
 	});
-
 	it('preserves intentional blank terminal rows without shifting later output', async () => {
 		startTerminalPanel('printf output');
 		appendTerminalOutput('first\r\n\r\nthird\r\n');

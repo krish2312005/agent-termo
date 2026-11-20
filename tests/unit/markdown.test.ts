@@ -84,9 +84,10 @@ describe('MarkdownPrinter', () => {
 			printToolResult('bash:execute', { success: true, output: 'first line\nsecond line' });
 		}).filter(Boolean);
 
-		expect(lines).toContain('  ⎿  ✓ terminal output');
-		expect(lines).toContain('     first line');
-		expect(lines).toContain('     second line');
+		expect(lines.some((line) => line.includes('✓ terminal output') && line.includes('2 lines'))).toBe(true);
+		expect(lines.some((line) => line.includes('inspect the preview above to expand'))).toBe(true);
+		expect(lines).not.toContain('     first line');
+		expect(lines).not.toContain('     second line');
 	});
 
   it('holds a partial line until it is complete, and flushes it on end()', () => {
