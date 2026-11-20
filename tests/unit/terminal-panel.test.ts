@@ -57,7 +57,7 @@ describe('live terminal panel', () => {
 	});
 	it('scrolls by mouse wheel only when the pointer is over terminal output', async () => {
 		startTerminalPanel('node output');
-		appendTerminalOutput(Array.from({ length: 100 }, (_, index) => \`Output \${index + 1}\r\n\`).join(''));
+		appendTerminalOutput(Array.from({ length: 100 }, (_, index) => `Output ${index + 1}\r\n`).join(''));
 		await flushTerminalOutput();
 
 		const bounds = terminalPanelOutputBounds();
