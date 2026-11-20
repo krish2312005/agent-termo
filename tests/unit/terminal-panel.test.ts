@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { appendTerminalOutput, clearTerminalPanel, scrollTerminalPanel, startTerminalPanel, terminalPanelState, terminalPanelWindow } from '../../src/ui/screen.js';
+import { appendTerminalOutput, clearTerminalPanel, scrollTerminalPanel, startTerminalPanel, terminalPanelState, terminalPanelVisible, terminalPanelWindow } from '../../src/ui/screen.js';
 
 afterEach(() => clearTerminalPanel());
 
@@ -17,6 +17,13 @@ describe('live terminal panel', () => {
 		expect(output).toContain('Ok to proceed? (y)');
 	});
 
+	it('opens a large terminal workspace immediately when a command starts', () => {
+		startTerminalPanel('npm create vite');
+		const state = terminalPanelState();
+		expect(terminalPanelVisible()).toBe(true);
+		expect(state?.viewportRows).toBeGreaterThan(0);
+	});
+
 	it('renders cursor-addressed prompts from an alternate-screen terminal', async () => {
 		startTerminalPanel('npm create vite');
 		appendTerminalOutput('\x1b[?1049h\x1b[2J\x1b[HSelect a framework:\r\n  Vanilla\r\n  Vue\r\n❯ React');
@@ -28,28 +35,26 @@ describe('live terminal panel', () => {
 		expect(output).toContain('React');
 	});
 
-	it('scrolls through the full terminal buffer without changing the live process input', async () => {
+	it('scrolls the expanded terminal viewport through the full buffer', async () => {
 		startTerminalPanel('npm create vite');
-		appendTerminalOutput(Array.from({ length: 12 }, (_, index) => `Row ${index + 1}\r\n`).join(''));
+		const rows = Array.from({ length: 200 }, (_, index) => `Row ${index + 1}`);
+		appendTerminalOutput(rows.map((row) => row + '\\r\\n').join(''));
 		await flushTerminalOutput();
 
 		const initial = terminalPanelState();
-		expect(initial?.lines).toHaveLength(12);
-		expect(terminalPanelWindow(initial?.lines ?? [], initial?.scrollOffset ?? 0)).toEqual([
-			'Row 7', 'Row 8', 'Row 9', 'Row 10', 'Row 11', 'Row 12',
-		]);
+		const viewportRows = initial?.viewportRows ?? 0;
+		expect(initial?.lines).toHaveLength(rows.length);
+		expect(viewportRows).toBeGreaterThan(0);
+		expect(terminalPanelWindow(initial?.lines ?? [], 0, viewportRows)).toEqual(rows.slice(-viewportRows));
 
-		scrollTerminalPanel('up');
+		for (let page = 0; page < rows.length; page++) scrollTerminalPanel('up');
 		const older = terminalPanelState();
-		expect(older?.scrollOffset).toBe(6);
-		expect(terminalPanelWindow(older?.lines ?? [], older?.scrollOffset ?? 0)).toEqual([
-			'Row 1', 'Row 2', 'Row 3', 'Row 4', 'Row 5', 'Row 6',
-		]);
+		expect(older?.scrollOffset).toBe(rows.length - viewportRows);
+		expect(terminalPanelWindow(older?.lines ?? [], older?.scrollOffset ?? 0, viewportRows)).toEqual(rows.slice(0, viewportRows));
 
 		scrollTerminalPanel('down');
-		expect(terminalPanelState()?.scrollOffset).toBe(0);
+		expect(terminalPanelState()?.scrollOffset).toBe(Math.max(0, rows.length - viewportRows * 2));
 	});
-
 	it('renders carriage-return progress updates instead of exposing control codes', async () => {
 		startTerminalPanel('npm install');
 		appendTerminalOutput('\x1b[?25l\x1b[32mDownloading\x1b[0m\r\x1b[2K\x1b[32mReady\x1b[0m\n');

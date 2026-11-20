@@ -44,8 +44,12 @@ const PLACEHOLDER = 'Ask anything… or type / for commands';
 const MAX_INPUT_LINES = 16;
 /** Maximum rows in the command completion popup. */
 const MAX_POPUP_ROWS = 8;
-/** Rows of live output shown in the terminal panel below the input box. */
+/** Minimum rows shown when the terminal panel is open. */
 const TERM_PANEL_LINES = 6;
+/** Keep the terminal workspace large while leaving room for the chat transcript and composer. */
+const TERM_PANEL_HEIGHT_RATIO = 0.62;
+/** Retain enough scrollback to cover long command output. */
+const TERM_PANEL_SCROLLBACK = 2000;
 /** Key(s) that toggle (close/open) the terminal panel. */
 const TERM_TOGGLE_KEYS = new Set(['ctrl+o', 'ctrl+t']);
 /** Inspector panel height limits (rows) and the output rows that must stay visible. */
@@ -168,21 +172,35 @@ function shortPath(p: string): string {
 let termPaintTimer: ReturnType<typeof setTimeout> | null = null;
 let terminalEmulator: TerminalEmulator | null = null;
 
+function termOutputRows(): number {
+	if (!S.term) return TERM_PANEL_LINES;
+	const footerRows = S.term.exitCode === null ? 4 : 2;
+	const monitorRows = monitorVisible() ? 1 : 0;
+	const reservedRows = visibleLines() + 3 + MIN_OUTPUT_ROWS + monitorRows + footerRows;
+	const availableRows = Math.max(1, dims().rows - reservedRows);
+	const preferredRows = Math.max(TERM_PANEL_LINES, Math.floor(dims().rows * TERM_PANEL_HEIGHT_RATIO) - footerRows);
+	return Math.min(availableRows, preferredRows);
+}
+
 function termPanelRows(): number {
 	if (!S.term || !S.termOpen) return 0;
-	const outputCount = S.term.lines.length + (S.term.pending ? 1 : 0);
-	const shown = Math.min(TERM_PANEL_LINES, Math.max(1, outputCount));
-	return shown + (S.term.exitCode === null ? 4 : 2); // header + output + input label + input + bottom
+	return termOutputRows() + (S.term.exitCode === null ? 4 : 2); // header + output + input label + input + bottom
 }
 
 /** Copy the visible terminal screen after xterm has processed its ANSI control sequences. */
 function snapshotTerminalScreen(): void {
 	if (!S.term || !terminalEmulator) return;
 	const buffer = terminalEmulator.buffer.active;
-	S.term.lines = Array.from({ length: buffer.length }, (_, row) =>
+	const previousLineCount = S.term.lines.length;
+	const wasScrolledBack = S.term.scrollOffset > 0;
+	const lines = Array.from({ length: buffer.length }, (_, row) =>
 		buffer.getLine(row)?.translateToString(true) ?? '',
 	).filter((line) => line.trim().length > 0);
-	S.term.scrollOffset = Math.min(S.term.scrollOffset, Math.max(0, S.term.lines.length - TERM_PANEL_LINES));
+	if (wasScrolledBack && lines.length > previousLineCount) {
+		S.term.scrollOffset += lines.length - previousLineCount;
+	}
+	S.term.lines = lines;
+	S.term.scrollOffset = Math.min(S.term.scrollOffset, Math.max(0, lines.length - termOutputRows()));
 	S.term.pending = '';
 }
 
@@ -202,11 +220,11 @@ export function startTerminalPanel(command: string): void {
 	terminalEmulator = new Terminal({
 		cols: Math.max(1, out.columns || 80),
 		rows: Math.max(1, out.rows || 24),
-		scrollback: 500,
+		scrollback: TERM_PANEL_SCROLLBACK,
 		allowProposedApi: true,
 		logLevel: 'off',
 	});
-	S.termOpen = false;
+	S.termOpen = true;
 	syncTermKeyListener();
 	termPaint();
 }
@@ -268,7 +286,7 @@ export function terminalPanelVisible(): boolean {
 	return Boolean(S.term && S.termOpen);
 }
 
-export function terminalPanelState(): { command: string; exitCode: number | null; lines: string[]; input: string; scrollOffset: number } | null {
+export function terminalPanelState(): { command: string; exitCode: number | null; lines: string[]; input: string; scrollOffset: number; viewportRows: number } | null {
 	if (!S.term) return null;
 	return {
 		command: S.term.command,
@@ -276,16 +294,18 @@ export function terminalPanelState(): { command: string; exitCode: number | null
 		lines: [...S.term.lines],
 		input: S.term.input,
 		scrollOffset: S.term.scrollOffset,
+		viewportRows: S.termOpen ? termOutputRows() : 0,
 	};
 }
 
 /** Select an older or newer page of terminal output without sending keys to the child process. */
 export function scrollTerminalPanel(direction: 'up' | 'down'): void {
 	if (!S.term || !S.termOpen) return;
-	const maxOffset = Math.max(0, S.term.lines.length - TERM_PANEL_LINES);
+	const pageRows = termOutputRows();
+	const maxOffset = Math.max(0, S.term.lines.length - pageRows);
 	const nextOffset = direction === 'up'
-		? Math.min(maxOffset, S.term.scrollOffset + TERM_PANEL_LINES)
-		: Math.max(0, S.term.scrollOffset - TERM_PANEL_LINES);
+		? Math.min(maxOffset, S.term.scrollOffset + pageRows)
+		: Math.max(0, S.term.scrollOffset - pageRows);
 	if (nextOffset === S.term.scrollOffset) return;
 	S.term.scrollOffset = nextOffset;
 	paint();
