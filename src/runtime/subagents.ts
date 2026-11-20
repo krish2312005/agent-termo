@@ -10,7 +10,7 @@ export type SubAgentStatus = 'running' | 'waiting' | 'completed' | 'failed' | 'c
 
 export interface SubAgentToolCall {
 	name: string;
-	/** Short, single-line summary of the arguments (path, command, pattern…). */
+	/** Argument summary; bash:execute retains its complete multiline command details. */
 	args: string;
 	startedAt: number;
 	endedAt?: number;

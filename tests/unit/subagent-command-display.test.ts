@@ -5,22 +5,23 @@ import { getSubAgent, resetSubAgents, spawnSubAgent, startSubAgentTool } from '.
 afterEach(() => resetSubAgents());
 
 describe('sub-agent bash command display', () => {
-\tit('preserves the full command in registry storage and renders it with its working directory', () => {
-\t\tconst command = 'npm run typecheck && '.repeat(30) + 'npm test -- --run && printf "COMMAND_END_MARKER"';
-\t\tconst cwd = '/Users/example/project/deep/workspace';
-\t\tconst args = \`Command:\\n\${command}\\nWorking directory:\\n\${cwd}\`;
-\t\tconst id = spawnSubAgent('request-1', 'test-agent', 'Run project checks', 8);
-\t\tstartSubAgentTool(id, 'bash:execute', args);
+	it('preserves the full command in registry storage and renders it with its working directory', () => {
+		const command = 'npm run typecheck && '.repeat(30) + 'npm test -- --run && printf "COMMAND_END_MARKER"\necho "second command line"';
+		const cwd = '/Users/example/project/deep/workspace';
+		const args = `Command:\n${command}\nWorking directory:\n${cwd}`;
+		const id = spawnSubAgent('request-1', 'test-agent', 'Run project checks', 8);
+		startSubAgentTool(id, 'bash:execute', args);
 
-\t\tconst activity = getSubAgent(id);
-\t\texpect(activity?.tools[0]?.args).toBe(args);
-\t\tconst inspector = buildInspector(activity!, 64, 2000);
-\t\tconst rendered = inspector.body.join('\\n');
+		const activity = getSubAgent(id);
+		expect(activity?.tools[0]?.args).toBe(args);
+		const inspector = buildInspector(activity!, 64, 2000);
+		const rendered = inspector.body.join('\n');
 
-\t\texpect(rendered).toContain('Command:');
-\t\texpect(rendered).toContain('Working directory:');
-\t\texpect(rendered).toContain('COMMAND_END_MARKER');
-\t\texpect(rendered).toContain(cwd);
-\t\texpect(rendered).not.toContain('COMMAND_END_MARKER…');
-\t});
+		expect(rendered).toContain('Command:');
+		expect(rendered).toContain('Working directory:');
+		expect(rendered).toContain('COMMAND_END_MARKER');
+		expect(rendered).toContain('second command line');
+		expect(rendered).toContain(cwd);
+		expect(rendered).not.toContain('COMMAND_END_MARKER…');
+	});
 });
