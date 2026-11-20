@@ -321,7 +321,7 @@ export function terminalPanelState(): { command: string; exitCode: number | null
 
 /** Select an older or newer page of terminal output without sending keys to the child process. */
 function terminalViewerRows(): number {
-	return Math.max(1, dims().rows - 3);
+	return Math.max(1, dims().rows - 2);
 }
 
 function renderTerminalOutputViewer(): void {
@@ -341,7 +341,7 @@ function renderTerminalOutputViewer(): void {
 		const value = content[i] ?? '';
 		output.push(line(i + 2, c.dim('│ ') + c.white(clipText(value, width).padEnd(width)) + c.dim(' │')));
 	}
-	output.push(line(rows, c.cyan('╰' + '─'.repeat(Math.max(0, cols - 2)) + '╯') + c.dim('  ↑/↓ scroll · PgUp/PgDn page · Home/End · Esc close')));
+	output.push(line(rows, c.dim('↑/↓ scroll · PgUp/PgDn page · Home/End · Esc close')));
 	out.write(output.join(''));
 }
 

@@ -26,10 +26,10 @@ describe('parseKeys', () => {
   });
 
   it('parses SGR left-click events and their pointer coordinates', () => {
-    expect(parse('\\x1b[<0;18;35M')).toEqual([
+    expect(parse('\x1b[<0;18;35M')).toEqual([
       { name: 'mouse-left-down', mouseX: 18, mouseY: 35 },
     ]);
-    expect(parse('\\x1b[<0;18;35m')).toEqual([]);
+    expect(parse('\x1b[<0;18;35m')).toEqual([]);
   });
 
   it('parses SGR mouse wheel events and their pointer coordinates', () => {
