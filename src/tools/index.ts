@@ -5,7 +5,7 @@
 import { randomUUID } from 'node:crypto';
 import { readFile as readFileAsync, writeFile as writeFileAsync, unlink as unlinkAsync, mkdir as mkdirAsync, rename as renameAsync } from 'node:fs/promises';
 import { resolve, isAbsolute, relative, dirname } from 'node:path';
-import { spawn } from 'node:child_process';
+import * as pty from 'node-pty';
 import { glob as globPromise } from 'glob';
 import { simpleGit } from 'simple-git';
 import { createReadStream, statSync, existsSync } from 'node:fs';
@@ -121,6 +121,11 @@ export function setTerminalHooks(hooks: TerminalHooks): void {
 
 /** Process handles are owned and cancelled by the runtime, not by a single global child slot. */
 const processManager = new ProcessManager();
+
+/** Send text to the most recently started shell process that accepts stdin. */
+export function writeTerminalInput(input: string): boolean {
+	return processManager.writeLatest(input);
+}
 
 /** Kill all active shell invocations and their descendants. */
 export function killRunningTerminal(): boolean {
@@ -641,8 +646,8 @@ async function toolBash(args: Record<string, unknown>, projectRoot: string, onOu
 		}
 	}
 
-	// Stream the command live (like Claude Code / opencode): output is piped
-	// to the terminal panel hooks while it runs, and captured for the model.
+	// Use a PTY so commands can detect a real terminal and request input.
+	// Stream the combined terminal output to the UI and the model while it runs.
 		return await new Promise<ToolResult>((resolve) => {
 			let settled = false;
 			let stdout = '';
@@ -652,7 +657,7 @@ async function toolBash(args: Record<string, unknown>, projectRoot: string, onOu
 				if (settled) return;
 				settled = true;
 				if (timer) clearTimeout(timer);
-				if (!onOutput) terminalHooks.onEnd?.(exitCode);
+				terminalHooks.onEnd?.(exitCode);
 				const combinedOutput = [stdout, stderr].filter(Boolean).join('');
 				const metadata = { command, cwd: fullCwd, stdout, stderr, exitCode };
 				resolve(
@@ -677,40 +682,45 @@ async function toolBash(args: Record<string, unknown>, projectRoot: string, onOu
 				);
 		};
 
-		if (!onOutput) terminalHooks.onStart?.(command);
-		const child = spawn(command, {
-			cwd: fullCwd,
-			shell: resolveShell(),
-			windowsHide: true,
-			detached: process.platform !== 'win32',
-			env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' },
-		});
-		const processId = processManager.register(child);
-		const releaseChild = (): void => {
-			processManager.unregister(processId);
-		};
-		child.on('close', releaseChild);
-		child.on('error', releaseChild);
+		terminalHooks.onStart?.(command);
+		const shell = resolveShell();
+		const shellArgs = process.platform === 'win32' && /powershell(?:\.exe)?$/i.test(shell)
+			? ['-NoLogo', '-NoProfile', '-Command', command]
+			: ['-c', command];
+		let child: pty.IPty;
+		try {
+			child = pty.spawn(shell, shellArgs, {
+				name: 'xterm-256color',
+				cols: Math.max(1, process.stdout.columns || 80),
+				rows: Math.max(1, process.stdout.rows || 24),
+				cwd: fullCwd,
+				env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' },
+				encoding: 'utf8',
+			});
+		} catch (err) {
+			finish(false, null, err instanceof Error ? err.message : String(err));
+			return;
+		}
 
-			const capture = (stream: ToolOutputStream) => (chunk: Buffer | string): void => {
-				const text = chunk.toString();
-				onOutput?.(stream, text);
-				// Keep the tail: build errors are usually at the end of the output.
-				if (stream === 'stdout') stdout = (stdout + text).slice(-MAX_BASH_OUTPUT);
-				else stderr = (stderr + text).slice(-MAX_BASH_OUTPUT);
-				if (!onOutput) terminalHooks.onOutput?.(text);
-			};
-			child.stdout?.setEncoding('utf8');
-			child.stderr?.setEncoding('utf8');
-			child.stdout?.on('data', capture('stdout'));
-			child.stderr?.on('data', capture('stderr'));
-		child.on('error', (err) => finish(false, null, err.message));
-		child.on('close', (code) => finish(code === 0, code));
+		const processId = processManager.register(child);
+		const releaseChild = (): void => processManager.unregister(processId);
+		const capture = (text: string): void => {
+			onOutput?.('stdout', text);
+			// PTYs combine stdout and stderr; preserve a bounded tail for the model.
+			stdout = (stdout + text).slice(-MAX_BASH_OUTPUT);
+			terminalHooks.onOutput?.(text);
+		};
+		child.onData(capture);
+		child.onExit(({ exitCode, signal }) => {
+			releaseChild();
+			const success = exitCode === 0 && !signal;
+			finish(success, exitCode, signal ? 'Command terminated by signal ' + signal : undefined);
+		});
 
 		timer = setTimeout(() => {
 			const timeoutMessage = `\n[agent-termo] timed out after ${timeoutMs}ms`;
-			if (onOutput) onOutput('stderr', timeoutMessage);
-			else terminalHooks.onOutput?.(timeoutMessage);
+			onOutput?.('stderr', timeoutMessage);
+			terminalHooks.onOutput?.(timeoutMessage);
 			processManager.kill(processId);
 			finish(false, null, `Command timed out after ${timeoutMs}ms`);
 		}, timeoutMs);

@@ -20,6 +20,49 @@ describe('ProcessManager', () => {
     expect(manager.killAll()).toBe(false);
   });
 
+  it('writes to the newest active child and falls back after it is unregistered', () => {
+    const manager = new ProcessManager();
+    const firstStdin = { destroyed: false, writableEnded: false, writable: true, write: vi.fn(() => true) };
+    const secondStdin = { destroyed: false, writableEnded: false, writable: true, write: vi.fn(() => true) };
+    const first = { pid: undefined, stdin: firstStdin, kill: vi.fn() } as unknown as ChildProcess;
+    const second = { pid: undefined, stdin: secondStdin, kill: vi.fn() } as unknown as ChildProcess;
+
+    const firstId = manager.register(first);
+    const secondId = manager.register(second);
+    expect(manager.writeLatest('y\n')).toBe(true);
+    expect(secondStdin.write).toHaveBeenCalledWith('y\n');
+    expect(firstStdin.write).not.toHaveBeenCalled();
+
+    manager.unregister(secondId);
+    expect(manager.writeLatest('n\n')).toBe(true);
+    expect(firstStdin.write).toHaveBeenCalledWith('n\n');
+    manager.unregister(firstId);
+    expect(manager.writeLatest('ignored')).toBe(false);
+  });
+
+  it('skips children whose stdin is no longer writable', () => {
+    const manager = new ProcessManager();
+    const writable = { destroyed: false, writableEnded: false, writable: true, write: vi.fn(() => true) };
+    const closed = { destroyed: true, writableEnded: true, writable: false, write: vi.fn() };
+    manager.register({ pid: undefined, stdin: writable, kill: vi.fn() } as unknown as ChildProcess);
+    manager.register({ pid: undefined, stdin: closed, kill: vi.fn() } as unknown as ChildProcess);
+
+    expect(manager.writeLatest('continue\n')).toBe(true);
+    expect(writable.write).toHaveBeenCalledWith('continue\n');
+    expect(closed.write).not.toHaveBeenCalled();
+  });
+
+
+  it('writes to a PTY session', () => {
+    const manager = new ProcessManager();
+    const write = vi.fn();
+    const terminal = { pid: undefined, write, kill: vi.fn() };
+
+    manager.register(terminal as unknown as import('node-pty').IPty);
+    expect(manager.writeLatest('y\r')).toBe(true);
+    expect(write).toHaveBeenCalledWith('y\r');
+  });
+
   it('ignores an invocation that has already been removed', () => {
     const manager = new ProcessManager();
     expect(manager.kill('missing')).toBe(false);

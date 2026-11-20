@@ -53,6 +53,7 @@
     "marked": "^12.0.0",
     "openai": "^7.57.0",
     "simple-git": "^4.0.2",
+    "node-pty": "1.2.0-beta.18",
     "zod": "^4.6.7",
     "@modelcontextprotocol/client": "^2.4.0"
   },

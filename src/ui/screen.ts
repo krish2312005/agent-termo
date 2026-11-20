@@ -86,6 +86,8 @@ const S = {
 		lines: string[];
 		/** Partial line still waiting for a newline. */
 		pending: string;
+		/** Current line being composed for the running command's stdin. */
+		input: string;
 		/** null = still running; number = exit code. */
 		exitCode: null | number;
 	},
@@ -95,6 +97,13 @@ const S = {
 
 export function setCommands(commands: CommandInfo[]): void {
 	S.commands = commands;
+}
+
+let terminalInputHandler: ((input: string) => boolean) | null = null;
+
+/** Connect terminal keyboard input to the active PTY session. */
+export function setTerminalInputHandler(handler: ((input: string) => boolean) | null): void {
+	terminalInputHandler = handler;
 }
 
 export function setAgentNames(names: string[]): void {
@@ -144,8 +153,9 @@ let termPaintTimer: ReturnType<typeof setTimeout> | null = null;
 
 function termPanelRows(): number {
 	if (!S.term || !S.termOpen) return 0;
-	const shown = Math.min(TERM_PANEL_LINES, Math.max(1, S.term.lines.length));
-	return shown + 2; // header row + bottom border
+	const outputCount = S.term.lines.length + (S.term.pending ? 1 : 0);
+	const shown = Math.min(TERM_PANEL_LINES, Math.max(1, outputCount));
+	return shown + (S.term.exitCode === null ? 3 : 2); // header + output + input + bottom
 }
 
 /** Strip ANSI escapes and fold \r progress-bar rewrites into single lines. */
@@ -169,10 +179,10 @@ function termPaint(): void {
 /** A terminal command started: track it but keep panel closed by default. */
 export function startTerminalPanel(command: string): void {
 	clearTerminalPanel();
-	S.term = { command, lines: [], pending: '', exitCode: null };
+	S.term = { command, lines: [], pending: '', input: '', exitCode: null };
 	S.termOpen = false; // default hidden
 	syncTermKeyListener();
-	// no paint() — panel stays hidden
+	termPaint(); // refresh the input hint without opening the output panel
 }
 
 /** Stream raw stdout/stderr text into the panel. */
@@ -183,6 +193,7 @@ export function appendTerminalOutput(text: string): void {
 	S.term.pending = parts.pop() ?? '';
 	for (const part of parts) S.term.lines.push(termCleanLine(part));
 	if (S.term.lines.length > 500) S.term.lines.splice(0, S.term.lines.length - 500);
+	if (S.term.pending && S.term.exitCode === null) S.termOpen = true;
 	if (S.termOpen) termPaint(); // only repaint if panel is visible
 }
 
@@ -194,8 +205,9 @@ export function finishTerminalPanel(exitCode: number | null): void {
 		S.term.pending = '';
 	}
 	S.term.exitCode = exitCode ?? -1;
+	S.term.input = '';
 	syncTermKeyListener();
-	// panel stays closed; Ctrl+O opens it
+	termPaint(); // refresh the status hint; preserve panel visibility
 }
 
 /** Toggle the terminal panel open/closed (Ctrl+O / Ctrl+T). */
@@ -212,6 +224,7 @@ export function clearTerminalPanel(): void {
 	if (S.term) {
 		S.term.lines = [];
 		S.term.pending = '';
+		S.term.input = '';
 		S.term.exitCode = null;
 	}
 	syncTermKeyListener();
@@ -222,9 +235,14 @@ export function terminalPanelVisible(): boolean {
 	return Boolean(S.term && S.termOpen);
 }
 
-export function terminalPanelState(): { command: string; exitCode: number | null; lines: string[] } | null {
+export function terminalPanelState(): { command: string; exitCode: number | null; lines: string[]; input: string } | null {
 	if (!S.term) return null;
-	return { command: S.term.command, exitCode: S.term.exitCode, lines: S.term.lines };
+	return {
+		command: S.term.command,
+		exitCode: S.term.exitCode,
+		lines: [...S.term.lines, ...(S.term.pending ? [termCleanLine(S.term.pending)] : [])],
+		input: S.term.input,
+	};
 }
 
 // A background key listener while the user is NOT editing (during the agent
@@ -250,27 +268,56 @@ export function layoutSupported(): boolean {
 	);
 }
 
-/** Text typed while the agent runs (invisible, like before); Enter runs it if it is /subagents. */
+/** Text typed while the agent runs; Enter sends it to the active PTY. */
 let bgTyped = '';
 
+function updateTerminalInputDraft(): void {
+	if (!S.term || S.term.exitCode !== null) return;
+	S.term.input = bgTyped;
+	S.termOpen = true;
+	termPaint();
+}
+
 /**
- * Accept read-only slash commands while the main agent request is in flight,
- * and mark the run as active for the sub-agent monitor. The normal line editor
- * is closed during tool execution; this listener fills that gap without
- * consuming Escape, which remains cancellation.
+ * While a tool runs, reuse the raw-key listener for interactive input. Enter
+ * sends one line to the active PTY; /subagents remains a UI command.
  */
 export function startBackgroundCommandListener(onCommand: (command: string) => void): () => void {
 	if (!process.stdin.isTTY || backgroundCommandStop) return () => undefined;
 	bgTyped = '';
 	const stopKeys = listenKeys(
 		(key) => {
-			if (key.name === 'text' || key.name === 'paste') bgTyped += key.text ?? '';
-			else if (key.name === 'backspace') bgTyped = bgTyped.slice(0, -1);
-			else if (key.name === 'enter') {
-				const command = bgTyped.trim();
+			if (key.name === 'text' || key.name === 'paste') {
+				bgTyped += key.text ?? '';
+				updateTerminalInputDraft();
+			} else if (key.name === 'backspace') {
+				bgTyped = bgTyped.slice(0, -1);
+				updateTerminalInputDraft();
+			} else if (key.name === 'ctrl+u') {
 				bgTyped = '';
-				if (/^\/subagents(?:\s|$)/i.test(command)) onCommand(command);
-			} else if (key.name === 'escape') bgTyped = '';
+				updateTerminalInputDraft();
+			} else if (key.name === 'enter') {
+				const command = bgTyped.trim();
+				if (/^\/subagents(?:\s|$)/i.test(command)) {
+					bgTyped = '';
+					if (S.term) S.term.input = '';
+					onCommand(command);
+					termPaint();
+				} else if (S.term && S.term.exitCode === null && terminalInputHandler) {
+					if (terminalInputHandler(bgTyped + '\r')) {
+						bgTyped = '';
+						S.term.input = '';
+						termPaint();
+					}
+				} else {
+					bgTyped = '';
+					if (S.term) S.term.input = '';
+				}
+			} else if (key.name === 'escape') {
+				bgTyped = '';
+				if (S.term) S.term.input = '';
+				termPaint();
+			}
 		},
 		undefined,
 		{ background: true },
@@ -279,6 +326,7 @@ export function startBackgroundCommandListener(onCommand: (command: string) => v
 		stopKeys();
 		backgroundCommandStop = null;
 		bgTyped = '';
+		if (S.term) S.term.input = '';
 		monitorRefresh();
 	};
 	monitorRefresh();
@@ -620,8 +668,9 @@ function popupTopRow(popup: NonNullable<ReturnType<typeof activePopup>>): number
 // =============================================================================
 
 function statusLine(max: number): string {
-	const hint =
-		S.permissionMode === 'auto'
+	const hint = S.term && S.term.exitCode === null
+		? 'type input · Enter sends to command · ctrl+o terminal'
+		: S.permissionMode === 'auto'
 			? 'AUTO-ACCEPT · /permissions ask to disable'
 			: S.permissionMode === 'files'
 				? 'FILES-AUTO · terminal commands still ask'
@@ -711,7 +760,8 @@ function chromeString(): string {
 
 	// ── Terminal panel: live output of the agent's bash commands ──────────
 	if (S.term && panel > 0) {
-		const shown = panel - 2;
+		const hasInputRow = S.term.exitCode === null;
+		const shown = panel - (hasInputRow ? 3 : 2);
 		const headerRow = rows - panel;
 		const status =
 			S.term.exitCode === null
@@ -727,11 +777,19 @@ function chromeString(): string {
 				c.cyan('╭─ bash ─ ') + c.bold(clipText(title, cols - 30)) + ' ' + status + c.cyan('─'.repeat(Math.max(1, cols - 30 - title.length - 20))) + hint + c.cyan('╮'),
 			),
 		);
-		const content = S.term.lines.slice(-shown);
+		const outputLines = [...S.term.lines, ...(S.term.pending ? [termCleanLine(S.term.pending)] : [])];
+		const content = outputLines.slice(-shown);
 		for (let i = 0; i < shown; i++) {
 			const text = content[i] ?? '';
 			const body = clipText(text, width).padEnd(width);
 			parts.push(line(headerRow + 1 + i, c.cyan('│') + ' ' + body + ' ' + c.cyan('│')));
+		}
+		if (hasInputRow) {
+			const inputText = S.term.input ? '› ' + S.term.input : 'Type input and press Enter to send';
+			const inputBody = S.term.input
+				? c.yellow(clipText(inputText, width).padEnd(width))
+				: c.dim(clipText(inputText, width).padEnd(width));
+			parts.push(line(headerRow + 1 + shown, c.cyan('│') + ' ' + inputBody + ' ' + c.cyan('│')));
 		}
 		parts.push(line(rows - 1, c.cyan('╰' + '─'.repeat(cols - 2) + '╯')));
 	}

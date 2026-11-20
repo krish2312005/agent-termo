@@ -33,6 +33,7 @@ export {
 	startTerminalPanel,
 	appendTerminalOutput,
 	finishTerminalPanel,
+	setTerminalInputHandler,
 	startBackgroundCommandListener,
 	clearTerminalPanel,
 	toggleTerminalPanel,

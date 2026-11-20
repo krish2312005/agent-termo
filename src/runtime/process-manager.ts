@@ -1,11 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { spawnSync, type ChildProcess } from 'node:child_process';
+import type { IPty } from 'node-pty';
+
+type ManagedProcess = ChildProcess | IPty;
 
 /** Owns each shell invocation independently and cancels complete process trees. */
 export class ProcessManager {
-  private readonly children = new Map<string, ChildProcess>();
+  private readonly children = new Map<string, ManagedProcess>();
 
-  register(child: ChildProcess): string {
+  register(child: ManagedProcess): string {
     const id = randomUUID();
     this.children.set(id, child);
     return id;
@@ -13,6 +16,29 @@ export class ProcessManager {
 
   unregister(id: string): void {
     this.children.delete(id);
+  }
+
+  /** Write input to the newest active PTY or piped child process. */
+  writeLatest(input: string): boolean {
+    for (const child of [...this.children.values()].reverse()) {
+      if ('write' in child && typeof child.write === 'function') {
+        try {
+          child.write(input);
+          return true;
+        } catch {
+          continue;
+        }
+      }
+      const stdin = child.stdin;
+      if (!stdin || stdin.destroyed || stdin.writableEnded || !stdin.writable) continue;
+      try {
+        stdin.write(input);
+        return true;
+      } catch {
+        // The child may close stdin between the writable check and write.
+      }
+    }
+    return false;
   }
 
   kill(id: string): boolean {
@@ -34,7 +60,7 @@ export class ProcessManager {
     return this.children.size;
   }
 
-  private killTree(child: ChildProcess): void {
+  private killTree(child: ManagedProcess): void {
     if (child.pid && process.platform === 'win32') {
       const result = spawnSync('taskkill', ['/pid', String(child.pid), '/t', '/f'], {
         windowsHide: true,
