@@ -8,6 +8,7 @@ import select
 import signal
 import struct
 import sys
+import termios
 import time
 
 
@@ -21,9 +22,11 @@ def main():
 
     fcntl.ioctl(master_fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
     output = bytearray()
-    welcome_seen_at = None
+    cpr_replies = 0
+    da1_replies = 0
     status_sent = False
     child_status = None
+    startup_ready_at = None
     deadline = time.monotonic() + 10
 
     try:
@@ -38,20 +41,26 @@ def main():
                     break
                 output.extend(chunk)
 
-                # Emulate the basic replies Apple Terminal sends to OpenTUI's
-                # startup probes. A raw PTY does not answer terminal queries.
-                if b"\x1b[6n" in chunk:
-                    os.write(master_fd, b"\x1b[1;1R")
-                if b"\x1b[c" in chunk:
-                    os.write(master_fd, b"\x1b[?62;4c")
+                # A PTY is not a terminal emulator. Answer the cursor-position
+                # and primary device-attributes queries that close OpenTUI's
+                # startup probe window in a real terminal.
+                cpr_requests = output.count(b"\\x1b[6n")
+                while cpr_replies < cpr_requests:
+                    os.write(master_fd, b"\\x1b[1;1R")
+                    cpr_replies += 1
 
-                if b"AI coding agent for your terminal" in output and welcome_seen_at is None:
-                    welcome_seen_at = time.monotonic()
+                da1_requests = output.count(b"\\x1b[c")
+                while da1_replies < da1_requests:
+                    os.write(master_fd, b"\\x1b[?62;4c")
+                    da1_replies += 1
+                    if startup_ready_at is None:
+                        startup_ready_at = time.monotonic()
 
-                # Let the REPL finish startup and register its input handler.
-                if welcome_seen_at is not None and not status_sent:
-                    if time.monotonic() - welcome_seen_at >= 0.5:
-                        os.write(master_fd, b"/status\r")
+                # Test prompt submission independently of the welcome log.
+                # If the welcome row is missing, /status must still be tested.
+                if startup_ready_at is not None and not status_sent:
+                    if time.monotonic() - startup_ready_at >= 0.5:
+                        os.write(master_fd, b"/status\\r")
                         status_sent = True
 
                 if status_sent and b"Messages: 0" in output:
@@ -75,11 +84,15 @@ def main():
                 child_status = 0
         os.close(master_fd)
 
+    welcome_seen = b"AI coding agent for your terminal" in output
+    status_seen = b"Messages: 0" in output
     sys.stdout.write(output.decode("utf-8", errors="replace"))
-    if not status_sent or b"Messages: 0" not in output:
-        raise SystemExit("Packed CLI did not start its REPL and execute /status.")
+    print("PTY_TEST_WELCOME_SEEN=" + ("yes" if welcome_seen else "no"))
+    print("PTY_TEST_STATUS_SEEN=" + ("yes" if status_seen else "no"))
+
+    if not status_sent or not status_seen:
+        raise SystemExit("Packed CLI did not activate input and execute /status.")
 
 
 if __name__ == "__main__":
-    import termios
     main()
