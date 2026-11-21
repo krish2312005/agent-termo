@@ -274,7 +274,7 @@ export function promptAcceptReject(message = "Accept this change?"): Promise<"ac
   print("? " + message + " [Y/n]", "info");
   return new Promise((resolve) => {
     let done = false;
-    let stop = () => undefined;
+    let stop: () => void = () => undefined;
     const answer = (accepted: boolean) => {
       if (done) return;
       done = true;
@@ -293,7 +293,7 @@ export function promptCommandApproval(command: string): Promise<"once" | "always
   print("Allow terminal command? " + command + "\n[Y] once  [A] always for this exact command  [N] reject", "info");
   return new Promise((resolve) => {
     let done = false;
-    let stop = () => undefined;
+    let stop: () => void = () => undefined;
     const answer = (value: "once" | "always" | "reject") => {
       if (done) return;
       done = true;
@@ -329,7 +329,7 @@ export async function printTimelineFile(projectRoot: string): Promise<void> {
   print("Project timeline (docs/TIMELINE.md, recent entries)\n" + rule() + "\n" + lines.slice(-recentCount).join("\n") + "\n" + rule() + (lines.length > recentCount ? "\n… " + (lines.length - recentCount) + " earlier entries hidden" : ""), "markdown");
 }
 export function printHelp(): void {
-  const keys = [
+  const keys: Array<[string, string]> = [
     ["Enter", "send the message"], ["Shift+Enter", "insert a new line"],
     ["Ctrl+O / Ctrl+T", "toggle terminal output"], ["↑ / ↓", "move cursor or select"],
     ["Tab", "complete a /command or @mention"], ["Ctrl+A / Ctrl+E", "start / end of line"],
