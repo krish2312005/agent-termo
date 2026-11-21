@@ -141,10 +141,14 @@ function App() {
   onCleanup(() => syntaxStyle.destroy());
 
   const currentPicker = () => picker();
+  const overlayAvailableRows = (reservedRows = 0): number => {
+    const terminalPanelRows = terminalVisible() && terminal() ? 8 : 0;
+    return Math.max(1, (process.stdout.rows ?? 24) - 9 - terminalPanelRows - reservedRows);
+  };
   const visiblePickerItems = () => {
     const current = picker();
     if (!current) return [];
-    const visibleCount = 8;
+    const visibleCount = Math.min(8, overlayAvailableRows(5));
     const start = Math.min(
       Math.max(0, current.selected - visibleCount + 1),
       Math.max(0, current.filtered.length - visibleCount),
@@ -173,10 +177,7 @@ function App() {
     const suggestions = completionItems();
     if (suggestions.length === 0) return [];
 
-    // Keep the selected row inside the terminal's available space.
-    // Header (2 rows), composer (6 rows), and footer (1 row) use 9 rows.
-    const availableRows = Math.max(1, (process.stdout.rows ?? 24) - 9);
-    const visibleCount = Math.min(6, availableRows);
+    const visibleCount = Math.min(6, overlayAvailableRows());
     const selected = Math.min(completionSelected(), suggestions.length - 1);
     const start = Math.min(
       Math.max(0, selected - visibleCount + 1),
@@ -316,7 +317,7 @@ function App() {
         <text fg="#D99168">✻ Agent-Termo</text>
         <text fg="#89827C">{screen().model} · {screen().project}</text>
       </box>
-      <scrollbox flexGrow={1} minHeight={0} stickyScroll stickyStart="bottom" viewportCulling contentOptions={{ layoutMode: "list" }}>
+      <scrollbox flexGrow={1} flexBasis={0} minHeight={0} stickyScroll stickyStart="bottom" viewportCulling contentOptions={{ layoutMode: "list" }}>
         <For each={entries()}>
           {(entry) => (
             <box flexDirection="column" paddingX={1}>
@@ -337,7 +338,7 @@ function App() {
       </Show>
       <Show when={currentPicker()}>
         {(current) => (
-          <box border borderStyle="rounded" borderColor="#D99168" paddingX={1} flexDirection="column">
+          <box border borderStyle="rounded" borderColor="#D99168" paddingX={1} flexDirection="column" flexShrink={0}>
             <text fg="#D99168">{current().title}</text>
             <text fg="#8F8982">Filter: {current().query}</text>
             <For each={visiblePickerItems()}>
@@ -348,13 +349,13 @@ function App() {
         )}
       </Show>
       <Show when={inputActive() && completionItems().length > 0 && !currentPicker()}>
-        <box paddingX={2} flexDirection="column">
+        <box paddingX={2} flexDirection="column" flexShrink={0}>
           <For each={visibleCompletionItems()}>
             {(item) => <text fg={item.selected ? "#F0B38D" : "#8EAAA8"}>{item.selected ? "› " : "  "}{item.label}{item.hint ? "  " + item.hint : ""}</text>}
           </For>
         </box>
       </Show>
-      <box border borderStyle="single" borderColor={inputActive() ? "#D99168" : "#6D625A"} paddingX={1} flexDirection="column">
+      <box border borderStyle="single" borderColor={inputActive() ? "#D99168" : "#6D625A"} paddingX={1} flexDirection="column" flexShrink={0}>
         <text fg="#D99168">❯</text>
         <textarea
           ref={(element) => { textarea = element; }}
