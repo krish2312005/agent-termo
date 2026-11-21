@@ -421,6 +421,7 @@ export async function initScreen(info: { model: string; project: string; thinkin
   renderer = await createCliRenderer({ targetFps: 60, exitOnCtrlC: false });
   try {
     await render(() => <App />, renderer);
+    renderer.start();
     process.on("exit", teardownScreen);
   } catch (error) {
     renderer.destroy();
