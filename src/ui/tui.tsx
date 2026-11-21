@@ -424,6 +424,8 @@ export async function initScreen(info: { model: string; project: string; thinkin
     targetFps: 60,
     gatherStats: false,
     exitOnCtrlC: false,
+    // Agent-Termo owns SIGINT cleanup; do not install a second renderer handler.
+    exitSignals: [],
     useKittyKeyboard: {},
     autoFocus: false,
     openConsoleOnError: false,
