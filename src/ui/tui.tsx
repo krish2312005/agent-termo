@@ -353,7 +353,7 @@ function App() {
           )}
         </For>
       </scrollbox>
-      <Show when={terminalVisible() && terminal()}>
+      <Show when={terminalVisible() && terminal()} fallback={<box height={0} />}>
         <box height={8} border borderStyle="single" borderColor="#6D625A" paddingX={1} flexDirection="column">
           <text fg="#D99168">Terminal · {terminal()!.command} · {terminal()!.exitCode === null ? "running" : "exit " + terminal()!.exitCode}</text>
           <scrollbox flexGrow={1} minHeight={0} stickyScroll stickyStart="bottom">
@@ -361,7 +361,7 @@ function App() {
           </scrollbox>
         </box>
       </Show>
-      <Show when={currentPicker()}>
+      <Show when={currentPicker()} fallback={<box height={0} />}>
         {(current: Accessor<PickerState>) => (
           <box border borderStyle="rounded" borderColor="#D99168" paddingX={1} flexDirection="column" flexShrink={0}>
             <text fg="#D99168">{current().title}</text>
@@ -373,7 +373,7 @@ function App() {
           </box>
         )}
       </Show>
-      <Show when={inputActive() && completionItems().length > 0 && !currentPicker()}>
+      <Show when={inputActive() && completionItems().length > 0 && !currentPicker()} fallback={<box height={0} />}>
         <box paddingX={2} flexDirection="column" flexShrink={0}>
           <For each={visibleCompletionItems()}>
             {(item) => <text fg={item.selected ? "#F0B38D" : "#8EAAA8"}>{item.selected ? "› " : "  "}{item.label}{item.hint ? "  " + item.hint : ""}</text>}
