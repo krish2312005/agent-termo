@@ -135,7 +135,15 @@ try {
       NIM_API_KEY: "agent-termo-package-smoke-test",
       TERM: "xterm-256color",
       COLORTERM: "truecolor",
-      ...(process.platform === "darwin" ? { TERM_PROGRAM: "Apple_Terminal" } : {}),
+      ...(process.platform === "darwin"
+        ? {
+            TERM_PROGRAM: "Apple_Terminal",
+            // Diagnostic workaround: avoid OpenTUI's native stdout writer and
+            // unsupported Kitty/Sixel detection queries on Apple Terminal PTYs.
+            OTUI_STDOUT_THREAD: "0",
+            OPENTUI_GRAPHICS: "false",
+          }
+        : {}),
     };
     let interactiveOutput;
     if (process.platform === "linux") {
