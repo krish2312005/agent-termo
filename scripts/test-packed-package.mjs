@@ -147,8 +147,8 @@ try {
       },
     );
     assert(
-      interactiveOutput.includes(projectDirectory),
-      "the packed global executable must accept /status through its interactive prompt",
+      interactiveOutput.includes("Messages: 0"),
+      "the packed global executable must submit /status and execute the REPL command",
     );
   } else {
     console.log("Skipping the Linux pseudo-terminal check on this platform.");
