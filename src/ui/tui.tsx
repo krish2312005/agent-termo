@@ -355,11 +355,13 @@ function App() {
           </For>
         </box>
       </Show>
-      <box border borderStyle="single" borderColor={inputActive() ? "#D99168" : "#6D625A"} paddingX={1} flexDirection="column" flexShrink={0}>
-        <text fg="#D99168">❯</text>
+      <box border borderStyle="single" borderColor={inputActive() ? "#D99168" : "#6D625A"} paddingX={1} flexDirection="row" alignItems="flex-start" flexShrink={0}>
+        <text width={2} fg="#D99168">❯ </text>
         <textarea
           ref={(element) => { textarea = element; }}
-          width="100%"
+          flexGrow={1}
+          flexBasis={0}
+          minWidth={0}
           height={3}
           focused={inputActive() && !currentPicker()}
           placeholder="Ask anything… or type / for commands"
