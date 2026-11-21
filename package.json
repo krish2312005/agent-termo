@@ -3,24 +3,21 @@
   "version": "1.0.20",
   "description": "Terminal-based AI coding agent that replicates Claude Code experience",
   "type": "module",
-  "main": "dist/main-new.js",
+  "main": "dist/cli.js",
   "bin": {
-    "agent-termo": "./dist/main-new.js"
+    "agent-termo": "./dist/cli.js"
   },
   "scripts": {
-    "dev": "tsx watch src/cli.ts",
-    "build": "tsx scripts/build.mjs",
-    "build:tsc": "tsc",
-    "build:esbuild": "node scripts/build.mjs",
-    "build:pkg": "pkg --targets node20-win-x64,node20-macos-x64,node20-linux-x64 --output dist/",
-    "prepublishOnly": "npm run build",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage",
-    "lint": "eslint src --ext .ts",
-    "lint:fix": "eslint src --ext .ts --fix",
-    "cli": "tsx src/cli.ts"
+    "dev": "bun --watch src/cli.ts",
+    "build": "bun scripts/build.mjs",
+    "prepublishOnly": "bun run build",
+    "typecheck": "bunx tsc --noEmit",
+    "test": "bunx vitest run",
+    "test:watch": "bunx vitest",
+    "test:coverage": "bunx vitest run --coverage",
+    "lint": "bunx eslint src --ext .ts,.tsx",
+    "lint:fix": "bunx eslint src --ext .ts,.tsx --fix",
+    "cli": "bun src/cli.ts"
   },
   "keywords": [
     "cli",
@@ -54,32 +51,25 @@
     "openai": "^7.57.0",
     "simple-git": "^4.0.2",
     "zod": "^4.6.7",
-    "@modelcontextprotocol/client": "^2.4.0"
+    "@modelcontextprotocol/client": "^2.4.0",
+    "@opentui/core": "0.9.7",
+    "@opentui/solid": "0.9.7",
+    "solid-js": "^1.9.16"
   },
   "devDependencies": {
     "@types/node": "^22.13.10",
     "@vitest/coverage-v8": "^5.1.0",
-    "esbuild": "^0.28.2",
     "eslint": "^9.4.0",
-    "pkg": "^5.8.1",
-    "tsx": "^4.23.15",
     "typescript": "^5.4.0",
     "typescript-eslint": "^8.73.0",
     "vitest": "^5.1.0"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "bun": ">=1.3.14"
   },
   "files": [
     "dist",
     "src"
   ],
-  "pkg": {
-    "targets": [
-      "node20-win-x64",
-      "node20-macos-x64",
-      "node20-linux-x64"
-    ],
-    "outputPath": "dist"
-  }
+  "packageManager": "bun@1.3.14"
 }

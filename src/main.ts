@@ -49,6 +49,7 @@ import {
 	clearScreen,
 	createInput,
 	initScreen,
+	teardownScreen,
 	pick,
 	setScreenStatus,
 	promptAcceptReject,
@@ -1211,7 +1212,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 		persistSession();
 	};
 
-	initScreen({ model: nimClient.getModel(), project: projectRoot, thinking: nimClient.getThinkingCapacity() });
+	await initScreen({ model: nimClient.getModel(), project: projectRoot, thinking: nimClient.getThinkingCapacity() });
 	setScreenStatus({ usage: nimClient.formatUsage() });
 	setPermissionMode(permissionMode);
 	printWelcome(projectRoot, nimClient.getModel());
@@ -1310,6 +1311,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 		cleanupStarted = true;
 		persistSession();
 		input.close();
+		teardownScreen();
 		void shutdownMcpServers().finally(() => {
 			process.stdout.write('\n');
 			console.log(
