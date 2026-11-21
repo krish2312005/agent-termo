@@ -1,6 +1,6 @@
 {
   "name": "agent-termo",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "description": "Terminal-based AI coding agent that replicates Claude Code experience",
   "type": "module",
   "main": "dist/cli.js",
@@ -10,14 +10,15 @@
   "scripts": {
     "dev": "bun --watch src/cli.ts",
     "build": "bun scripts/build.mjs",
-    "prepublishOnly": "bun run build",
     "typecheck": "bunx tsc --noEmit",
     "test": "bunx vitest run",
     "test:watch": "bunx vitest",
     "test:coverage": "bunx vitest run --coverage",
     "lint": "bunx eslint src --ext .ts,.tsx",
     "lint:fix": "bunx eslint src --ext .ts,.tsx --fix",
-    "cli": "bun src/cli.ts"
+    "cli": "bun src/cli.ts",
+    "prepack": "bun run build",
+    "test:package": "bun scripts/test-packed-package.mjs"
   },
   "keywords": [
     "cli",
