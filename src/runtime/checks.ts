@@ -28,6 +28,7 @@ export interface CheckRun {
 const LOCKFILE_RUNNER: Array<{ file: string; runner: string }> = [
 	{ file: 'pnpm-lock.yaml', runner: 'pnpm run' },
 	{ file: 'yarn.lock', runner: 'yarn run' },
+	{ file: 'bun.lock', runner: 'bun run' },
 	{ file: 'bun.lockb', runner: 'bun run' },
 	{ file: 'package-lock.json', runner: 'npm run' },
 ];
@@ -37,6 +38,7 @@ const SCRIPT_KINDS: Array<{ kind: string; names: string[] }> = [
 	{ kind: 'typecheck', names: ['typecheck', 'type-check', 'tsc'] },
 	{ kind: 'lint', names: ['lint'] },
 	{ kind: 'test', names: ['test', 'test:unit'] },
+	{ kind: 'build', names: ['build'] },
 ];
 
 function detectRunner(projectRoot: string): string {

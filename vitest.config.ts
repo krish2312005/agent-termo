@@ -1,6 +1,10 @@
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
+  // The app uses Bun's Solid preload in production; Vitest needs its own TSX transform.
+  oxc: {
+    jsx: { runtime: 'automatic', importSource: '@opentui/solid' },
+  },
   test: {
     globals: true,
     environment: 'node',

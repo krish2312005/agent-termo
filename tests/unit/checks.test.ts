@@ -38,6 +38,16 @@ describe('runProjectChecks', () => {
     expect(runs[0]?.output).toContain('boom');
   }, 15_000);
 
+  it('runs the build script after all earlier configured checks pass', async () => {
+    const dir = makeProject({
+      test: 'node -e "console.log(1)"',
+      build: 'node -e "console.log(2)"',
+    });
+    const runs = await runProjectChecks(dir, 10_000);
+    expect(runs.map((run) => run.kind)).toEqual(['test', 'build']);
+    expect(runs.every((run) => run.success)).toBe(true);
+  }, 15_000);
+
   it('stops at the first failing kind instead of running the rest', async () => {
     const dir = makeProject({
       typecheck: 'node -e "process.exit(1)"',
