@@ -4012,3 +4012,24 @@ echo "Timeline updated"
 ### Notes
 - Result: succeeded
 - Details: [?9001h[?1004h[?25l[2J[m[HTimeline updated ]0;C:\Program Files\Git\bin\bash.exe[?25h
+---
+
+## [2026-11-21 05:45] - git-manager
+
+### Phase/Activity
+Git commit: bug fixes & architecture unification
+
+### Actions Taken
+- Reviewed full diff of all changes (11 source files + docs + lockfile)
+- Verified no secrets, build output, or node_modules staged
+- Created docs/changes/2026-11-21-bug-fixes.md change log
+- Staged and committed all changes explicitly (no `git add -A`)
+- Commit: d819b823ac654965366a0afcd0dd1255e96895bf
+- Pushed branch agent-termo-fix-itself to remote
+
+### Review Verdict
+APPROVED — All changes match the stage goal, all checks pass (typecheck, 130/130 tests, lint 0 errors), CLI starts successfully.
+
+### Notes
+- Result: succeeded
+- Details: Committed d819b823ac654965366a0afcd0dd1255e96895bf on branch agent-termo-fix-itself
