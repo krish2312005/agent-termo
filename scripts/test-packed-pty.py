@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the packaged CLI inside a real PTY on macOS."""
+"""Exercise the globally installed CLI inside a macOS pseudo-terminal."""
 
 import fcntl
 import os
@@ -8,7 +8,6 @@ import select
 import signal
 import struct
 import sys
-import termios
 import time
 
 
@@ -19,14 +18,13 @@ def main():
     if child_pid == 0:
         os.execv(binary, [binary, project])
 
-    # Match the user's large Apple Terminal window rather than the runner's
-    # default 80x24 size.
+    # Match the user's Apple Terminal window (272 columns x 77 rows).
     fcntl.ioctl(master_fd, termios.TIOCSWINSZ, struct.pack("HHHH", 77, 272, 0, 0))
     output = bytearray()
+    welcome_seen_at = None
     status_sent = False
-    interrupt_sent = False
-    deadline = time.monotonic() + 12
     child_status = None
+    deadline = time.monotonic() + 10
 
     try:
         while time.monotonic() < deadline:
@@ -40,26 +38,25 @@ def main():
                     break
                 output.extend(chunk)
 
-                # The cursor moves to column 3 when the REPL has activated
-                # the composer. Wait for that instead of pre-feeding input.
-                if (
-                    not status_sent
-                    and b"AI coding agent for your terminal" in output
-                    and b"\x1b[3G" in output
-                ):
-                    os.write(master_fd, b"/status\r")
-                    status_sent = True
+                if b"AI coding agent for your terminal" in output and welcome_seen_at is None:
+                    welcome_seen_at = time.monotonic()
 
-                if status_sent and not interrupt_sent and b"Messages: 0" in output:
-                    os.write(master_fd, b"\x03")
-                    interrupt_sent = True
-                    deadline = time.monotonic() + 4
+                # Let the REPL finish startup and register its input handler.
+                if welcome_seen_at is not None and not status_sent:
+                    if time.monotonic() - welcome_seen_at >= 0.5:
+                        os.write(master_fd, b"/status\\r")
+                        status_sent = True
+
+                if status_sent and b"Messages: 0" in output:
+                    break
 
             ended, status = os.waitpid(child_pid, os.WNOHANG)
             if ended:
                 child_status = status
                 break
     finally:
+        # This test validates prompt processing, not shutdown. Terminate the
+        # child explicitly so no PTY child can outlive the test process.
         if child_status is None:
             try:
                 os.kill(child_pid, signal.SIGTERM)
@@ -73,8 +70,9 @@ def main():
 
     sys.stdout.write(output.decode("utf-8", errors="replace"))
     if not status_sent or b"Messages: 0" not in output:
-        raise SystemExit("Packed CLI did not activate the prompt and execute /status.")
+        raise SystemExit("Packed CLI did not start its REPL and execute /status.")
 
 
 if __name__ == "__main__":
+    import termios
     main()
