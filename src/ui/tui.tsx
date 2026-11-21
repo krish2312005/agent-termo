@@ -497,6 +497,11 @@ export function clipText(value: string, max: number): string {
   return chars.length <= max ? value : chars.slice(0, Math.max(0, max - 1)).join("") + "…";
 }
 export function layoutSupported(): boolean {
+  // shortcut: Apple Terminal mishandles OpenTUI's startup capability queries (XTGETTCAP/Kitty
+  // graphics) -- it echoes malformed replies to the screen and the native terminal setup never
+  // completes, so the renderer gets torn down right after launch. Fall back to the plain
+  // readline input path there instead of trying to get OpenTUI's probes to behave.
+  if (usesLegacyAppleTerminal()) return false;
   return Boolean(process.stdin.isTTY && process.stdout.isTTY && (process.stdout.columns ?? 80) >= 40 && (process.stdout.rows ?? 24) >= 12);
 }
 export function resetScreen(): void { clearLog(); }
