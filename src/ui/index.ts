@@ -400,7 +400,6 @@ function highlightCode(text: string, filePath: string): string {
 
 export function printDiffViewer(change: ProposedFileChange): void {
 	const diff = applyDiffContext(change.diff, { contextLines: 3 });
-	const room = Math.max(20, terminalWidth() - 14);
 
 	const label = change.isDeletion
 		? c.red('DELETE')
