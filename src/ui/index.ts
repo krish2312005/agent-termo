@@ -262,11 +262,12 @@ export function printToolResult(
 export function printDiffViewer(change: ProposedFileChange): void {
   const diff = change.diff;
   const label = change.isDeletion ? "DELETE" : change.isNewFile ? "NEW" : "MODIFY";
-  const lines = diff.lines.map((line) => {
+  print(diff.file + "  " + label + "  +" + diff.additions + " -" + diff.deletions, "info");
+  for (const line of diff.lines) {
     const prefix = line.type === "add" ? "+" : line.type === "remove" ? "-" : " ";
-    return prefix + String(line.lineNumber > 0 ? line.lineNumber : "").padStart(5) + " │ " + line.content.replace(/\t/g, "  ");
-  });
-  print(diff.file + "  " + label + "  +" + diff.additions + " -" + diff.deletions + "\n" + lines.join("\n"), "markdown");
+    const content = prefix + String(line.lineNumber > 0 ? line.lineNumber : "").padStart(5) + " │ " + line.content.replace(/\t/g, "  ");
+    print(content, line.type === "add" ? "diff-add" : line.type === "remove" ? "diff-remove" : "diff-context");
+  }
 }
 
 export function promptAcceptReject(message = "Accept this change?"): Promise<"accept" | "reject"> {
