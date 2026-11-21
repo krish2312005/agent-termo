@@ -17,8 +17,12 @@ concurrency:
 
 jobs:
   validate:
-    name: Typecheck, lint, test, and build
-    runs-on: ubuntu-latest
+    name: Typecheck, lint, test, and packed npm CLI (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
