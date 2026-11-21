@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parseKeys } from '../../src/ui/screen.js';
-import { promptInputHeight, promptInputKeyBindings, usesLegacyAppleTerminal } from '../../src/ui/tui.js';
+import { kittyKeyboardOptions, promptInputHeight, promptInputKeyBindings, usesLegacyAppleTerminal } from '../../src/ui/tui.js';
 
 const parse = (chunk: string, state: { paste: string | null } = { paste: null }) => parseKeys(chunk, state);
 
@@ -24,6 +24,14 @@ describe('prompt keyboard bindings', () => {
       { name: 'return', ctrl: true, action: 'newline' },
       { name: 'return', ctrl: false, shift: false, meta: false, action: 'submit' },
     ]);
+  });
+});
+
+describe('terminal keyboard protocol', () => {
+  it('disables Kitty keyboard mode in Apple Terminal only', () => {
+    expect(kittyKeyboardOptions('darwin', 'Apple_Terminal')).toBeNull();
+    expect(kittyKeyboardOptions('darwin', 'iTerm.app')).toEqual({});
+    expect(kittyKeyboardOptions('linux', 'xterm')).toEqual({});
   });
 });
 
