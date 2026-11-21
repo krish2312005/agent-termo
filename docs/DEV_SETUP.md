@@ -2,8 +2,8 @@
 
 **Project:** Agent-Termo  
 **Purpose:** Terminal-based AI coding agent that replicates the Claude Code experience  
-**Runtime:** Node.js 20.x LTS  
-**Package Manager:** npm 10.x  
+**Runtime:** Bun 1.3.14+  
+**Package Manager:** Bun  
 **LLM Backend:** Nvidia NIM APIs (free tier, OpenAI-compatible)
 
 ---
@@ -31,16 +31,14 @@
 
 | Requirement | Version | Notes |
 |-------------|---------|-------|
-| Node.js | 20.x LTS or higher | Check: `node --version` |
-| npm | 10.x | Check: `npm --version` |
+| Bun | 1.3.14 or higher | Check: `bun --version` (Windows arm64: 1.4+) |
 | Git | any recent | For clone and git tools |
 | NVIDIA NIM API Key | free tier | Get from [build.nvidia.com](https://build.nvidia.com/) |
 
 Verify your environment:
 
 ```bash
-node --version   # v20.x.x
-npm --version    # 10.x.x
+bun --version    # 1.3.14 or newer
 git --version    # git version 2.x.x
 ```
 
@@ -59,26 +57,26 @@ cd agent-termo
 ## Install Dependencies
 
 ```bash
-npm install
+bun install
 ```
 
 This installs all runtime and development dependencies listed in `package.json`.
 
 **Runtime dependencies:**
-- `blessed` — Terminal UI framework
+- `@opentui/core` and `@opentui/solid` — Native terminal UI and SolidJS bindings
 - `chalk` — Color output
 - `commander` — CLI argument parsing
 - `fs-extra` — File system operations
 - `glob` — File pattern matching
-- `marked` — Markdown rendering
+- OpenTUI Markdown renderable — streaming Markdown rendering
 - `openai` — OpenAI SDK for NIM API
 - `simple-git` — Git operations
 - `zod` — Schema validation
 
-**Development dependencies:**
-- `esbuild` — Bundler
-- `pkg` — Binary packager
-- `tsx` — TypeScript runner
+**Development tools:**
+- Bun.build — bundler
+- (removed; use Bun runtime)
+- Bun — TypeScript/TSX runtime
 - `typescript` — TypeScript compiler
 - `vitest` — Test runner
 - `eslint` — Linter
@@ -113,7 +111,7 @@ NIM_MODEL=meta/llama-3.1-8b-instruct
 LOG_LEVEL=info
 DEBUG=false
 CONFIRM_DESTRUCTIVE=true
-ALLOWED_COMMANDS=git,npm,node,pnpm,yarn,tsx,tsc
+ALLOWED_COMMANDS=git,bun,bunx,tsc
 LLM_TIMEOUT=120000
 BASH_TIMEOUT=300000
 ```
@@ -127,10 +125,10 @@ The `.env` file is gitignored — never commit your API key.
 ## Verify TypeScript Setup
 
 ```bash
-npm run typecheck
+bun run typecheck
 ```
 
-This runs `tsc --noEmit` across all `src/` files. Expected output: no errors.
+This runs `tsc --noEmit` across all `src/` and `.tsx` files. Expected output: no errors.
 
 TypeScript configuration (`tsconfig.json`):
 - Target: ES2022
@@ -144,19 +142,17 @@ TypeScript configuration (`tsconfig.json`):
 ## Build the Project
 
 ```bash
-npm run build
+bun run build
 ```
 
-This runs the esbuild script (`scripts/build.mjs`) to compile all TypeScript source files into `dist/`.
+This uses `Bun.build` with the OpenTUI Solid plugin to bundle the active CLI entry point into `dist/cli.js`.
 
 Available build scripts:
 
 | Script | Command | Purpose |
 |--------|---------|---------|
-| `build` | `npm run build` | esbuild compilation to `dist/` |
-| `build:tsc` | `npm run build:tsc` | `tsc` compilation |
-| `build:esbuild` | `npm run build:esbuild` | Direct esbuild via `node scripts/build.mjs` |
-| `build:pkg` | `npm run build:pkg` | Self-contained binaries via `pkg` |
+| `build` | `bun run build` | Bun bundle compilation to `dist/` |
+
 
 ---
 
@@ -165,17 +161,17 @@ Available build scripts:
 ### Development mode (live reload)
 
 ```bash
-npm run dev
+bun run dev
 ```
 
-Starts the REPL with `tsx watch`. Any file changes in `src/` trigger an instant reload.
+Starts the REPL with Bun watch mode. Any file changes in `src/` trigger an instant reload.
 
 ### Single run
 
 ```bash
-npm run cli
+bun run cli
 # or directly:
-node dist/cli.js
+bun dist/cli.js
 ```
 
 ### CLI commands
@@ -186,13 +182,13 @@ Common usage:
 
 ```bash
 # Interactive REPL
-npm run dev
+bun run dev
 
 # Run with a specific model
-NIM_MODEL=meta/llama-3.1-70b-instruct npm run dev
+NIM_MODEL=meta/llama-3.1-70b-instruct bun run dev
 
 # Run with debug logging
-DEBUG=true npm run dev
+DEBUG=true bun run dev
 ```
 
 ---
@@ -200,7 +196,7 @@ DEBUG=true npm run dev
 ## Test the NIM API Key
 
 ```bash
-node scripts/test-nim.mjs
+bun scripts/test-nim.mjs
 ```
 
 This makes a single non-streaming API call to NVIDIA NIM and reports:
@@ -224,13 +220,13 @@ If you get a 404, the model name in `NIM_MODEL` may not be available for your AP
 
 ```bash
 # All tests (once)
-npm test
+bun run test
 
 # Watch mode (re-runs on file changes)
-npm run test:watch
+bun run test:watch
 
 # With coverage report
-npm run test:coverage
+bun run test:coverage
 ```
 
 Tests use **vitest** and live in `tests/integration/`. The test suite validates core functionality including NIM API integration, tool execution, and CLI behavior.
@@ -248,7 +244,7 @@ agent-termo/
 │   ├── tools/            # Tool implementations (read, write, bash, git, glob)
 │   ├── agents/           # Agent loader (12 agents)
 │   ├── memory/           # Memory/timeline runtime
-│   ├── ui/               # Terminal UI (blessed + chalk)
+│   ├── ui/               # OpenTUI + Solid terminal UI
 │   ├── types/            # Shared TypeScript types
 │   └── utils/            # Config, ANSI helpers
 ├── dist/                 # Compiled JS output (gitignored build artefact)
@@ -257,7 +253,7 @@ agent-termo/
 │   ├── commands/         # Command definitions
 │   └── skills/           # Skill definitions
 ├── scripts/              # Build and utility scripts
-│   ├── build.mjs         # esbuild + pkg pipeline
+│   ├── build.mjs         # Bun.build + OpenTUI Solid plugin
 │   └── test-nim.mjs      # NIM API validation script
 ├── tests/                # Test suites
 │   └── integration/      # Integration tests
@@ -274,17 +270,17 @@ agent-termo/
 
 ## Troubleshooting
 
-### `npm run dev` starts but shows a blank/wrong screen
+### `bun run dev` starts but shows a blank/wrong screen
 
-**Cause:** Blessed TUI may not render correctly in Git Bash or certain Windows terminals.
+**Cause:** Native terminal rendering requires a supported terminal and Bun runtime.
 
-**Fix:** Run in Windows Terminal or Windows PowerShell instead of Git Bash.
+**Fix:** Run in Windows Terminal or PowerShell with Bun 1.3.14+ (Bun 1.4+ for native Windows arm64).
 
-### `npm test` fails with module resolution errors
+### `bun run test` fails with module resolution errors
 
-**Cause:** Running tests from the wrong directory, or `dist/` is stale.
+**Cause:** Running tests from the wrong directory or missing Bun dependencies.
 
-**Fix:** Run `npm run build` then `npm test`.
+**Fix:** Run `bun install` then `bun run test`.
 
 ### NIM API test returns 404
 
@@ -294,15 +290,15 @@ agent-termo/
 
 ### TypeScript errors on first build
 
-**Cause:** `dist/` was modified from a different TypeScript version.
+**Cause:** Dependencies or generated `dist/` output are stale.
 
-**Fix:** `rm -rf dist && npm run build`.
+**Fix:** `rm -rf dist && bun run build`.
 
-### `npm install` fails with peer dependency warnings
+### `bun install` fails with peer dependency warnings
 
 **Cause:** Version mismatches between packages.
 
-**Fix:** Try `npm install --legacy-peer-deps` or delete `node_modules` and `package-lock.json`, then reinstall.
+**Fix:** Try `bun install --legacy-peer-deps` or delete `node_modules` and `package-lock.json`, then reinstall.
 
 ### Port or permission errors
 
@@ -320,25 +316,19 @@ agent-termo/
 
 ## Production Build
 
-To build self-contained binary executables (no Node.js required to run):
+To build the Bun-compatible CLI bundle:
 
 ```bash
-npm run build
-npm run build:pkg
+bun run build
 ```
 
-Outputs appear in `dist/`:
-- `agent-termo-win.exe` (Windows)
-- `agent-termo-macos` (macOS)
-- `agent-termo-linux` (Linux)
-
-These binaries bundle the Node.js runtime and all dependencies.
+The output is `dist/cli.js`. Run it with `bun dist/cli.js`.
 
 ---
 
 ## Editor Setup — VS Code
 
-The project uses TypeScript strict mode. Recommended VS Code settings (`.vscode/settings.json`):
+The project uses TypeScript strict mode and the OpenTUI Solid JSX transform. Recommended VS Code settings (`.vscode/settings.json`):
 
 ```json
 {
@@ -367,10 +357,10 @@ ESLint is configured for the project:
 
 ```bash
 # Check for lint errors
-npm run lint
+bun run lint
 
 # Auto-fix lint errors
-npm run lint:fix
+bun run lint:fix
 ```
 
 Key style guidelines:
@@ -379,8 +369,8 @@ Key style guidelines:
 - Use `const` by default, `let` only when reassignment is needed
 - Use descriptive variable and function names
 - Add JSDoc comments for public APIs
-- Run `npm run lint:fix` before committing
+- Run `bun run lint:fix` before committing
 
 ---
 
-*Last updated: 2026-07-04*
+*Updated: 2026-11-20 — OpenTUI migration*

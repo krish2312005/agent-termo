@@ -1,50 +1,30 @@
-const esbuild = await import('esbuild');
+import solidPlugin from "@opentui/solid/bun-plugin";
+import { copy } from "fs-extra";
+import { existsSync } from "node:fs";
 
-/**
- * Build script for Agent-Termo
- * Compiles TypeScript with esbuild and creates distribution files
- */
-
-const isWindows = process.platform === 'win32';
-
-// Common build options
-const commonOptions = {
-  bundle: true,
-  packages: 'external',
-  platform: 'node',
-  target: 'node20',
-  format: 'esm',
-  sourcemap: true,
+// Build the real CLI entry point. The Solid plugin compiles TSX to OpenTUI
+// renderables; packages stay external so Bun loads the matching native core.
+const result = await Bun.build({
+  entrypoints: ["src/cli.ts"],
+  outdir: "dist",
+  target: "bun",
+  format: "esm",
+  sourcemap: "external",
   minify: !process.env.DEV,
-  treeShaking: true,
-  external: ['fsevents'],
-  logLevel: 'info',
-};
-
-// Build the CLI entry point
-await esbuild.build({
-  ...commonOptions,
-  entryPoints: ['src/cli.ts'],
-  outfile: 'dist/cli.js',
+  packages: "external",
+  external: ["fsevents"],
+  plugins: [solidPlugin],
 });
 
-// Build the main application
-await esbuild.build({
-  ...commonOptions,
-  entryPoints: ['src/main.ts'],
-  outfile: 'dist/main.js',
-});
-
-// Copy .claude directory to dist
-import { copy } from 'fs-extra';
-import { existsSync } from 'node:fs';
-
-if (existsSync('.claude')) {
-  await copy('.claude', 'dist/.claude');
-  console.log('Copied .claude to dist/');
+if (!result.success) {
+  for (const log of result.logs) console.error(log);
+  throw new Error("Agent-Termo build failed.");
 }
 
-await copy('src/runtime/defaults', 'dist/.agent-termo-defaults');
-console.log('Copied Agent-Termo default agents and commands to dist/');
+if (existsSync(".claude")) {
+  await copy(".claude", "dist/.claude");
+  console.log("Copied .claude to dist/");
+}
 
-console.log('Build complete: dist/cli.js, dist/main.js');
+await copy("src/runtime/defaults", "dist/.agent-termo-defaults");
+console.log("Build complete: dist/cli.js");

@@ -49,6 +49,7 @@ import {
 	clearScreen,
 	createInput,
 	initScreen,
+	teardownScreen,
 	pick,
 	setScreenStatus,
 	promptAcceptReject,
@@ -493,6 +494,7 @@ async function executeToolWithReview(
 			const applyResult = await applyWithCheckpoint(proposedChange, projectRoot, getCheckpointId);
 			if (applyResult.success) {
 				printSuccess('Auto-applied: ' + (applyResult.output ?? proposedChange.path));
+				printToolResult(toolName, applyResult, { needsApproval: true, proposedChange });
 				refreshContextFiles(projectRoot);
 			} else printError(applyResult.error ?? 'Failed to auto-apply change');
 			return { toolResult: applyResult, change: proposedChange, applied: applyResult.success };
@@ -1211,7 +1213,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 		persistSession();
 	};
 
-	initScreen({ model: nimClient.getModel(), project: projectRoot, thinking: nimClient.getThinkingCapacity() });
+	await initScreen({ model: nimClient.getModel(), project: projectRoot, thinking: nimClient.getThinkingCapacity() });
 	setScreenStatus({ usage: nimClient.formatUsage() });
 	setPermissionMode(permissionMode);
 	printWelcome(projectRoot, nimClient.getModel());
@@ -1310,6 +1312,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 		cleanupStarted = true;
 		persistSession();
 		input.close();
+		teardownScreen();
 		void shutdownMcpServers().finally(() => {
 			process.stdout.write('\n');
 			console.log(

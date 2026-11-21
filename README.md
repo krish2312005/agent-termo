@@ -19,7 +19,7 @@
     <img src="https://img.shields.io/github/stars/krish2312005/agent-termo?style=flat-square&logo=github" alt="GitHub stars" />
   </a>
   <a href="https://github.com/krish2312005/agent-termo/blob/master/package.json">
-    <img src="https://img.shields.io/node/v/agent-termo?style=flat-square&logo=node.js" alt="Node.js version" />
+    <img src="https://img.shields.io/node/v/agent-termo?style=flat-square&logo=node.js" alt="Bun version" />
   </a>
   <a href="https://github.com/krish2312005/agent-termo/blob/master/package.json">
     <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="MIT license" />
@@ -87,7 +87,7 @@ Agent-Termo is designed around a reviewable workflow: file changes can be previe
 
 ### Requirements
 
-- Node.js 20.x or higher
+- Bun 1.3.14 or higher (Bun 1.4+ for native Windows arm64)
 - npm
 - An NVIDIA NIM API key
 - An interactive terminal for the full-screen interface
@@ -95,7 +95,7 @@ Agent-Termo is designed around a reviewable workflow: file changes can be previe
 ### 1. Install Agent-Termo
 
 ~~~bash
-npm install -g agent-termo
+bun install -g agent-termo
 ~~~
 
 ### 2. Move into your project
@@ -141,16 +141,16 @@ git clone https://github.com/krish2312005/agent-termo.git
 cd agent-termo
 
 # Install dependencies
-npm install
+bun install
 
 # Create your local environment file
 cp .env.example .env
 
 # Build the application
-npm run build
+bun run build
 
 # Start the CLI in development mode
-npm run dev
+bun run dev
 ~~~
 
 ### Configure NVIDIA NIM
@@ -805,7 +805,7 @@ agent-termo/
 │       ├── config.ts          # Environment and user configuration
 │       └── shell.ts           # Shell resolution
 ├── scripts/
-│   ├── build.mjs              # esbuild build script
+│   ├── build.mjs              # Bun build + OpenTUI Solid plugin
 │   └── test-nim.mjs           # NVIDIA NIM API validation
 ├── tests/
 │   ├── unit/
@@ -850,14 +850,14 @@ agent-termo/
 | Technology | Purpose |
 |---|---|
 | **TypeScript** | Main programming language. |
-| **Node.js** | Runtime environment (Node.js 20+). |
+| **Bun** | Runtime environment (1.3.14+). |
 | **Chalk** | Terminal colors and styling. |
 | **Commander** | CLI argument parsing. |
 | **OpenAI SDK** | OpenAI-compatible NVIDIA NIM API client. |
 | **simple-git** | Git operations. |
 | **glob** | Project file matching. |
 | **Zod** | Schema validation. |
-| **esbuild** | Application bundling. |
+| **OpenTUI** | Native terminal renderer with SolidJS bindings. |
 | **Vitest** | Unit and integration testing. |
 | **ESLint** | Linting and code quality. |
 
@@ -870,73 +870,71 @@ See [docs/TECH_STACK.md](./docs/TECH_STACK.md) for the technology decisions and 
 ### Install Dependencies
 
 ~~~bash
-npm install
+bun install
 ~~~
 
 ### Run in Development Mode
 
 ~~~bash
-npm run dev
+bun run dev
 ~~~
 
 ### Build
 
 ~~~bash
-npm run build
+bun run build
 ~~~
 
 ### Type Check
 
 ~~~bash
-npm run typecheck
+bun run typecheck
 ~~~
 
 ### Run Tests
 
 ~~~bash
-npm test
+bun run test
 ~~~
 
 ### Test Watch Mode
 
 ~~~bash
-npm run test:watch
+bun run test:watch
 ~~~
 
 ### Test Coverage
 
 ~~~bash
-npm run test:coverage
+bun run test:coverage
 ~~~
 
 ### Lint
 
 ~~~bash
-npm run lint
+bun run lint
 ~~~
 
 ### Available npm Scripts
 
 | Script | Description |
 |---|---|
-| npm run dev | Run the CLI using tsx watch mode. |
-| npm run build | Bundle the CLI and main application into dist/. |
-| npm run build:tsc | Run the TypeScript compiler. |
-| npm run build:esbuild | Run the esbuild build script directly. |
-| npm run build:pkg | Package executable builds using pkg. |
-| npm run typecheck | Type-check without emitting output. |
-| npm test | Run the test suite once. |
-| npm run test:watch | Run tests in watch mode. |
-| npm run test:coverage | Run tests with coverage. |
-| npm run lint | Run ESLint against the source. |
-| npm run lint:fix | Apply supported ESLint fixes. |
+| bun run dev | Run the CLI using Bun watch mode. |
+| bun run build | Bundle the CLI entry point for Bun into dist/. |
+
+| bun run typecheck | Type-check without emitting output. |
+| bun run test | Run the test suite once. |
+| bun run test:watch | Run tests in watch mode. |
+| bun run test:coverage | Run tests with coverage. |
+| bun run lint | Run ESLint against the source. |
+| bun run lint:fix | Apply supported ESLint fixes. |
 
 ### Test the NVIDIA NIM Connection
 
 The repository includes a helper script:
 
 ~~~bash
-node scripts/test-nim.mjs
+bun scripts/test-nim.mjs
 ~~~
 
 It sends a test request to NVIDIA NIM using the configured environment and reports the response.
@@ -988,15 +986,15 @@ Environment variables and .env values are loaded at startup. Restart Agent-Termo
 Check your runtime version:
 
 ~~~bash
-node --version
-npm --version
+bun --version
+bun --version
 ~~~
 
-Agent-Termo requires Node.js 20 or higher. For source installations, reinstall dependencies and run the build again:
+Agent-Termo requires Bun 1.3.14 or higher (Bun 1.4+ for native Windows arm64). For source installations, reinstall dependencies and run the build again:
 
 ~~~bash
-npm install
-npm run build
+bun install
+bun run build
 ~~~
 
 ---
@@ -1033,13 +1031,13 @@ Issues, suggestions, and pull requests are welcome.
 ~~~bash
 git clone https://github.com/YOUR_USERNAME/agent-termo.git
 cd agent-termo
-npm install
+bun install
 
 git checkout -b feature/your-feature
 
-npm test
-npm run typecheck
-npm run lint
+bun run test
+bun run typecheck
+bun run lint
 ~~~
 
 For bugs and feature requests, [open a GitHub issue](https://github.com/krish2312005/agent-termo/issues).
@@ -1052,7 +1050,7 @@ Agent-Termo's package metadata declares the MIT license.
 
 - Inspired by modern terminal-based AI coding agents, including Claude Code.
 - Powered by [NVIDIA NIM](https://build.nvidia.com/).
-- Built with TypeScript and the Node.js ecosystem.
+- Built with TypeScript and the Bun ecosystem.
 
 Agent-Termo is an independent project. It is not affiliated with, endorsed by, or maintained by Anthropic or NVIDIA.
 
@@ -1071,3 +1069,18 @@ Build software. Automate workflows. Stay in your terminal.
 [Report an issue](https://github.com/krish2312005/agent-termo/issues)
 
 </div>
+
+
+## Terminal UI runtime
+
+The interactive CLI now uses OpenTUI 0.9.7 with its SolidJS binding. Run Agent-Termo with Bun 1.3.14 or later; native Windows arm64 requires Bun 1.4 or later.
+
+```bash
+bun install
+bun run dev
+bun run typecheck
+bun run test
+bun run build
+```
+
+The package executable is launched through Bun. The previous Node 20 `pkg` targets have been removed.
