@@ -333,7 +333,8 @@ function App() {
           height={3}
           focused={inputActive() && !currentPicker()}
           placeholder="Ask anything… or type / for commands"
-          onContentChange={(value) => {
+          onContentChange={() => {
+            const value = textarea?.plainText ?? "";
             if (value !== draft()) setCompletionHiddenFor("");
             setDraft(value);
             setCompletionSelected(0);
