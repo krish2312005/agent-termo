@@ -1,8 +1,29 @@
 import { describe, it, expect } from 'vitest';
 import { parseKeys } from '../../src/ui/screen.js';
-import { promptInputHeight } from '../../src/ui/tui.js';
+import { promptInputHeight, promptInputKeyBindings, usesLegacyAppleTerminal } from '../../src/ui/tui.js';
 
 const parse = (chunk: string, state: { paste: string | null } = { paste: null }) => parseKeys(chunk, state);
+
+describe('prompt keyboard bindings', () => {
+  it('uses native Shift+Enter newline and Enter submit bindings where modifiers are reported', () => {
+    expect(promptInputKeyBindings(false)).toEqual([
+      { name: 'return', shift: true, action: 'newline' },
+      { name: 'return', meta: true, action: 'newline' },
+      { name: 'return', ctrl: true, action: 'newline' },
+      { name: 'return', ctrl: false, shift: false, meta: false, action: 'submit' },
+    ]);
+  });
+
+  it('uses Return for newline in macOS Terminal and Option+Return to submit', () => {
+    expect(usesLegacyAppleTerminal('darwin', 'Apple_Terminal')).toBe(true);
+    expect(usesLegacyAppleTerminal('darwin', 'iTerm.app')).toBe(false);
+    expect(usesLegacyAppleTerminal('linux', 'Apple_Terminal')).toBe(false);
+    expect(promptInputKeyBindings(true)).toEqual([
+      { name: 'return', action: 'newline' },
+      { name: 'return', meta: true, action: 'submit' },
+    ]);
+  });
+});
 
 describe('promptInputHeight', () => {
   it('keeps a minimum three-row input for short prompts', () => {
