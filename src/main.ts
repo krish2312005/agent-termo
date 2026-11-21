@@ -494,6 +494,7 @@ async function executeToolWithReview(
 			const applyResult = await applyWithCheckpoint(proposedChange, projectRoot, getCheckpointId);
 			if (applyResult.success) {
 				printSuccess('Auto-applied: ' + (applyResult.output ?? proposedChange.path));
+				printToolResult(toolName, applyResult, { needsApproval: true, proposedChange });
 				refreshContextFiles(projectRoot);
 			} else printError(applyResult.error ?? 'Failed to auto-apply change');
 			return { toolResult: applyResult, change: proposedChange, applied: applyResult.success };
