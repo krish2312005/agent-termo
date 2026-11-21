@@ -44,14 +44,14 @@ def main():
                 # A PTY is not a terminal emulator. Answer the cursor-position
                 # and primary device-attributes queries that close OpenTUI's
                 # startup probe window in a real terminal.
-                cpr_requests = output.count(b"\\x1b[6n")
+                cpr_requests = output.count(b"\x1b[6n")
                 while cpr_replies < cpr_requests:
-                    os.write(master_fd, b"\\x1b[1;1R")
+                    os.write(master_fd, b"\x1b[1;1R")
                     cpr_replies += 1
 
-                da1_requests = output.count(b"\\x1b[c")
+                da1_requests = output.count(b"\x1b[c")
                 while da1_replies < da1_requests:
-                    os.write(master_fd, b"\\x1b[?62;4c")
+                    os.write(master_fd, b"\x1b[?62;4c")
                     da1_replies += 1
                     if startup_ready_at is None:
                         startup_ready_at = time.monotonic()
@@ -60,7 +60,7 @@ def main():
                 # If the welcome row is missing, /status must still be tested.
                 if startup_ready_at is not None and not status_sent:
                     if time.monotonic() - startup_ready_at >= 0.5:
-                        os.write(master_fd, b"/status\\r")
+                        os.write(master_fd, b"/status\r")
                         status_sent = True
 
                 if status_sent and b"Messages: 0" in output:
