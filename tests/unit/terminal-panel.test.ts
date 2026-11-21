@@ -88,6 +88,9 @@ describe('live terminal panel', () => {
 		finishTerminalPanel(0);
 		await flushTerminalOutput();
 
+		// Completion auto-hides the panel; reopen it before testing the clickable card.
+		expect(terminalPanelVisible()).toBe(false);
+		expect(handleTerminalPanelKey('ctrl+o')).toBe(true);
 		const bounds = terminalPanelOutputBounds();
 		expect(bounds).not.toBeNull();
 		expect(handleTerminalPanelClick(bounds!.left + 1, bounds!.top)).toBe(true);
