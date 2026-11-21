@@ -407,7 +407,7 @@ function App() {
       <box height={1} flexDirection="row" justifyContent="space-between">
         <text fg="#8D857D">{screen().thinking} · {screen().permissionMode} · {screen().usage}</text>
         <text fg="#8D857D">{status() || (legacyAppleTerminal
-          ? "Return newline · Option+Return send · Tab complete · Ctrl+C quit"
+          ? "Return send · Shift+Return newline · Tab complete · Ctrl+C quit"
           : "Enter send · Shift+Enter newline · Tab complete · Ctrl+C quit")}</text>
       </box>
     </box>
@@ -484,14 +484,7 @@ export function usesLegacyAppleTerminal(
   return platform === "darwin" && terminalProgram === "Apple_Terminal";
 }
 
-export function promptInputKeyBindings(legacyAppleTerminal: boolean) {
-  if (legacyAppleTerminal) {
-    return [
-      { name: "return", action: "newline" as const },
-      { name: "return", meta: true, action: "submit" as const },
-    ];
-  }
-
+export function promptInputKeyBindings(_legacyAppleTerminal: boolean) {
   return [
     { name: "return", shift: true, action: "newline" as const },
     { name: "return", meta: true, action: "newline" as const },
