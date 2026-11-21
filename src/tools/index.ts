@@ -449,7 +449,7 @@ async function toolFileGlob(args: Record<string, unknown>, projectRoot: string):
 			dot: true,
 			ignore: ['**/node_modules/**', '**/.git/**'],
 		});
-		const shown = files.slice(0, MAX_GLOB_RESULTS);
+		const shown = files.slice(0, MAX_GLOB_RESULTS).map((f) => f.replace(/\\/g, '/'));
 		const suffix = files.length > shown.length ? `\n(${files.length - shown.length} more files not shown; narrow the pattern)` : '';
 		const output = shown.length > 0 ? shown.join('\n') + suffix : '(no files matched)';
 		globCache.set(cacheKey, output);

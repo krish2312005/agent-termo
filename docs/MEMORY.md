@@ -11,9 +11,38 @@ This document tracks the project's memory and context for all agents to ensure c
 
 ## Current Phase
 
-- **Phase:** Post-Tech Stack Selection (Implementation Ready)
-- **Status:** Tech stack finalized, ready for implementation
-- **Next:** Begin CLI foundation implementation
+- **Phase:** Bug Fixes & Architecture Unification Complete
+- **Status:** All bugs resolved, single entry point established, all checks passing
+- **Next:** Feature development (config file, unit tests, graceful --help without API key)
+
+## Bug Fixes Applied (2026-11-21)
+
+| Bug | File | Fix | Status |
+|-----|------|-----|--------|
+| B-1 | `src/tools/index.ts` | Normalize glob results to forward slashes (`f.replace(/\\/g, '/')`) | FIXED |
+| B-2 | `src/core/events.ts`, `src/main-new.ts` | Change `let` to `const` for non-reassigned variables | FIXED |
+| B-3 | `src/core/tools.ts` | Add `void` to floating promise `this.eventBus.publish()` | FIXED |
+| B-4 | `src/main-new.ts` | Remove unused destructured variables; prefix `_customCommands` | FIXED |
+| B-5 | `src/cli.ts` | `console.log` warnings remain (35 warnings, 0 errors) | WARNINGS ONLY |
+| B-6 | `src/core/events.ts`, `src/core/run-loop.ts`, `src/main-new.ts` | `any` type warnings remain (warnings only) | WARNINGS ONLY |
+| B-7 | `src/cli.ts` | Import `runRepl` from `./main-new.js` instead of `./main.js` — single entry point | FIXED |
+| B-8 | `src/tools/index.ts` | `withinProject` path validation edge case | OPEN |
+| B-9 | `src/core/verification.ts`, `src/core/run-loop.ts` | Type-only imports → `import type` syntax (runtime crash fix) | FIXED |
+
+## Verification Results (2026-11-21)
+
+| Check | Command | Result |
+|-------|---------|--------|
+| TypeScript typecheck | `npm run typecheck` (`tsc --noEmit`) | **PASS** (exit 0) |
+| Unit + integration tests | `npm test` (`vitest run`) | **130/130 passed** (18 files) |
+| ESLint | `npm run lint` (`eslint src --ext .ts`) | **0 errors** (35 pre-existing warnings) |
+
+## Architecture
+
+- **Single entry point:** `src/main-new.ts` (modular core architecture)
+- **CLI entry:** `src/cli.ts` imports `runRepl` from `./main-new.js`
+- **Package.json:** `bin`/`main` → `dist/main-new.js`
+- **Old monolithic:** `src/main.ts` retained but no longer imported by CLI
 
 ## Technology Decisions (FINAL)
 

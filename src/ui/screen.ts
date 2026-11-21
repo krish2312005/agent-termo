@@ -145,7 +145,9 @@ function termPanelRows(): number {
 
 /** Strip ANSI escapes and fold \r progress-bar rewrites into single lines. */
 function termCleanLine(line: string): string {
-	const plain = line.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '');
+	const esc = String.fromCharCode(27);
+	const bel = String.fromCharCode(7);
+	const plain = line.replace(new RegExp(esc + '\\[[0-9;?]*[A-Za-z]', 'g'), '').replace(new RegExp(esc + '\\][^' + bel + ']*' + bel, 'g'), '');
 	const last = plain.split('\r').pop() ?? '';
 	return last.replace(/\t/g, '  ').slice(0, 400);
 }

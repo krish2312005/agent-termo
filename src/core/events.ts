@@ -237,7 +237,7 @@ export function reconstructSessionFromEvents(
   events: RunEvent[]
 ): SessionState {
   // Start with minimal session
-  let session: SessionState = {
+  const session: SessionState = {
     id: sessionId,
     projectRoot,
     title: 'New session',

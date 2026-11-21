@@ -2,7 +2,7 @@
 // Run Loop — Event-driven agent loop with state machine
 // =============================================================================
 
-import {
+import type {
   SessionEngine,
   RunResult,
   ConversationMessage,

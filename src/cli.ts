@@ -4,7 +4,7 @@
 // =============================================================================
 
 import { Command } from 'commander';
-import { runRepl } from './main.js';
+import { main as runRepl } from './main-new.js';
 import { saveNimApiKey } from './utils/config.js';
 import { ensureAgentFolder } from './runtime/agent-folder.js';
 import {

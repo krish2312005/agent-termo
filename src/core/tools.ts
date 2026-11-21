@@ -78,7 +78,7 @@ export class ToolRegistry {
       ...context,
       signal,
       onOutput: (delta: ToolOutputDelta) => {
-        this.eventBus.publish({
+        void this.eventBus.publish({
           id: randomUUID(),
           type: 'tool.output.delta',
           timestamp: new Date().toISOString(),

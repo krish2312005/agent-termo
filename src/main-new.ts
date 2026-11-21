@@ -176,22 +176,22 @@ async function main(projectRoot?: string): Promise<void> {
   
   // Load existing session state
   const sessionState = sessionEngine.getState();
-  let activeAgentName = sessionState.activeAgentName ?? '';
+  const activeAgentName = sessionState.activeAgentName ?? '';
   let activeAgentPrompt = '';
   if (activeAgentName) {
     const agent = customAgents.find((a) => a.name === activeAgentName);
     if (agent) activeAgentPrompt = agent.systemPrompt;
   }
   
-  let currentGoal = sessionState.currentGoal ?? '';
-  let taskState = sessionState.taskState ?? {
+  const currentGoal = sessionState.currentGoal ?? '';
+  const taskState = sessionState.taskState ?? {
     goal: '',
     status: 'idle' as const,
     reason: '',
     lastActions: [],
     completedOperations: [],
   };
-  let activePlan = sessionState.taskPlan;
+  const activePlan = sessionState.taskPlan;
   
   const sessionStartedAt = Date.now();
   
@@ -250,14 +250,14 @@ function refreshCommandCompletion(): void {
 async function runRepl(): Promise<void> {
   if (!appContext) return;
   
-  const { input, sessionEngine, runLoop, llmClient: _llmClient, projectRoot: _projectRoot, permissionMode: _permissionMode, allowedCommands: _allowedCommands, customAgents: _customAgents, customCommands: _customCommands, sessionStartedAt } = appContext;
+  const { input, sessionEngine, runLoop, sessionStartedAt } = appContext;
   
   let cleanupStarted = false;
   const cleanup = () => {
     if (cleanupStarted) return;
     cleanupStarted = true;
     input.close();
-    shutdownMcpServers().finally(() => {
+    void shutdownMcpServers().finally(() => {
       process.stdout.write('\n');
       console.log(`Session complete. ${Math.round((Date.now() - sessionStartedAt) / 60000)} minutes.`);
       process.exit(0);
@@ -373,7 +373,7 @@ async function runRepl(): Promise<void> {
 async function handleCommand(input: string): Promise<boolean> {
   if (!appContext) return false;
   
-  const { projectRoot, sessionEngine: _sessionEngine, llmClient, permissionMode, allowedCommands: _allowedCommands, customAgents: _customAgents, customCommands: _customCommands, input: _inputController } = appContext;
+  const { projectRoot, llmClient, permissionMode, customCommands: _customCommands } = appContext;
   const cmd = input.toLowerCase().trim();
   
   // Simple command handlers (reuse existing logic)

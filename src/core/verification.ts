@@ -2,7 +2,7 @@
 // Verification System — Structured completion checking with recovery
 // =============================================================================
 
-import {
+import type {
   VerificationResult,
   VerificationIssue,
   VerificationEvidence,
