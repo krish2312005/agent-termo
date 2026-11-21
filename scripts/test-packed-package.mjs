@@ -131,10 +131,18 @@ try {
 
   if (process.platform === "linux" || process.platform === "darwin") {
     console.log(`Testing prompt submission through a real ${process.platform} pseudo-terminal...`);
-    const scriptArgs = process.platform === "linux"
+    const interactiveCommand = process.platform === "linux"
+      ? "script"
+      : "python3";
+    const interactiveArgs = process.platform === "linux"
       ? ["--quiet", "--return", "--command", `${shellQuote(globalBinary)} ${shellQuote(projectDirectory)}`, "/dev/null"]
-      : ["-q", "/dev/null", globalBinary, projectDirectory];
-    const interactiveOutput = run("script", scriptArgs, {
+      : [
+          "-c",
+          "import os, pty, sys; status = pty.spawn(sys.argv[1:]); sys.exit(os.waitstatus_to_exitcode(status))",
+          globalBinary,
+          projectDirectory,
+        ];
+    const interactiveOutput = run(interactiveCommand, interactiveArgs, {
       cwd: outsideDirectory,
       input: "/status\r/exit\r",
       env: {
