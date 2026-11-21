@@ -107,7 +107,7 @@ describe('MarkdownPrinter', () => {
 		}).filter(Boolean);
 
 		expect(lines.some((line) => line.includes('✓ terminal output') && line.includes('2 lines'))).toBe(true);
-		expect(lines.some((line) => line.includes('inspect the preview above to expand'))).toBe(true);
+		expect(lines.some((line) => line.includes('press Ctrl+O to reopen and inspect'))).toBe(true);
 		expect(lines).not.toContain('     first line');
 		expect(lines).not.toContain('     second line');
 	});
