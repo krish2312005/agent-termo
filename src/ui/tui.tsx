@@ -418,10 +418,19 @@ export async function initScreen(info: { model: string; project: string; thinkin
   setScreen((current) => ({ ...current, ...info, thinking: info.thinking ?? current.thinking }));
   if (!layoutSupported()) return;
   if (renderer) return;
-  renderer = await createCliRenderer({ targetFps: 60, exitOnCtrlC: false });
+  renderer = await createCliRenderer({
+    stdin: process.stdin,
+    targetFps: 60,
+    gatherStats: false,
+    exitOnCtrlC: false,
+    useKittyKeyboard: {},
+    autoFocus: false,
+    openConsoleOnError: false,
+  });
   try {
+    // Match OpenCode: keep OpenTUI demand-driven instead of forcing 60 FPS redraws.
+    // Solid updates schedule the frames that actually need to be painted.
     await render(() => <App />, renderer);
-    renderer.start();
     process.on("exit", teardownScreen);
   } catch (error) {
     renderer.destroy();
