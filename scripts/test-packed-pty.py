@@ -40,10 +40,10 @@ def main():
 
                 # Emulate the basic replies Apple Terminal sends to OpenTUI's
                 # startup probes. A raw PTY does not answer terminal queries.
-                if b"\\x1b[6n" in chunk:
-                    os.write(master_fd, b"\\x1b[1;1R")
-                if b"\\x1b[c" in chunk:
-                    os.write(master_fd, b"\\x1b[?62;4c")
+                if b"\x1b[6n" in chunk:
+                    os.write(master_fd, b"\x1b[1;1R")
+                if b"\x1b[c" in chunk:
+                    os.write(master_fd, b"\x1b[?62;4c")
 
                 if b"AI coding agent for your terminal" in output and welcome_seen_at is None:
                     welcome_seen_at = time.monotonic()
@@ -51,7 +51,7 @@ def main():
                 # Let the REPL finish startup and register its input handler.
                 if welcome_seen_at is not None and not status_sent:
                     if time.monotonic() - welcome_seen_at >= 0.5:
-                        os.write(master_fd, b"/status\\r")
+                        os.write(master_fd, b"/status\r")
                         status_sent = True
 
                 if status_sent and b"Messages: 0" in output:
