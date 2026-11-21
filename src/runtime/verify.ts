@@ -47,7 +47,7 @@ const VERIFIABLE_TASK = /\b(build|implement|fix|feature|component|api|endpoint|b
 
 /** Shell commands that count as real verification evidence for code changes. */
 const CHECK_COMMAND =
-	/\b(test|vitest|jest|mocha|pytest|tsc|typecheck|type-check|lint|eslint|flake8|ruff)\b|\bnpm run (test|build|lint|typecheck)\b|\b(pnpm|yarn) (test|build|lint|typecheck)\b/i;
+	/(?:^|[;&|]\s*)(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test(?::unit)?|build|lint|typecheck|type-check|tsc)\b|(?:bunx|npx)\s+(?:vitest|jest|mocha|pytest|tsc|eslint|flake8|ruff)\b|(?:vitest|jest|mocha|pytest|tsc|eslint|flake8|ruff)\b|node\s+--test\b)/i;
 
 /** Scan one file's final content for placeholder/stub implementations. */
 export function scanForPlaceholders(path: string, content: string): VerificationIssue[] {
@@ -70,11 +70,11 @@ export function scanForPlaceholders(path: string, content: string): Verification
  * Decide whether a delegated run's own evidence supports its completion claim.
  *
  * `changedFiles` maps each file path the run wrote or edited to its final
- * content (the last applied version, not an intermediate draft). `ranCommands`
- * lists every `bash:execute` command the run actually invoked. Both must come
- * from what was observed happening, never from the agent's self-report.
+ * content (the last applied version, not an intermediate draft). `ranChecks`
+ * records each `bash:execute` result, including its observed success state
+ * and output; never populate it from the agent's self-report.
  */
-export function verifyCompletion(task: string, changedFiles: ReadonlyMap<string, string>, ranCommands: readonly string[]): VerificationResult {
+export function verifyCompletion(task: string, changedFiles: ReadonlyMap<string, string>, ranChecks: readonly RanCheck[]): VerificationResult {
 	const issues: VerificationIssue[] = [];
 
 	for (const [path, content] of changedFiles) {
@@ -82,13 +82,30 @@ export function verifyCompletion(task: string, changedFiles: ReadonlyMap<string,
 	}
 
 	const touchedCode = [...changedFiles.keys()].some((path) => CODE_FILE.test(path));
-	if (touchedCode && VERIFIABLE_TASK.test(task) && !ranCommands.some((cmd) => CHECK_COMMAND.test(cmd))) {
-		issues.push({
-			kind: 'unverified',
-			detail:
-				`code was written or edited for a task that implies working functionality ("${task.replace(/\s+/g, ' ').trim().slice(0, 100)}"), ` +
-				'but no test, build, lint or type-check command was recorded during the run.',
-		});
+	if (touchedCode && VERIFIABLE_TASK.test(task)) {
+		const latestChecks = new Map<string, RanCheck>();
+		for (const check of ranChecks) {
+			if (CHECK_COMMAND.test(check.command)) {
+				const key = check.command.trim().replace(/\s+/g, ' ').toLowerCase();
+				latestChecks.set(key, check);
+			}
+		}
+		const matchingChecks = [...latestChecks.values()];
+		const failedCheck = matchingChecks.find((check) => !check.success);
+
+		if (failedCheck) {
+			issues.push({
+				kind: 'check-failed',
+				detail: `\`${failedCheck.command}\` failed: ${failedCheck.output.replace(/\s+/g, ' ').trim().slice(0, 400)}`,
+			});
+		} else if (!matchingChecks.some((check) => check.success)) {
+			issues.push({
+				kind: 'unverified',
+				detail:
+					`code was written or edited for a task that implies working functionality ("${task.replace(/\s+/g, ' ').trim().slice(0, 100)}"), ` +
+					'but no test, build, lint or type-check command passed during the run.',
+			});
+		}
 	}
 
 	return { ok: issues.length === 0, issues };
@@ -100,28 +117,22 @@ export function formatIssues(issues: readonly VerificationIssue[]): string {
 }
 
 /**
- * verifyCompletion(), but when it would otherwise only flag "nothing was run
- * to check this" (the 'unverified' heuristic), it actually runs the project's
- * own checks via `runChecks` instead of guessing from the agent's command
- * history. `runChecks` is injected so the orchestration here stays testable
- * without spawning real processes; main.ts passes runProjectChecks(projectRoot).
+ * verifyCompletion(), but when no check command ran during the task, it invokes
+ * the project's own checks instead of guessing from the agent's command history.
+ * runChecks is injected so this remains testable without spawning real processes.
  *
- * - The project defines no test/lint/typecheck script at all (`runChecks`
- *   returns []): nothing to run, so the original heuristic result stands --
- *   this can still flag that code shipped with zero way to verify it.
- * - The project's own check fails: that replaces the heuristic with real,
- *   actionable command output -- the strongest evidence there is that the
- *   task is not actually done.
- * - The project's own check passes: the 'unverified' flag is lifted. The
- *   agent didn't have to remember to run it; the harness ran it for real.
+ * - No project check scripts (`runChecks` returns []): the unverified finding
+ *   remains.
+ * - A project check fails: the result contains the actual command and output.
+ * - Project checks pass: the unverified finding is lifted.
  */
 export async function verifyCompletionWithChecks(
 	task: string,
 	changedFiles: ReadonlyMap<string, string>,
-	ranCommands: readonly string[],
+	ranChecks: readonly RanCheck[],
 	runChecks: () => Promise<readonly RanCheck[]>,
 ): Promise<VerificationResult> {
-	const result = verifyCompletion(task, changedFiles, ranCommands);
+	const result = verifyCompletion(task, changedFiles, ranChecks);
 	if (!result.issues.some((issue) => issue.kind === 'unverified')) return result;
 
 	const checks = await runChecks();

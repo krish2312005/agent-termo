@@ -25,7 +25,7 @@ describe('verify', () => {
 
   it('rejects completion when a changed file is a stub, even with a passing report', () => {
     const files = new Map([['src/Budgets.tsx', 'export function Budgets() { return null; }']]);
-    const result = verifyCompletion('implement the budgets component', files, ['npm run test']);
+    const result = verifyCompletion('implement the budgets component', files, [{ command: 'npm run test', success: true, output: 'ok' }]);
     expect(result.ok).toBe(false);
     expect(result.issues[0]?.kind).toBe('placeholder');
     expect(formatIssues(result.issues)).toContain('Budgets.tsx');
@@ -33,14 +33,35 @@ describe('verify', () => {
 
   it('rejects completion when code was changed for an implementation task but nothing was ever run to check it', () => {
     const files = new Map([['src/api.ts', 'export function handler() { return doWork(); }']]);
-    const result = verifyCompletion('fix the login endpoint bug', files, ['ls -la']);
+    const result = verifyCompletion('fix the login endpoint bug', files, [{ command: 'ls -la', success: true, output: '' }]);
     expect(result.ok).toBe(false);
     expect(result.issues[0]?.kind).toBe('unverified');
   });
 
   it('accepts completion when a real implementation was written and a check command ran', () => {
     const files = new Map([['src/api.ts', 'export function handler() { return doWork(); }']]);
-    const result = verifyCompletion('fix the login endpoint bug', files, ['npm run typecheck && npm test']);
+    const result = verifyCompletion('fix the login endpoint bug', files, [{ command: 'npm run typecheck && npm test', success: true, output: 'passed' }]);
+    expect(result.ok).toBe(true);
+    expect(result.issues).toHaveLength(0);
+  });
+
+
+  it('rejects completion when an executed check command failed', () => {
+    const files = new Map([['src/api.ts', 'export function handler() { return doWork(); }']]);
+    const result = verifyCompletion('fix the login endpoint bug', files, [
+      { command: 'npm run test', success: false, output: 'Expected 200, got 500' },
+    ]);
+    expect(result.ok).toBe(false);
+    expect(result.issues[0]?.kind).toBe('check-failed');
+    expect(result.issues[0]?.detail).toContain('Expected 200, got 500');
+  });
+
+  it('accepts a successful rerun of a previously failed check command', () => {
+    const files = new Map([['src/api.ts', 'export function handler() { return doWork(); }']]);
+    const result = verifyCompletion('fix the login endpoint bug', files, [
+      { command: 'npm run test', success: false, output: 'flaky first run' },
+      { command: 'npm run test', success: true, output: 'second run passed' },
+    ]);
     expect(result.ok).toBe(true);
     expect(result.issues).toHaveLength(0);
   });
@@ -70,6 +91,36 @@ describe('verifyCompletionWithChecks', () => {
     expect(result.issues[0]?.detail).toContain('login.test.ts');
   });
 
+
+  it('does not let a later automatic check hide a failed check the agent already ran', async () => {
+    let fallbackCalled = false;
+    const result = await verifyCompletionWithChecks(
+      'fix the login endpoint bug',
+      files,
+      [{ command: 'npm run test', success: false, output: 'test assertion failed' }],
+      async () => {
+        fallbackCalled = true;
+        return [{ command: 'npm run test', success: true, output: 'ok' }];
+      },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.issues[0]?.kind).toBe('check-failed');
+    expect(result.issues[0]?.detail).toContain('test assertion failed');
+    expect(fallbackCalled).toBe(false);
+  });
+
+
+  it('does not treat an arbitrary command mentioning test as verification', async () => {
+    const result = await verifyCompletionWithChecks(
+      'fix the login endpoint bug',
+      files,
+      [{ command: 'echo test', success: true, output: 'test' }],
+      async () => [],
+    );
+    expect(result.ok).toBe(false);
+    expect(result.issues[0]?.kind).toBe('unverified');
+  });
+
   it('falls back to the heuristic flag when the project defines no checks to run', async () => {
     const result = await verifyCompletionWithChecks('fix the login endpoint bug', files, [], async () => []);
     expect(result.ok).toBe(false);
@@ -79,7 +130,7 @@ describe('verifyCompletionWithChecks', () => {
   it('never calls runChecks when the agent already ran a matching command itself', async () => {
     let called = false;
     const runChecks = async () => { called = true; return []; };
-    const result = await verifyCompletionWithChecks('fix the login endpoint bug', files, ['npm run test'], runChecks);
+    const result = await verifyCompletionWithChecks('fix the login endpoint bug', files, [{ command: 'npm run test', success: true, output: 'ok' }], runChecks);
     expect(called).toBe(false);
     expect(result.ok).toBe(true);
   });
@@ -88,7 +139,7 @@ describe('verifyCompletionWithChecks', () => {
     let called = false;
     const stubFiles = new Map([['src/Budgets.tsx', 'export function Budgets() { return null; }']]);
     const runChecks = async () => { called = true; return []; };
-    const result = await verifyCompletionWithChecks('implement the budgets component', stubFiles, ['npm run test'], runChecks);
+    const result = await verifyCompletionWithChecks('implement the budgets component', stubFiles, [{ command: 'npm run test', success: true, output: 'ok' }], runChecks);
     expect(called).toBe(false);
     expect(result.ok).toBe(false);
     expect(result.issues[0]?.kind).toBe('placeholder');
