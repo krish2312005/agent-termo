@@ -3,7 +3,7 @@ import { render, useKeyboard, useRenderer } from "@opentui/solid";
 import { For, Show, createSignal, onCleanup } from "solid-js";
 import { createInterface } from "node:readline";
 
-export type UiKind = "user" | "assistant" | "tool" | "info" | "success" | "error" | "dim" | "markdown";
+export type UiKind = "user" | "assistant" | "tool" | "info" | "success" | "error" | "dim" | "markdown" | "diff-add" | "diff-remove" | "diff-context";
 export interface UiEntry { id: number; kind: UiKind; content: string; streaming?: boolean; }
 export interface Key { name: string; text?: string; }
 export interface CommandInfo { name: string; description: string; }
@@ -309,6 +309,7 @@ function App() {
   const colors: Record<UiKind, string> = {
     user: "#8FCB9B", assistant: "#E6E1DC", tool: "#79B8D1", info: "#8BB7D8",
     success: "#8FCB9B", error: "#E47D76", dim: "#88827C", markdown: "#E6E1DC",
+    "diff-add": "#B7E4C7", "diff-remove": "#F0B4AE", "diff-context": "#BDB6AE",
   };
 
   return (
@@ -321,8 +322,16 @@ function App() {
         <For each={entries()}>
           {(entry) => (
             <box flexDirection="column" paddingX={1}>
-              <Show when={entry.kind === "markdown"} fallback={<text fg={colors[entry.kind]}>{entry.content}</text>}>
-                <markdown content={entry.content} syntaxStyle={syntaxStyle} streaming={entry.streaming ?? false} />
+              <Show when={entry.kind === "diff-add" || entry.kind === "diff-remove"} fallback={
+                <Show when={entry.kind === "markdown" || entry.kind === "diff-context"} fallback={<text fg={colors[entry.kind]}>{entry.content}</text>}>
+                  <Show when={entry.kind === "markdown"} fallback={<text fg={colors["diff-context"]}>{entry.content}</text>}>
+                    <markdown content={entry.content} syntaxStyle={syntaxStyle} streaming={entry.streaming ?? false} />
+                  </Show>
+                </Show>
+              }>
+                <box width="100%" paddingX={1} backgroundColor={entry.kind === "diff-add" ? "#17351F" : "#3A1D1D"}>
+                  <text fg={entry.kind === "diff-add" ? "#B7E4C7" : "#F0B4AE"}>{entry.content}</text>
+                </box>
               </Show>
             </box>
           )}
