@@ -149,7 +149,6 @@ function App() {
   }, activeRenderer.nativeScene);
   onCleanup(() => syntaxStyle.destroy());
 
-  const legacyAppleTerminal = usesLegacyAppleTerminal();
   const currentPicker = () => picker();
   const overlayAvailableRows = (reservedRows = 0): number => {
     const terminalPanelRows = terminalVisible() && terminal() ? 8 : 0;
@@ -218,13 +217,11 @@ function App() {
       ? "text"
       : event.ctrl
         ? "ctrl+" + event.name
-        : (event.meta || event.option)
-          ? "meta+" + event.name
-          : event.name === "return" && event.shift
-            ? "shift+enter"
-            : event.name === "return"
-              ? "enter"
-              : event.name;
+        : event.name === "return" && event.shift
+          ? "shift+enter"
+          : event.name === "return"
+            ? "enter"
+            : event.name;
     const key: Key = { name, text: sequence || (event.name === "space" ? " " : undefined) };
     const currentPicker = picker();
 
@@ -263,7 +260,7 @@ function App() {
         event.preventDefault();
         return;
       }
-      if (name === "tab" || (name === "enter" && !legacyAppleTerminal)) {
+      if (name === "tab" || name === "enter") {
         const selected = suggestions[Math.min(completionSelected(), suggestions.length - 1)];
         if (selected) {
           applyCompletion(selected, name === "enter" && selected.kind === "command");
@@ -387,11 +384,7 @@ function App() {
           flexGrow={1}
           flexBasis={0}
           minWidth={0}
-          height={promptInputHeight(
-            draft(),
-            textarea?.width || (process.stdout.columns ?? 80) - 8,
-            Math.max(3, Math.min(8, (process.stdout.rows ?? 24) - 11)),
-          )}
+          height={3}
           focused={inputActive() && !currentPicker()}
           placeholder="Ask anything… or type / for commands"
           onContentChange={() => {
@@ -401,14 +394,12 @@ function App() {
             setCompletionSelected(0);
           }}
           onSubmit={submitInput}
-          keyBindings={promptInputKeyBindings(legacyAppleTerminal)}
+          keyBindings={[{ name: "return", ctrl: false, shift: false, meta: false, action: "submit" }]}
         />
       </box>
       <box height={1} flexDirection="row" justifyContent="space-between">
         <text fg="#8D857D">{screen().thinking} · {screen().permissionMode} · {screen().usage}</text>
-        <text fg="#8D857D">{status() || (legacyAppleTerminal
-          ? "Return newline · Option+Return send · Tab complete · Ctrl+C quit"
-          : "Enter send · Shift+Enter newline · Tab complete · Ctrl+C quit")}</text>
+        <text fg="#8D857D">{status() || "Enter send · Shift+Enter newline · Tab complete · Ctrl+C quit"}</text>
       </box>
     </box>
   );
@@ -454,38 +445,6 @@ export function setNextInput(value: string): void {
   setCompletionHiddenFor("");
   textarea?.setText(value);
 }
-export function usesLegacyAppleTerminal(
-  platform = process.platform,
-  terminalProgram = process.env.TERM_PROGRAM ?? "",
-): boolean {
-  return platform === "darwin" && terminalProgram === "Apple_Terminal";
-}
-
-export function promptInputKeyBindings(legacyAppleTerminal: boolean) {
-  if (legacyAppleTerminal) {
-    return [
-      { name: "return", action: "newline" as const },
-      { name: "return", meta: true, action: "submit" as const },
-    ];
-  }
-
-  return [
-    { name: "return", shift: true, action: "newline" as const },
-    { name: "return", meta: true, action: "newline" as const },
-    { name: "return", ctrl: true, action: "newline" as const },
-    { name: "return", ctrl: false, shift: false, meta: false, action: "submit" as const },
-  ];
-}
-
-export function promptInputHeight(value: string, width: number, maxRows = 8): number {
-  const columns = Math.max(1, Math.floor(width));
-  const requestedRows = value.split("\n").reduce(
-    (rows, line) => rows + Math.max(1, Math.ceil([...line].length / columns)),
-    0,
-  );
-  return Math.min(Math.max(3, maxRows), Math.max(3, requestedRows));
-}
-
 export function terminalWidth(): number { return process.stdout.columns || 80; }
 export function clipText(value: string, max: number): string {
   if (max <= 0) return "";
