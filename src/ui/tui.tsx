@@ -1,13 +1,22 @@
 import { createCliRenderer, RGBA, SyntaxStyle, type CliRenderer, type TextareaRenderable } from "@opentui/core";
 import { render, useKeyboard, useRenderer } from "@opentui/solid";
-import { For, Show, createSignal, onCleanup } from "solid-js";
+import { For, Show, createSignal, onCleanup, type Accessor } from "solid-js";
 import { createInterface } from "node:readline";
+import packageJson from "../../package.json" with { type: "json" };
 
 export type UiKind = "user" | "assistant" | "tool" | "info" | "success" | "error" | "dim" | "markdown" | "diff-add" | "diff-remove" | "diff-context";
 export interface UiEntry { id: number; kind: UiKind; content: string; streaming?: boolean; }
 export interface Key { name: string; text?: string; }
 export interface CommandInfo { name: string; description: string; }
 export interface PickItem { value: string; label: string; hint?: string; }
+interface PickerState {
+  title: string;
+  items: PickItem[];
+  filtered: PickItem[];
+  selected: number;
+  query: string;
+  allowCustom: boolean;
+}
 export interface InputController {
   question: (prompt?: string) => Promise<string>;
   close: () => void;
@@ -25,7 +34,7 @@ const [completionHiddenFor, setCompletionHiddenFor] = createSignal("");
 const [inputActive, setInputActive] = createSignal(false);
 const [terminal, setTerminal] = createSignal<{ command: string; lines: string[]; exitCode: number | null } | null>(null);
 const [terminalVisible, setTerminalVisible] = createSignal(false);
-const [picker, setPicker] = createSignal<{ title: string; items: PickItem[]; filtered: PickItem[]; selected: number; query: string; allowCustom: boolean } | null>(null);
+const [picker, setPicker] = createSignal<PickerState | null>(null);
 const [completionSelected, setCompletionSelected] = createSignal(0);
 let nextId = 1;
 let renderer: CliRenderer | null = null;
@@ -315,7 +324,10 @@ function App() {
   return (
     <box width="100%" height="100%" flexDirection="column" backgroundColor="#11100F" paddingX={1} gap={0}>
       <box height={2} flexDirection="row" justifyContent="space-between" alignItems="center">
-        <text fg="#D99168">✻ Agent-Termo</text>
+        <box flexDirection="row" alignItems="center" gap={1}>
+          <text fg="#D99168">✻ Agent-Termo</text>
+          <text fg="#8D857D">v{packageJson.version}</text>
+        </box>
         <text fg="#89827C">{screen().model} · {screen().project}</text>
       </box>
       <scrollbox flexGrow={1} flexBasis={0} minHeight={0} stickyScroll stickyStart="bottom" viewportCulling contentOptions={{ layoutMode: "list" }}>
@@ -346,7 +358,7 @@ function App() {
         </box>
       </Show>
       <Show when={currentPicker()}>
-        {(current) => (
+        {(current: Accessor<PickerState>) => (
           <box border borderStyle="rounded" borderColor="#D99168" paddingX={1} flexDirection="column" flexShrink={0}>
             <text fg="#D99168">{current().title}</text>
             <text fg="#8F8982">Filter: {current().query}</text>
