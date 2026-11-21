@@ -173,7 +173,10 @@ function App() {
     const suggestions = completionItems();
     if (suggestions.length === 0) return [];
 
-    const visibleCount = 6;
+    // Keep the selected row inside the terminal's available space.
+    // Header (2 rows), composer (6 rows), and footer (1 row) use 9 rows.
+    const availableRows = Math.max(1, (process.stdout.rows ?? 24) - 9);
+    const visibleCount = Math.min(6, availableRows);
     const selected = Math.min(completionSelected(), suggestions.length - 1);
     const start = Math.min(
       Math.max(0, selected - visibleCount + 1),
