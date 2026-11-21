@@ -1,7 +1,25 @@
 import { describe, it, expect } from 'vitest';
 import { parseKeys } from '../../src/ui/screen.js';
+import { promptInputHeight } from '../../src/ui/tui.js';
 
 const parse = (chunk: string, state: { paste: string | null } = { paste: null }) => parseKeys(chunk, state);
+
+describe('promptInputHeight', () => {
+  it('keeps a minimum three-row input for short prompts', () => {
+    expect(promptInputHeight('', 40)).toBe(3);
+    expect(promptInputHeight('hello', 40)).toBe(3);
+  });
+
+  it('expands for explicit newlines and wrapped long lines', () => {
+    expect(promptInputHeight('one\ntwo\nthree\nfour', 40)).toBe(4);
+    expect(promptInputHeight('12345678901234567890', 10)).toBe(3);
+    expect(promptInputHeight('1234567890123456789012345678901234567890', 10)).toBe(4);
+  });
+
+  it('caps the input height so large prompts do not take over the terminal', () => {
+    expect(promptInputHeight('line\n'.repeat(20), 40, 8)).toBe(8);
+  });
+});
 
 describe('parseKeys', () => {
   it('merges consecutive printable characters into one text key', () => {
