@@ -153,27 +153,50 @@ try {
         { cwd: outsideDirectory, input: "/status\r/exit\r", env, timeout: 20_000 },
       );
     } else {
-      for (const [rows, columns] of [[24, 80], [77, 272]]) {
-        interactiveOutput = run(
-          "python3",
-          [
-            join(repositoryRoot, "scripts/test-packed-pty.py"),
-            globalBinary,
-            projectDirectory,
-            String(rows),
-            String(columns),
-          ],
-          { cwd: outsideDirectory, env, timeout: 18_000 },
-        );
-        assert(
-          interactiveOutput.includes("AI coding agent for your terminal"),
-          `the packed CLI must render the welcome transcript at ${columns}x${rows}`,
-        );
-        assert(
-          interactiveOutput.includes("Messages: 0"),
-          `the packed CLI must execute /status at ${columns}x${rows}`,
-        );
+      // Compare the working development entry point with the installed bundle
+      // under the same Bun binary, environment, project, and pseudo-terminal.
+      const bunExecutable = run("which", ["bun"], { cwd: outsideDirectory }).trim();
+      const ptyDriver = join(repositoryRoot, "scripts/test-packed-pty.py");
+      const launchers = [
+        { name: "source", command: bunExecutable, args: [join(repositoryRoot, "src/cli.ts"), projectDirectory] },
+        { name: "packed", command: globalBinary, args: [projectDirectory] },
+      ];
+      const dimensions = [[24, 80], [77, 272]];
+      const outcomes = [];
+
+      for (const launcher of launchers) {
+        for (const [rows, columns] of dimensions) {
+          interactiveOutput = run(
+            "python3",
+            [ptyDriver, launcher.command, ...launcher.args, String(rows), String(columns)],
+            { cwd: outsideDirectory, env, timeout: 18_000 },
+          );
+          const welcome = interactiveOutput.includes("PTY_TEST_WELCOME_SEEN=yes");
+          const status = interactiveOutput.includes("PTY_TEST_STATUS_SEEN=yes");
+          const da1 = interactiveOutput.match(/PTY_TEST_DA1_REPLIES=(\\d+)/)?.[1] ?? "0";
+          const cpr = interactiveOutput.match(/PTY_TEST_CPR_REPLIES=(\\d+)/)?.[1] ?? "0";
+          outcomes.push({ launcher: launcher.name, rows, columns, welcome, status, da1, cpr });
+          console.log(
+            `PTY comparison: ${launcher.name} ${columns}x${rows}; welcome=${welcome}; status=${status}; DA1=${da1}; CPR=${cpr}`,
+          );
+        }
       }
+
+      const sourcePassed = outcomes
+        .filter((item) => item.launcher === "source")
+        .every((item) => item.welcome && item.status);
+      const packedPassed = outcomes
+        .filter((item) => item.launcher === "packed")
+        .every((item) => item.welcome && item.status);
+
+      assert(
+        sourcePassed,
+        "the Bun source CLI did not pass the macOS PTY baseline; the PTY harness or terminal emulation is not valid yet.",
+      );
+      assert(
+        packedPassed,
+        "the installed Bun bundle differs from the working Bun source CLI under the same macOS PTY conditions.",
+      );
     }
     if (process.platform === "linux") {
       assert(
