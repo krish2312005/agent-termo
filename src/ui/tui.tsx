@@ -418,7 +418,10 @@ export async function initScreen(info: { model: string; project: string; thinkin
   setScreen((current) => ({ ...current, ...info, thinking: info.thinking ?? current.thinking }));
   if (!layoutSupported()) return;
   if (renderer) return;
-  renderer = await createCliRenderer({ targetFps: 60, exitOnCtrlC: false });
+  // shortcut: OpenTUI's default exitSignals (SIGHUP/SIGPIPE/etc.) call renderer.destroy()
+  // on signals some terminals (e.g. Apple Terminal) raise during startup probes, killing
+  // the session before the REPL loop starts. SIGINT is already handled by main.ts's cleanup.
+  renderer = await createCliRenderer({ targetFps: 60, exitOnCtrlC: false, exitSignals: [] });
   try {
     await render(() => <App />, renderer);
     renderer.start();
