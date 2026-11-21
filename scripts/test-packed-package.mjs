@@ -145,40 +145,9 @@ try {
         { cwd: outsideDirectory, input: "/status\r/exit\r", env, timeout: 20_000 },
       );
     } else {
-      const ptyScript = [
-        "import os, pty, select, signal, sys, time",
-        "binary, project = sys.argv[1:3]",
-        "pid, master = pty.fork()",
-        "if pid == 0: os.execv(binary, [binary, project])",
-        "output = bytearray()",
-        "sent_status = False",
-        "sent_interrupt = False",
-        "deadline = time.monotonic() + 12",
-        "while time.monotonic() < deadline:",
-        "  ready, _, _ = select.select([master], [], [], 0.1)",
-        "  if ready:",
-        "    try: chunk = os.read(master, 8192)",
-        "    except OSError: break",
-        "    if not chunk: break",
-        "    output.extend(chunk)",
-        "    if not sent_status and b'\\\\x1b[3G' in output:",
-        "      os.write(master, b'/status\\r')",
-        "      sent_status = True",
-        "    if sent_status and not sent_interrupt and b'Messages: 0' in output:",
-        "      os.write(master, b'\\x03')",
-        "      sent_interrupt = True",
-        "      deadline = time.monotonic() + 3",
-        "  ended, status = os.waitpid(pid, os.WNOHANG)",
-        "  if ended: break",
-        "if not sent_status or b'Messages: 0' not in output:",
-        "  os.kill(pid, signal.SIGTERM)",
-        "  os.waitpid(pid, 0)",
-        "sys.stdout.write(output.decode('utf-8', errors='replace'))",
-        "sys.exit(0 if sent_status and b'Messages: 0' in output else 1)",
-      ].join("\\n");
       interactiveOutput = run(
         "python3",
-        ["-c", ptyScript, globalBinary, projectDirectory],
+        [join(repositoryRoot, "scripts/test-packed-pty.py"), globalBinary, projectDirectory],
         { cwd: outsideDirectory, env, timeout: 18_000 },
       );
     }
