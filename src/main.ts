@@ -10,8 +10,8 @@ import { executeTool, applyFileChange, setTerminalHooks, killRunningTerminal } f
 import { loadMemory, loadTimeline, logToTimeline, logAgentTermoTimeline, appendToSessionLog, appendToTimeline, loadSessionLog } from './memory/index.js';
 import { buildSystemPrompt, filterAgentTools, resolveDelegation } from './agents/index.js';
 import { resolveProjectRoot, saveNimModel, saveNimThinking, savePermissionMode } from './utils/config.js';
-import { resolve } from 'node:path';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { resolve, relative, sep } from 'node:path';
+import { existsSync, realpathSync, readdirSync, readFileSync } from 'node:fs';
 import { ensureAgentFolder, loadProjectAgents, loadAgentCommands, type AgentCommand } from './runtime/agent-folder.js';
 import { loadTermoInstructions } from './runtime/termo-md.js';
 import { createSkill, deleteSkill, importSkill, listSkills, loadSkillCatalogPrompt, loadSkillInstructions, readSkillFile, type SkillDefinition, type SkillScope } from './runtime/skills.js';
@@ -122,12 +122,23 @@ function discoverProjectFiles(projectRoot: string): string[] {
 	return files;
 }
 
-function expandContextMentions(input: string, projectRoot: string, contextFiles: string[]): { text: string; attached: string[] } {
+function expandContextMentions(input: string, projectRoot: string): { text: string; attached: string[] } {
 	const attached: string[] = [];
 	const text = input.replace(/(^|\s)@([^\s]+)/g, (whole, prefix: string, name: string) => {
-		if (!contextFiles.includes(name)) return whole;
+		const filePath = resolve(projectRoot, name);
+		// Check if the file exists and is within the project directory (security check)
+		let isAllowed = false;
 		try {
-			const content = readFileSync(resolve(projectRoot, name), 'utf-8').slice(0, 30_000);
+			const realPath = realpathSync(filePath);
+			const realProjectRoot = realpathSync(projectRoot);
+			const relativePath = relative(realProjectRoot, realPath);
+			isAllowed = relativePath !== '..' && !relativePath.startsWith('..' + sep);
+		} catch {
+			// File doesn't exist or path resolution failed
+		}
+		if (!isAllowed) return whole;
+		try {
+			const content = readFileSync(filePath, 'utf-8').slice(0, 30_000);
 				attached.push(`## Attached file: ${name}\n\n\`\`\`\n${content}\n\`\`\``);
 			return prefix;
 		} catch {
@@ -135,6 +146,12 @@ function expandContextMentions(input: string, projectRoot: string, contextFiles:
 		}
 	});
 	return { text: text.trim() || (attached.length > 0 ? 'Inspect the attached project files and summarize the relevant context.' : input), attached };
+}
+
+function refreshContextFiles(projectRoot: string): void {
+	// Re-discover project files so newly created/modified files show up
+	// when using @ to reference them, without restarting the agent.
+	setContextFiles(discoverProjectFiles(projectRoot));
 }
 
 function dedup(arr: ToolCall[]): ToolCall[] {
@@ -474,8 +491,10 @@ async function executeToolWithReview(
 	if (proposedChange) {
 		if (permissionMode === 'auto' || permissionMode === 'files') {
 			const applyResult = await applyWithCheckpoint(proposedChange, projectRoot, getCheckpointId);
-			if (applyResult.success) printSuccess('Auto-applied: ' + (applyResult.output ?? proposedChange.path));
-			else printError(applyResult.error ?? 'Failed to auto-apply change');
+			if (applyResult.success) {
+				printSuccess('Auto-applied: ' + (applyResult.output ?? proposedChange.path));
+				refreshContextFiles(projectRoot);
+			} else printError(applyResult.error ?? 'Failed to auto-apply change');
 			return { toolResult: applyResult, change: proposedChange, applied: applyResult.success };
 		}
 			// Pause REPL input to prevent stale listeners from interfering with promptAcceptReject
@@ -497,6 +516,7 @@ async function executeToolWithReview(
 			stopSpinner(applyResult.success);
 			if (applyResult.success) {
 				printSuccess(applyResult.output ?? 'Change applied');
+				refreshContextFiles(projectRoot);
 				return { toolResult: applyResult, change: proposedChange, applied: true };
 			} else {
 				printError(applyResult.error ?? 'Failed to apply change');
@@ -509,6 +529,9 @@ async function executeToolWithReview(
 	}
 
 	printToolResult(toolName, toolResult);
+	if (toolResult.success && (toolName === 'file:write' || toolName === 'file:edit' || toolName === 'file:delete')) {
+		refreshContextFiles(projectRoot);
+	}
 	return { toolResult, applied: false };
 }
 
@@ -1362,7 +1385,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						const args = customCommandMatch?.[2]?.trim() ?? '';
 						userInput = customCommand.prompt.replace(/\$ARGUMENTS|\$ARGS/g, args) + (args && !customCommand.prompt.includes('$ARGUMENTS') && !customCommand.prompt.includes('$ARGS') ? `\n\nUser arguments:\n${args}` : '');
 					}
-					const contextExpansion = expandContextMentions(userInput, projectRoot, contextFiles);
+					const contextExpansion = expandContextMentions(userInput, projectRoot);
 					if (contextExpansion.attached.length > 0) {
 						if (!displayedInput) printUserMessage(rawInput);
 						displayedInput = true;
@@ -1424,6 +1447,9 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						try {
 							writeTaskPlanFile(projectRoot, activePlan);
 							activePlan.status = 'saved';
+							// Refresh @mention file list so newly created files (e.g. PLAN.md)
+							// are discoverable without restarting the agent.
+							setContextFiles(discoverProjectFiles(projectRoot));
 							refreshSystemPrompt();
 							persistSession();
 							printSuccess('Approved plan saved to PLAN.md. No implementation was started.');
