@@ -420,6 +420,7 @@ export async function initScreen(info: { model: string; project: string; thinkin
   if (renderer) return;
   renderer = await createCliRenderer({
     stdin: process.stdin,
+    externalOutputMode: "passthrough",
     targetFps: 60,
     gatherStats: false,
     exitOnCtrlC: false,
@@ -431,19 +432,27 @@ export async function initScreen(info: { model: string; project: string; thinkin
     // Match OpenCode: keep OpenTUI demand-driven instead of forcing 60 FPS redraws.
     // Solid updates schedule the frames that actually need to be painted.
     await render(() => <App />, renderer);
-    process.on("exit", teardownScreen);
+    process.on("exit", () => {
+      // Last-resort synchronous terminal restoration; normal shutdown awaits closed.
+      if (renderer && !renderer.isDestroyed) renderer.destroy();
+    });
   } catch (error) {
-    renderer.destroy();
+    const current = renderer;
     renderer = null;
+    if (current) {
+      current.destroy();
+      await current.closed.catch(() => {});
+    }
     throw error;
   }
 }
 
-export function teardownScreen(): void {
-  if (!renderer) return;
+export async function teardownScreen(): Promise<void> {
   const current = renderer;
+  if (!current) return;
   renderer = null;
-  current.destroy();
+  if (!current.isDestroyed) current.destroy();
+  await current.closed.catch(() => {});
 }
 
 export function setScreenStatus(info: { model?: string; project?: string; thinking?: string; usage?: string }): void {
