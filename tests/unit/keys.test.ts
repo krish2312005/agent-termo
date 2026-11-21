@@ -14,13 +14,15 @@ describe('prompt keyboard bindings', () => {
     ]);
   });
 
-  it('uses Return for newline in macOS Terminal and Option+Return to submit', () => {
+  it('uses Return to submit in macOS Terminal and Shift+Return for newlines', () => {
     expect(usesLegacyAppleTerminal('darwin', 'Apple_Terminal')).toBe(true);
     expect(usesLegacyAppleTerminal('darwin', 'iTerm.app')).toBe(false);
     expect(usesLegacyAppleTerminal('linux', 'Apple_Terminal')).toBe(false);
     expect(promptInputKeyBindings(true)).toEqual([
-      { name: 'return', action: 'newline' },
-      { name: 'return', meta: true, action: 'submit' },
+      { name: 'return', shift: true, action: 'newline' },
+      { name: 'return', meta: true, action: 'newline' },
+      { name: 'return', ctrl: true, action: 'newline' },
+      { name: 'return', ctrl: false, shift: false, meta: false, action: 'submit' },
     ]);
   });
 });
