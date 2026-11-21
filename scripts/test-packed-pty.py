@@ -38,6 +38,13 @@ def main():
                     break
                 output.extend(chunk)
 
+                # Emulate the basic replies Apple Terminal sends to OpenTUI's
+                # startup probes. A raw PTY does not answer terminal queries.
+                if b"\\x1b[6n" in chunk:
+                    os.write(master_fd, b"\\x1b[1;1R")
+                if b"\\x1b[c" in chunk:
+                    os.write(master_fd, b"\\x1b[?62;4c")
+
                 if b"AI coding agent for your terminal" in output and welcome_seen_at is None:
                     welcome_seen_at = time.monotonic()
 
