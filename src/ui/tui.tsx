@@ -353,7 +353,7 @@ function App() {
           )}
         </For>
       </scrollbox>
-      <Show when={terminalVisible() && terminal()}>
+      <Show when={terminalVisible() && terminal()} fallback={<box height={0} />}>
         <box height={8} border borderStyle="single" borderColor="#6D625A" paddingX={1} flexDirection="column">
           <text fg="#D99168">Terminal · {terminal()!.command} · {terminal()!.exitCode === null ? "running" : "exit " + terminal()!.exitCode}</text>
           <scrollbox flexGrow={1} minHeight={0} stickyScroll stickyStart="bottom">
@@ -361,7 +361,7 @@ function App() {
           </scrollbox>
         </box>
       </Show>
-      <Show when={currentPicker()}>
+      <Show when={currentPicker()} fallback={<box height={0} />}>
         {(current: Accessor<PickerState>) => (
           <box border borderStyle="rounded" borderColor="#D99168" paddingX={1} flexDirection="column" flexShrink={0}>
             <text fg="#D99168">{current().title}</text>
@@ -373,7 +373,7 @@ function App() {
           </box>
         )}
       </Show>
-      <Show when={inputActive() && completionItems().length > 0 && !currentPicker()}>
+      <Show when={inputActive() && completionItems().length > 0 && !currentPicker()} fallback={<box height={0} />}>
         <box paddingX={2} flexDirection="column" flexShrink={0}>
           <For each={visibleCompletionItems()}>
             {(item) => <text fg={item.selected ? "#F0B38D" : "#8EAAA8"}>{item.selected ? "› " : "  "}{item.label}{item.hint ? "  " + item.hint : ""}</text>}
@@ -418,23 +418,45 @@ export async function initScreen(info: { model: string; project: string; thinkin
   setScreen((current) => ({ ...current, ...info, thinking: info.thinking ?? current.thinking }));
   if (!layoutSupported()) return;
   if (renderer) return;
-  renderer = await createCliRenderer({ targetFps: 60, exitOnCtrlC: false });
+  renderer = await createCliRenderer({
+    stdin: process.stdin,
+    externalOutputMode: "passthrough",
+    targetFps: 60,
+    gatherStats: false,
+    exitOnCtrlC: false,
+    // Agent-Termo owns SIGINT cleanup; do not install a second renderer handler.
+    exitSignals: [],
+    useKittyKeyboard: {},
+    autoFocus: false,
+    openConsoleOnError: false,
+  });
   try {
+    // Agent-Termo's REPL waits on its own input controller. Keep the renderer
+    // active until that REPL exits; OpenCode can remain demand-driven because
+    // its TUI lifecycle is owned by its Effect scope and renderer destroy latch.
     await render(() => <App />, renderer);
     renderer.start();
-    process.on("exit", teardownScreen);
+    process.on("exit", () => {
+      // Last-resort synchronous terminal restoration; normal shutdown awaits closed.
+      if (renderer && !renderer.isDestroyed) renderer.destroy();
+    });
   } catch (error) {
-    renderer.destroy();
+    const current = renderer;
     renderer = null;
+    if (current) {
+      current.destroy();
+      await current.closed.catch(() => {});
+    }
     throw error;
   }
 }
 
-export function teardownScreen(): void {
-  if (!renderer) return;
+export async function teardownScreen(): Promise<void> {
   const current = renderer;
+  if (!current) return;
   renderer = null;
-  current.destroy();
+  if (!current.isDestroyed) current.destroy();
+  await current.closed.catch(() => {});
 }
 
 export function setScreenStatus(info: { model?: string; project?: string; thinking?: string; usage?: string }): void {

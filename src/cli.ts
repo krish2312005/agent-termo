@@ -6,7 +6,7 @@ import "@opentui/solid/preload";
 
 import { Command } from 'commander';
 import { runRepl } from './main.js';
-import { saveNimApiKey } from './utils/config.js';
+import { getConfig, saveNimApiKey } from './utils/config.js';
 import { ensureAgentFolder } from './runtime/agent-folder.js';
 import {
   loadMcpServerConfigs,
@@ -89,6 +89,10 @@ async function startAgent(
 	project: string,
 	options: { apiKey?: string; model?: string; debug?: boolean; autoApprove?: boolean },
 ): Promise<void> {
+  // Load the selected project's .env before checking for the API key.
+  // This matters when the global CLI is launched from a different directory.
+  getConfig(project);
+
   // Apply CLI overrides to env before main initializes.
   if (options.apiKey) process.env.NIM_API_KEY = options.apiKey;
   if (options.model) process.env.NIM_MODEL = options.model;

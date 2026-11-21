@@ -1329,8 +1329,8 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 		cleanupStarted = true;
 		persistSession();
 		input.close();
-		teardownScreen();
-		void shutdownMcpServers().finally(() => {
+		// Match OpenCode: restore the terminal and finish owned services before exiting.
+		void Promise.allSettled([teardownScreen(), shutdownMcpServers()]).then(() => {
 			process.stdout.write('\n');
 			console.log(
 				'Session complete. ' +
