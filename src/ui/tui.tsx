@@ -159,7 +159,6 @@ function App() {
     if (value.startsWith("/")) {
       return commands()
         .filter((item) => item.name.startsWith(value))
-        .slice(0, 6)
         .map((item) => ({ kind: "command" as const, label: item.name, hint: item.description, start: 0, end: value.length }));
     }
     const at = value.lastIndexOf("@");
@@ -167,8 +166,23 @@ function App() {
     const query = value.slice(at + 1).toLowerCase();
     return [...agentNames(), ...contextFiles()]
       .filter((item) => item.toLowerCase().startsWith(query))
-      .slice(0, 6)
       .map((label) => ({ kind: "mention" as const, label, hint: "mention", start: at, end: value.length }));
+  };
+
+  const visibleCompletionItems = () => {
+    const suggestions = completionItems();
+    if (suggestions.length === 0) return [];
+
+    const visibleCount = 6;
+    const selected = Math.min(completionSelected(), suggestions.length - 1);
+    const start = Math.min(
+      Math.max(0, selected - visibleCount + 1),
+      Math.max(0, suggestions.length - visibleCount),
+    );
+
+    return suggestions
+      .slice(start, start + visibleCount)
+      .map((item, index) => ({ ...item, selected: start + index === selected }));
   };
 
   const applyCompletion = (item: ReturnType<typeof completionItems>[number], submitCommand: boolean) => {
@@ -332,8 +346,8 @@ function App() {
       </Show>
       <Show when={inputActive() && completionItems().length > 0 && !currentPicker()}>
         <box paddingX={2} flexDirection="column">
-          <For each={completionItems()}>
-            {(item, index) => <text fg={index() === completionSelected() ? "#F0B38D" : "#8EAAA8"}>{index() === completionSelected() ? "› " : "  "}{item.label}{item.hint ? "  " + item.hint : ""}</text>}
+          <For each={visibleCompletionItems()}>
+            {(item) => <text fg={item.selected ? "#F0B38D" : "#8EAAA8"}>{item.selected ? "› " : "  "}{item.label}{item.hint ? "  " + item.hint : ""}</text>}
           </For>
         </box>
       </Show>
