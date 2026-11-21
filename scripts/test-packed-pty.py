@@ -13,13 +13,13 @@ import time
 
 def main():
     binary, project = sys.argv[1:3]
+    rows, columns = map(int, sys.argv[3:5])
     child_pid, master_fd = pty.fork()
 
     if child_pid == 0:
         os.execv(binary, [binary, project])
 
-    # Match the user's Apple Terminal window (272 columns x 77 rows).
-    fcntl.ioctl(master_fd, termios.TIOCSWINSZ, struct.pack("HHHH", 77, 272, 0, 0))
+    fcntl.ioctl(master_fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
     output = bytearray()
     welcome_seen_at = None
     status_sent = False
