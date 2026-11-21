@@ -1,6 +1,9 @@
 import solidPlugin from "@opentui/solid/bun-plugin";
 import { copy } from "fs-extra";
-import { existsSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
+
+// Remove stale output so every package contains only files from this build.
+rmSync("dist", { recursive: true, force: true });
 
 // Build the real CLI entry point. The Solid plugin compiles TSX to OpenTUI
 // renderables; packages stay external so Bun loads the matching native core.
