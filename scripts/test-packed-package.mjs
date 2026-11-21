@@ -129,29 +129,32 @@ try {
   assert(existsSync(join(projectDirectory, "docs", "TIMELINE.md")), "init must create project timeline");
   assert(existsSync(join(projectDirectory, ".agent-termo", "agents")), "init must create project agents directory");
 
-  if (process.platform === "linux") {
-    console.log("Testing prompt submission through a real pseudo-terminal...");
-    const command = `${shellQuote(globalBinary)} ${shellQuote(projectDirectory)}`;
-    const interactiveOutput = run(
-      "script",
-      ["--quiet", "--return", "--command", command, "/dev/null"],
-      {
-        cwd: outsideDirectory,
-        input: "/status\r/exit\r",
-        env: {
-          NIM_API_KEY: "agent-termo-package-smoke-test",
-          TERM: "screen-256color",
-          COLORTERM: "truecolor",
-        },
-        timeout: 20_000,
+  if (process.platform === "linux" || process.platform === "darwin") {
+    console.log(`Testing prompt submission through a real ${process.platform} pseudo-terminal...`);
+    const scriptArgs = process.platform === "linux"
+      ? ["--quiet", "--return", "--command", `${shellQuote(globalBinary)} ${shellQuote(projectDirectory)}`, "/dev/null"]
+      : ["-q", "/dev/null", globalBinary, projectDirectory];
+    const interactiveOutput = run("script", scriptArgs, {
+      cwd: outsideDirectory,
+      input: "/status\r/exit\r",
+      env: {
+        NIM_API_KEY: "agent-termo-package-smoke-test",
+        TERM: "xterm-256color",
+        COLORTERM: "truecolor",
+        ...(process.platform === "darwin" ? { TERM_PROGRAM: "Apple_Terminal" } : {}),
       },
+      timeout: 20_000,
+    });
+    assert(
+      interactiveOutput.includes("AI coding agent for your terminal"),
+      "the packed global executable must render its startup welcome transcript",
     );
     assert(
       interactiveOutput.includes("Messages: 0"),
       "the packed global executable must submit /status and execute the REPL command",
     );
   } else {
-    console.log("Skipping the Linux pseudo-terminal check on this platform.");
+    console.log(`Skipping the pseudo-terminal check on ${process.platform}.`);
   }
 
   console.log(`Packed npm CLI passed: ${packageJson.name}@${packageJson.version}`);
