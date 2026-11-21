@@ -429,9 +429,11 @@ export async function initScreen(info: { model: string; project: string; thinkin
     openConsoleOnError: false,
   });
   try {
-    // Match OpenCode: keep OpenTUI demand-driven instead of forcing 60 FPS redraws.
-    // Solid updates schedule the frames that actually need to be painted.
+    // Agent-Termo's REPL waits on its own input controller. Keep the renderer
+    // active until that REPL exits; OpenCode can remain demand-driven because
+    // its TUI lifecycle is owned by its Effect scope and renderer destroy latch.
     await render(() => <App />, renderer);
+    renderer.start();
     process.on("exit", () => {
       // Last-resort synchronous terminal restoration; normal shutdown awaits closed.
       if (renderer && !renderer.isDestroyed) renderer.destroy();
