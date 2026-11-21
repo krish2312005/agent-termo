@@ -161,7 +161,7 @@ try {
         "    except OSError: break",
         "    if not chunk: break",
         "    output.extend(chunk)",
-        "    if not sent_status and b'Ask anything' in output:",
+        "    if not sent_status and b'\\\\x1b[3G' in output:",
         "      os.write(master, b'/status\\r')",
         "      sent_status = True",
         "    if sent_status and not sent_interrupt and b'Messages: 0' in output:",
