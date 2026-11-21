@@ -141,6 +141,18 @@ function App() {
   onCleanup(() => syntaxStyle.destroy());
 
   const currentPicker = () => picker();
+  const visiblePickerItems = () => {
+    const current = picker();
+    if (!current) return [];
+    const visibleCount = 8;
+    const start = Math.min(
+      Math.max(0, current.selected - visibleCount + 1),
+      Math.max(0, current.filtered.length - visibleCount),
+    );
+    return current.filtered
+      .slice(start, start + visibleCount)
+      .map((item, index) => ({ ...item, selected: start + index === current.selected }));
+  };
   const completionItems = () => {
     const value = draft();
     if (!inputActive() || !value || value === completionHiddenFor()) return [];
@@ -311,8 +323,8 @@ function App() {
           <box border borderStyle="rounded" borderColor="#D99168" paddingX={1} flexDirection="column">
             <text fg="#D99168">{current().title}</text>
             <text fg="#8F8982">Filter: {current().query}</text>
-            <For each={current().filtered.slice(0, 8)}>
-              {(item, index) => <text fg={index() === current().selected ? "#F0B38D" : "#D0C9C2"}>{index() === current().selected ? "› " : "  "}{item.label}{item.hint ? "  " + item.hint : ""}</text>}
+            <For each={visiblePickerItems()}>
+              {(item) => <text fg={item.selected ? "#F0B38D" : "#D0C9C2"}>{item.selected ? "› " : "  "}{item.label}{item.hint ? "  " + item.hint : ""}</text>}
             </For>
             <text fg="#8F8982">↑ ↓ move · type to filter · Enter select · Esc cancel</text>
           </box>
