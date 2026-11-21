@@ -426,7 +426,7 @@ export async function initScreen(info: { model: string; project: string; thinkin
     exitOnCtrlC: false,
     // Agent-Termo owns SIGINT cleanup; do not install a second renderer handler.
     exitSignals: [],
-    useKittyKeyboard: {},
+    useKittyKeyboard: kittyKeyboardOptions(),
     autoFocus: false,
     openConsoleOnError: false,
   });
@@ -482,6 +482,15 @@ export function usesLegacyAppleTerminal(
   terminalProgram = process.env.TERM_PROGRAM ?? "",
 ): boolean {
   return platform === "darwin" && terminalProgram === "Apple_Terminal";
+}
+
+export function kittyKeyboardOptions(
+  platform = process.platform,
+  terminalProgram = process.env.TERM_PROGRAM ?? "",
+): Record<string, never> | null {
+  // Apple Terminal does not implement Kitty keyboard mode. Do not enable
+  // extended key reporting there; keep it enabled for capable terminals.
+  return usesLegacyAppleTerminal(platform, terminalProgram) ? null : {};
 }
 
 export function promptInputKeyBindings(_legacyAppleTerminal: boolean) {
