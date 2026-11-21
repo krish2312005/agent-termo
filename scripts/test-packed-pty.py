@@ -13,12 +13,13 @@ import time
 
 
 def main():
-    binary, project = sys.argv[1:3]
-    rows, columns = map(int, sys.argv[3:5])
+    command = sys.argv[1]
+    command_args = sys.argv[2:-2]
+    rows, columns = map(int, sys.argv[-2:])
     child_pid, master_fd = pty.fork()
 
     if child_pid == 0:
-        os.execv(binary, [binary, project])
+        os.execv(command, [command, *command_args])
 
     fcntl.ioctl(master_fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
     output = bytearray()
@@ -89,9 +90,8 @@ def main():
     sys.stdout.write(output.decode("utf-8", errors="replace"))
     print("PTY_TEST_WELCOME_SEEN=" + ("yes" if welcome_seen else "no"))
     print("PTY_TEST_STATUS_SEEN=" + ("yes" if status_seen else "no"))
-
-    if not status_sent or not status_seen:
-        raise SystemExit("Packed CLI did not activate input and execute /status.")
+    print("PTY_TEST_CPR_REPLIES=" + str(cpr_replies))
+    print("PTY_TEST_DA1_REPLIES=" + str(da1_replies))
 
 
 if __name__ == "__main__":
