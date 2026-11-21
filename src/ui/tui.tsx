@@ -202,8 +202,9 @@ function App() {
     const value = textarea?.plainText ?? draft();
     const next = item.kind === "command"
       ? item.label
-      : value.slice(0, item.start) + item.label + " " + value.slice(item.end);
+      : value.slice(0, item.start) + "@" + item.label + " " + value.slice(item.end);
     textarea?.setText(next);
+    textarea?.gotoBufferEnd();
     setDraft(next);
     setCompletionSelected(0);
     if (item.kind === "command" && submitCommand) submitInput();
