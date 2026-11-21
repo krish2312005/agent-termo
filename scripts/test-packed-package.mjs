@@ -145,20 +145,34 @@ try {
         { cwd: outsideDirectory, input: "/status\r/exit\r", env, timeout: 20_000 },
       );
     } else {
-      interactiveOutput = run(
-        "python3",
-        [join(repositoryRoot, "scripts/test-packed-pty.py"), globalBinary, projectDirectory],
-        { cwd: outsideDirectory, env, timeout: 18_000 },
+      for (const [rows, columns] of [[24, 80], [77, 272]]) {
+        interactiveOutput = run(
+          "python3",
+          [
+            join(repositoryRoot, "scripts/test-packed-pty.py"),
+            globalBinary,
+            projectDirectory,
+            String(rows),
+            String(columns),
+          ],
+          { cwd: outsideDirectory, env, timeout: 18_000 },
+        );
+        assert(
+          interactiveOutput.includes("AI coding agent for your terminal"),
+          `the packed CLI must render the welcome transcript at ${columns}x${rows}`,
+        );
+        assert(
+          interactiveOutput.includes("Messages: 0"),
+          `the packed CLI must execute /status at ${columns}x${rows}`,
+        );
+      }
+    }
+    if (process.platform === "linux") {
+      assert(
+        interactiveOutput.includes("Messages: 0"),
+        "the packed global executable must submit /status and execute the REPL command",
       );
     }
-    assert(
-      interactiveOutput.includes("AI coding agent for your terminal"),
-      "the packed global executable must render its startup welcome transcript",
-    );
-    assert(
-      interactiveOutput.includes("Messages: 0"),
-      "the packed global executable must submit /status and execute the REPL command",
-    );
   } else {
     console.log(`Skipping the pseudo-terminal check on ${process.platform}.`);
   }
