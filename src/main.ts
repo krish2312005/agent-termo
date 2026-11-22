@@ -9,7 +9,8 @@ import { TOOL_DEFINITIONS } from './llm/tools.js';
 import { executeTool, applyFileChange, setTerminalHooks, killRunningTerminal } from './tools/index.js';
 import { appendToMemory, loadMemory, loadMemorySync, loadTimeline, loadTimelineSync, loadSessionLogContext, logToTimeline, logAgentTermoTimeline, appendToSessionLog, appendToTimeline } from './memory/index.js';
 import { buildSystemPrompt, filterAgentTools, resolveDelegation } from './agents/index.js';
-import { resolveProjectRoot, saveNimModel, saveNimThinking, savePermissionMode } from './utils/config.js';
+import { resolveProjectRoot, saveNimModel, saveNimThinking, savePermissionMode, listSavedProviders, activateProvider, saveProviderConfig } from './utils/config.js';
+import { BUILTIN_PROVIDERS, type ProviderDefinition, type StoredProviderConfig } from './llm/providers.js';
 import { resolve, relative, sep } from 'node:path';
 import { existsSync, realpathSync, readdirSync, readFileSync } from 'node:fs';
 import { ensureAgentFolder, loadProjectAgents, loadAgentCommands, type AgentCommand } from './runtime/agent-folder.js';
@@ -1063,6 +1064,169 @@ async function handleModelCommand(arg: string, nimClient: NimClient, projectRoot
 	}
 }
 
+async function handleProvidersCommand(
+	arg: string,
+	nimClient: NimClient,
+	projectRoot: string,
+	input: ReturnType<typeof createInput>,
+): Promise<void> {
+	const [action, ...rest] = arg.trim().split(/\\s+/).filter(Boolean);
+	const configured = listSavedProviders();
+	const current = nimClient.getProvider();
+
+	if (action === 'list') {
+		printInfo('Configured API providers:');
+		const entries = [...configured];
+		if (!entries.some((provider) => provider.id === current.id)) entries.unshift(current);
+		for (const provider of entries) {
+			const marker = provider.id === current.id ? '  ● active' : '';
+			printInfo(`  ${provider.name} · ${provider.model || 'no model selected'}${marker}`);
+		}
+		return;
+	}
+
+	if (action === 'use') {
+		const id = rest[0];
+		if (!id) {
+			printInfo('Usage: /providers use <provider-id>');
+			return;
+		}
+		const provider = activateProvider(id);
+		if (!provider) {
+			printError('Provider is not configured: ' + id, 'Use /providers to add it first.');
+			return;
+		}
+		nimClient.setProvider(provider);
+		setScreenStatus({ model: provider.model });
+		printSuccess('Active provider: ' + provider.name + ' · ' + provider.model);
+		logAgentTermoTimeline('Provider switched to ' + provider.name + ' (' + provider.model + ')', projectRoot);
+		return;
+	}
+
+	const requestedId = action === 'add' ? rest[0] : action;
+	const existingDefinitions = configured.filter((provider) => !BUILTIN_PROVIDERS.some((item) => item.id === provider.id));
+	const providerOptions = [
+		...BUILTIN_PROVIDERS.map((provider) => ({
+			value: provider.id,
+			label: provider.name,
+			hint: provider.protocol === 'anthropic' ? 'native Claude API' : provider.description,
+		})),
+		...existingDefinitions.map((provider) => ({
+			value: provider.id,
+			label: provider.name,
+			hint: 'saved custom endpoint',
+		})),
+	];
+	let providerId = requestedId;
+	if (!providerId) {
+		providerId = await pick({
+			title: 'Choose an API provider',
+			items: providerOptions,
+			current: current.id,
+		});
+	}
+	if (!providerId) {
+		printInfo('Provider selection cancelled.');
+		return;
+	}
+
+	let definition: ProviderDefinition | undefined = BUILTIN_PROVIDERS.find((provider) => provider.id === providerId);
+	let customName = '';
+	let customBaseUrl = '';
+	if (providerId === 'custom') {
+		customName = (await input.question('Provider name: ')).trim();
+		if (!customName) {
+			printError('A provider name is required.');
+			return;
+		}
+		customBaseUrl = (await input.question('OpenAI-compatible API base URL: ')).trim().replace(/\\/+$/, '');
+		if (!/^https?:\\/\\//i.test(customBaseUrl)) {
+			printError('Enter a valid HTTP or HTTPS API base URL.');
+			return;
+		}
+		providerId = 'custom-' + customName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+		definition = {
+			id: providerId,
+			name: customName,
+			baseUrl: customBaseUrl,
+			protocol: 'openai',
+			description: 'Custom OpenAI-compatible endpoint',
+			suggestedModels: [],
+		};
+	}
+	if (!definition) {
+		const savedCustom = configured.find((provider) => provider.id === providerId);
+		if (savedCustom) definition = savedCustom;
+	}
+	if (!definition) {
+		printError('Unknown provider: ' + providerId);
+		return;
+	}
+
+	const saved = configured.find((provider) => provider.id === providerId);
+	const secret = await input.questionSecret(
+		saved
+			? 'API key (press Enter to keep the saved key): '
+			: 'API key (input hidden): ',
+	);
+	if (secret === null) {
+		printInfo('Provider setup cancelled.');
+		return;
+	}
+	const envKey = process.env[providerId.toUpperCase().replace(/[^A-Z0-9]/g, '_') + '_API_KEY']
+		?? (providerId === 'nvidia' ? process.env.NIM_API_KEY : undefined)
+		?? '';
+	const apiKey = secret.trim() || saved?.apiKey || envKey;
+	if (!apiKey) {
+		printError('An API key is required for ' + definition.name + '.');
+		return;
+	}
+
+	const candidate: StoredProviderConfig = {
+		...definition,
+		baseUrl: customBaseUrl || saved?.baseUrl || definition.baseUrl,
+		apiKey,
+		model: saved?.model || definition.suggestedModels[0] || '',
+	};
+	nimClient.setProvider(candidate);
+	startSpinner('Fetching ' + definition.name + ' models');
+	const modelList = await withEscapeCancellation(nimClient, () => nimClient.listModels());
+	stopSpinner();
+	if (!modelList.live) {
+		printInfo('Could not fetch the live model list (' + (modelList.error ?? 'unknown error') + '). You can still enter a model ID manually.');
+	}
+
+	const modelItems = modelList.models.length > 0
+		? modelList.models.map((model) => ({ value: model.id, label: model.id, hint: model.note }))
+		: [{ value: '__manual__', label: 'Enter model ID manually', hint: 'type the model identifier' }];
+	let selectedModel = await pick({
+		title: 'Select a model · ' + definition.name,
+		items: modelItems,
+		current: candidate.model,
+		allowCustom: true,
+	});
+	if (selectedModel === null && candidate.model) selectedModel = candidate.model;
+	if (!selectedModel || selectedModel === '__manual__') {
+		selectedModel = (await input.question('Model ID: ')).trim() || null;
+	}
+	if (!selectedModel) {
+		printInfo('Provider setup cancelled.');
+		return;
+	}
+
+	candidate.model = selectedModel;
+	nimClient.setProvider(candidate);
+	try {
+		saveProviderConfig(candidate);
+		printSuccess('Provider saved: ' + candidate.name + ' · ' + candidate.model);
+	} catch (error) {
+		printError('Provider is active for this session but could not be saved: ' + (error instanceof Error ? error.message : String(error)));
+	}
+	setScreenStatus({ model: candidate.model });
+	logAgentTermoTimeline('Provider configured: ' + candidate.name + ' (' + candidate.model + ')', projectRoot);
+	void logToTimeline(projectRoot, 'Provider configured: ' + candidate.name + ' (' + candidate.model + ')');
+}
+
 async function handleThinkingCommand(arg: string, nimClient: NimClient, projectRoot: string): Promise<void> {
 	const capacities: Array<{ value: ThinkingCapacity; label: string; hint: string }> = [
 		{ value: 'off', label: 'off', hint: 'NVIDIA /no_think concise mode' },
@@ -1132,7 +1296,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 	let activePlan: TaskPlan | undefined = session.taskPlan;
 	const sessionStartedAt = Date.now();
 
-	if (session.model) nimClient.setModel(session.model);
+	if (session.model && (!session.providerId || session.providerId === nimClient.getProvider().id)) nimClient.setModel(session.model);
 	if (session.thinkingCapacity) nimClient.setThinkingCapacity(session.thinkingCapacity as ThinkingCapacity);
 	currentGoal = session.currentGoal ?? '';
 	if (session.activeAgentName) {
@@ -1193,6 +1357,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 		session.currentGoal = currentGoal || undefined;
 		session.activeAgentName = activeAgentName || undefined;
 		session.model = nimClient.getModel();
+		session.providerId = nimClient.getProvider().id;
 		session.thinkingCapacity = nimClient.getThinkingCapacity();
 		session.taskState = {
 			goal: taskState.goal,
@@ -1639,6 +1804,11 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					await printTimelineFile(projectRoot);
 					continue mainLoop;
 				}
+					if (cmd === '/providers' || cmd.startsWith('/providers ')) {
+						await handleProvidersCommand(userInput.trim().slice('/providers'.length).trim(), nimClient, projectRoot, input);
+						persistSession();
+						continue mainLoop;
+					}
 					if (cmd === '/model' || cmd.startsWith('/model ')) {
 						// Take the argument from the original text: model IDs are case-sensitive.
 						await handleModelCommand(userInput.trim().slice('/model'.length).trim(), nimClient, projectRoot);
