@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { finishTaskState, isTransientError, shouldRunDelegationsInParallel, withTransientRetries } from '../../src/main.js';
+import { finishTaskState, getToolLoopStopReason, isTransientError, shouldRunDelegationsInParallel, withTransientRetries } from '../../src/main.js';
 
 describe('task resumability', () => {
 	it('keeps an interrupted task resumable instead of marking it idle', () => {
@@ -14,6 +14,18 @@ describe('task resumability', () => {
 		finishTaskState(state);
 		expect(state.status).toBe('idle');
 		expect(state.reason).toBe('');
+	});
+
+	it('does not interrupt a task at the old 40-iteration threshold', () => {
+		expect(getToolLoopStopReason(41, 60_000)).toBeUndefined();
+	});
+
+	it('pauses a task at the larger iteration safety limit', () => {
+		expect(getToolLoopStopReason(121, 60_000)).toContain('120 model-turn');
+	});
+
+	it('pauses a task at the wall-clock safety limit', () => {
+		expect(getToolLoopStopReason(10, 20 * 60 * 1000 + 1)).toContain('20-minute');
 	});
 
 	it('treats a bare "Connection error." as transient', () => {

@@ -13,7 +13,7 @@ function parseAgentMeta(content: string): { description: string; tools: string[]
   const toolsStr = toolsMatch?.[1] ?? '';
   const tools = toolsStr
     ? toolsStr.split(',').map((t) => t.trim().replace(/^["']|["']$/g, ''))
-    : ['file:read', 'file:write', 'file:edit', 'file:delete', 'file:glob', 'grep', 'bash:execute', 'git:status', 'git:commit', 'git:push', 'git:log'];
+    : ['file:read', 'file:write', 'file:edit', 'file:delete', 'file:glob', 'grep', 'bash:execute', 'bash:start', 'bash:read', 'bash:stop', 'git:status', 'git:commit', 'git:push', 'git:log'];
   return { description: descMatch?.[1]?.trim() ?? '', tools };
 }
 
@@ -72,7 +72,10 @@ Available functions:
 - file:delete(path) → delete a file after explicit user instruction
 - file:glob(pattern) → list files matching a glob (e.g. "src/**/*.ts")
 - grep(pattern, path, glob?) → search for text in files
-- bash:execute(command) → run a shell command
+- bash:execute(command) → run a short-lived shell command and capture stdout/stderr/exit code
+- bash:start(command) → start a persistent process and return a session ID
+- bash:read(session_id, cursor?) → read new live stdout/stderr and process status
+- bash:stop(session_id) → stop a persistent process
 - git:status() / git:commit(message) / git:push() → version control
 - agent:delegate(agent, task, context?) → spawn a specialist sub-agent and receive its result
 - skill:read(name, path?) → load a relevant skill's SKILL.md or one of its supporting reference files
@@ -86,6 +89,16 @@ MEMORY RULES:
 WORKFLOW CONTINUITY:
 - When the user says "continue", resume the interrupted task from the last completed step using the conversation history. Never restart the task from the beginning or redo work that is already done.
 - If a step failed, verify the current state of the files (file:read) and continue from there.
+
+FULL-STACK IMPLEMENTATION WORKFLOW — MANDATORY FOR APPLICATIONS AND WEBSITES:
+- Start by mapping the real project: inspect the root and workspace package manifests, lockfiles, app entry points, routes, API handlers, database schema/migrations, environment examples, and existing tests. Do not assume a framework, folder layout, API route, or database.
+- Write concrete acceptance criteria and user journeys before editing. Identify frontend, backend, persistence, authentication/authorization, deployment, and integration boundaries that the requested feature actually needs.
+- Trace every important user action end-to-end: UI event/form → frontend API client → real backend route/controller → validation/service → database or external dependency → response → UI state. Do not leave fake endpoints, disconnected forms, mock-only data, hard-coded success states, or duplicated API contracts.
+- Reuse the project's existing architecture and conventions. Define or reuse typed request/response contracts, centralize API base URLs, handle credentials and CORS correctly, validate inputs on the server, and keep secrets in environment variables. Never invent credentials or assume a service is configured.
+- Implement loading, empty, validation, success, network-error, server-error, and unauthorized states where applicable. Check responsive layouts and accessibility without replacing working project design conventions.
+- Run the actual frontend and backend using bash:start (or the project's real start scripts), then use bash:read repeatedly to inspect startup logs and runtime errors. A process being alive is not proof that it is ready. Exercise real API requests and the relevant user journeys; inspect both frontend and backend logs after failures. Stop processes you started when verification is complete unless the user asked to leave them running.
+- Run the project's real tests, typecheck, lint, and production build. For multi-package repositories, inspect workspace scripts and validate each affected package plus the integrated application. If browser automation is not available, say that visual/browser verification was not performed rather than claiming it.
+- Before reporting completion, verify the full integration path and ensure no frontend request points to a missing route, no backend route is unconsumed where the feature requires it, and no required environment variable or migration is undocumented.
 
 QUALITY GATE — MANDATORY FOR CODE AND PROJECT WORK:
 - Treat a sub-agent's "done" message as a claim, not proof. The task is incomplete until the actual changed files and validation results have been checked. This is enforced, not just advised: a completion report is automatically rejected if the files written contain stub implementations (e.g. a function body that is only "return null") or if the task implied working code but no test/build/lint/type-check command ever ran. When no check command was run, the harness itself runs the project's own package.json test/typecheck/lint scripts for real before accepting completion — it never invents a command, and a failing result is returned with the actual failing output, not a guess. Do not try to talk around this check or re-delegate the same unfinished work hoping it will pass; fix the actual stub or the actual failing check.
@@ -116,7 +129,15 @@ AVAILABLE FILES:
 /** Restrict a delegated agent to the tools explicitly declared in its frontmatter. */
 export function filterAgentTools(agent: Agent, available: ToolDef[], allowDelegation = false): ToolDef[] {
   const allowed = new Set(agent.tools);
-  return available.filter((tool) => allowed.has(tool.name) && (allowDelegation || tool.name !== 'agent:delegate'));
+  const effectiveAllowed = new Set(allowed);
+  // A specialist allowed to execute shell commands must also be able to inspect
+  // and stop persistent processes it starts (for example a frontend dev server).
+  if (effectiveAllowed.has('bash:execute')) {
+    effectiveAllowed.add('bash:start');
+    effectiveAllowed.add('bash:read');
+    effectiveAllowed.add('bash:stop');
+  }
+  return available.filter((tool) => effectiveAllowed.has(tool.name) && (allowDelegation || tool.name !== 'agent:delegate'));
 }
 
 const delegateKey = (name: string): string => name.trim().replace(/^@/, '').toLowerCase().replace(/[\s_.]+/g, '-');

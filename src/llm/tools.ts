@@ -167,7 +167,7 @@ export const TOOL_DEFINITIONS: ToolDef[] = [
   // ── Bash ───────────────────────────────────────────────────────────────────
   {
     name: 'bash:execute',
-    description: 'Execute a shell command and return its stdout/stderr output. Destructive commands (rm, dd) require user confirmation.',
+    description: 'Execute a short-lived shell command and return its stdout/stderr and exit code. Long-running development servers are started in the background automatically; use bash:start for other persistent processes, then bash:read to inspect live logs and bash:stop to stop them.',
     parameters: {
       type: 'object',
       properties: {
@@ -184,8 +184,46 @@ export const TOOL_DEFINITIONS: ToolDef[] = [
           description: 'Timeout in milliseconds (default 300000)',
           default: 300000,
         },
+        background: {
+          type: 'boolean',
+          description: 'Start the command as a persistent background process and return a session ID instead of waiting for it to exit.',
+          default: false,
+        },
       },
       required: ['command'],
+    },
+  },
+  {
+    name: 'bash:start',
+    description: 'Start a persistent background process such as a worker, API server, frontend dev server, or database service. Returns a session_id and startup output. Use bash:read to poll stdout/stderr and bash:stop to stop it.',
+    parameters: {
+      type: 'object',
+      properties: {
+        command: { type: 'string', description: 'Shell command to start' },
+        cwd: { type: 'string', description: 'Working directory (defaults to project root)' },
+      },
+      required: ['command'],
+    },
+  },
+  {
+    name: 'bash:read',
+    description: 'Read new stdout/stderr from a background terminal session. Pass the session_id returned by bash:start and the previous next_cursor to retrieve only new output.',
+    parameters: {
+      type: 'object',
+      properties: {
+        session_id: { type: 'string', description: 'Background terminal session ID' },
+        cursor: { type: 'number', description: 'Cursor returned by the previous read (defaults to 0)' },
+      },
+      required: ['session_id'],
+    },
+  },
+  {
+    name: 'bash:stop',
+    description: 'Stop a background terminal session started with bash:start.',
+    parameters: {
+      type: 'object',
+      properties: { session_id: { type: 'string', description: 'Background terminal session ID' } },
+      required: ['session_id'],
     },
   },
   // ── Git ────────────────────────────────────────────────────────────────────

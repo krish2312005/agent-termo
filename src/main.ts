@@ -584,7 +584,8 @@ async function executeToolWithReview(
 	return { toolResult, applied: false };
 }
 
-const DELEGATED_TOOL_BUDGET = 24;
+const DELEGATED_TOOL_BUDGET = 48;
+const DELEGATED_TIME_BUDGET_MS = 10 * 60 * 1000;
 
 /** One-line summary of a tool call's arguments for the sub-agent monitor. */
 function describeArgs(args: Record<string, unknown>): string {
@@ -665,7 +666,7 @@ async function runDelegatedAgent(
 	const ranChecks: RanCheck[] = [];
 
 	try {
-		for (let iteration = 0; iteration < DELEGATED_TOOL_BUDGET; iteration++) {
+		for (let iteration = 0; iteration < DELEGATED_TOOL_BUDGET && Date.now() - started < DELEGATED_TIME_BUDGET_MS; iteration++) {
 			setSubAgentActivity(subId, 'waiting for the model', iteration + 1);
 			let result: { content: string; toolCalls: ToolCall[] };
 			try {
@@ -741,7 +742,7 @@ async function runDelegatedAgent(
 		const output = finalText.trim();
 		if (!output) {
 			const detail =
-				`Sub-agent ${agent.name} exhausted its ${DELEGATED_TOOL_BUDGET}-iteration budget without a final report.` +
+				`Sub-agent ${agent.name} reached its bounded execution budget (${DELEGATED_TOOL_BUDGET} model turns or 10 minutes) without a final report.` +
 				(lastNarration ? ` Last progress: ${lastNarration.replace(/\s+/g, ' ').slice(0, 500)}` : '');
 			finishSubAgent(subId, 'failed', detail);
 			logAgentTermoTimeline(`Sub-agent ${agent.name} exhausted its budget before completing: ${task.slice(0, 120)}`, projectRoot);
@@ -780,6 +781,12 @@ async function runDelegatedAgent(
  * Run the tool-call loop: execute tools, feed results back to the LLM,
  * and repeat until the LLM stops issuing tool calls.
  */
+export function getToolLoopStopReason(iterations: number, elapsedMs: number): string | undefined {
+	if (iterations > 120) return 'The run reached its 120 model-turn safety limit.';
+	if (elapsedMs > 20 * 60 * 1000) return 'The run reached its 20-minute time budget.';
+	return undefined;
+}
+
 export async function runToolLoop(
 	conversation: ConversationMessage[],
 	projectRoot: string,
@@ -795,10 +802,10 @@ export async function runToolLoop(
 	agentToolDefinitions?: ToolDef[],
 	onMessagesCompacted?: (messages: ConversationMessage[]) => void,
 ): Promise<string> {
-	const MAX_TOOL_ITERATIONS = 40;
 	let toolCalls = initialToolCalls;
 	let finalText = '';
 	let iterations = 0;
+	const runStartedAt = Date.now();
 	const failedToolCalls = new Set<string>();
 	// Same evidence gate as delegated runs (runtime/verify.ts): track what this
 	// turn actually wrote and ran, independent of direct file:write/file:edit
@@ -809,10 +816,12 @@ export async function runToolLoop(
 	// Continue looping while the LLM keeps issuing tool calls
 	while (toolCalls.length > 0) {
 		iterations++;
-		if (iterations > MAX_TOOL_ITERATIONS) {
+		const budgetStopReason = getToolLoopStopReason(iterations, Date.now() - runStartedAt);
+		if (budgetStopReason) {
 			taskState.status = 'interrupted';
-			taskState.reason = `Tool loop stopped after ${MAX_TOOL_ITERATIONS} iterations without reaching a final response.`;
+			taskState.reason = budgetStopReason + ' Progress is preserved; type "continue" to resume.';
 			printError(taskState.reason);
+			printInfo('The task was safely paused instead of running indefinitely.');
 			onConversationChanged();
 			return '';
 		}
@@ -841,6 +850,13 @@ export async function runToolLoop(
 						executions.push(...await Promise.all(toolCalls.map((tc) => runDelegatedAgent(projectRoot, tc, nimClient, input, permissionMode, allowedCommands, taskState, getCheckpointId, parentContextExcerpt(conversation)).then((toolResult) => ({ toolResult, applied: false })) )));
 		} else {
 			for (const tc of toolCalls) {
+				if (Date.now() - runStartedAt > 20 * 60 * 1000) {
+					executions.push({
+						toolResult: { name: tc.name, success: false, error: 'Not executed: the 20-minute task safety budget was reached. Resume the task to continue safely.' },
+						applied: false,
+					});
+					continue;
+				}
 				const signature = tc.name + ':' + JSON.stringify(tc.arguments);
 				if (failedToolCalls.has(signature)) {
 					repeatedFailure = true;

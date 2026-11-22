@@ -15,6 +15,7 @@ import { fromWireToolName } from '../llm/client.js';
 import { computeDiff } from '../diff/index.js';
 import type { ToolResult, ProposedFileChange } from '../types/index.js';
 import { readSkillFile } from '../runtime/skills.js';
+import { readTerminalSession, startTerminalSession, stopTerminalSession } from '../runtime/terminal-sessions.js';
 import { appendToMemory } from '../memory/index.js';
 
 const MAX_GLOB_RESULTS = 500;
@@ -96,6 +97,9 @@ const TOOL_MAP: Record<string, (...args: any[]) => Promise<ToolResult>> = {
 	'file:glob': toolFileGlob,
 	'grep': toolGrep,
 	'bash:execute': toolBash,
+	'bash:start': toolBashStart,
+	'bash:read': toolBashRead,
+	'bash:stop': toolBashStop,
 	'git:status': toolGitStatus,
 	'git:commit': toolGitCommit,
 	'git:push': toolGitPush,
@@ -554,6 +558,12 @@ async function toolGrep(args: Record<string, unknown>, projectRoot: string): Pro
 
 // ── Bash ─────────────────────────────────────────────────────────────────────
 
+const LONG_RUNNING_SERVER_COMMAND = /(?:^|[;&|]\s*)(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:dev|start|serve|preview)\b|(?:vite|next|nuxt|astro)\s+(?:dev|start|preview)\b|python(?:3)?\s+-m\s+http\.server\b)/i;
+
+export function isLongRunningServerCommand(command: string): boolean {
+	return LONG_RUNNING_SERVER_COMMAND.test(command);
+}
+
 const DANGEROUS_PATTERNS = [
 	/rm\s+-rf\s+['"]?\//i,
 	/dd\s+if=/i,
@@ -585,6 +595,10 @@ async function toolBash(args: Record<string, unknown>, projectRoot: string): Pro
 		if (pattern.test(command)) {
 			return { id: '', name: 'bash:execute', success: false, error: 'Dangerous command blocked: ' + command.slice(0, 50), durationMs: 0 };
 		}
+	}
+
+	if (args.background === true || isLongRunningServerCommand(command)) {
+		return startBackgroundCommand(command, fullCwd);
 	}
 
 	// Stream the command live (like Claude Code / opencode): output is piped
@@ -657,6 +671,75 @@ async function toolBash(args: Record<string, unknown>, projectRoot: string): Pro
 			finish(false, null, `Command timed out after ${timeoutMs}ms`);
 		}, timeoutMs);
 	});
+}
+
+
+async function startBackgroundCommand(command: string, cwd: string): Promise<ToolResult> {
+  try {
+    const session = await startTerminalSession(command, cwd, terminalHooks);
+    const details = [
+      `Terminal session: ${session.id}`,
+      `Command: ${session.command}`,
+      `Working directory: ${session.cwd}`,
+      `Status: ${session.status}`,
+      session.exitCode !== null ? `Exit code: ${session.exitCode}` : '',
+      session.output ? `Initial output:\n${session.output}` : 'No output yet; poll the session for startup logs.',
+      `Use bash:read with session_id="${session.id}" to inspect new stdout/stderr, and bash:stop to stop it.`,
+    ].filter(Boolean).join('\n');
+    return {
+      id: '', name: 'bash:start', success: session.status !== 'failed',
+      output: details, command, cwd, exitCode: session.exitCode,
+      durationMs: session.elapsedMs,
+      ...(session.status === 'failed' ? { error: 'The process exited or failed during startup. Inspect its captured output.' } : {}),
+    };
+  } catch (error) {
+    return { id: '', name: 'bash:start', success: false, error: error instanceof Error ? error.message : String(error), command, cwd, durationMs: 0 };
+  }
+}
+
+async function toolBashStart(args: Record<string, unknown>, projectRoot: string): Promise<ToolResult> {
+  if (typeof args.command !== 'string' || !args.command.trim()) {
+    return { id: '', name: 'bash:start', success: false, error: 'command must be a non-empty string', durationMs: 0 };
+  }
+  const command = args.command;
+  const cwd = args.cwd ? String(args.cwd) : projectRoot;
+  const fullCwd = toProjectPath(cwd, projectRoot);
+  if (!withinProject(fullCwd, projectRoot)) {
+    return { id: '', name: 'bash:start', success: false, error: 'Access denied: shell cwd must be inside the project root', durationMs: 0 };
+  }
+  if (/\/tmp(?:\/|\s|$)|\/var\/tmp(?:\/|\s|$)|\$TMPDIR|%TEMP%|\bmktemp\b/i.test(command)) {
+    return { id: '', name: 'bash:start', success: false, error: 'Project files must be created in the active project directory, not an OS temporary directory', durationMs: 0 };
+  }
+  for (const pattern of DANGEROUS_PATTERNS) {
+    if (pattern.test(command)) return { id: '', name: 'bash:start', success: false, error: 'Dangerous command blocked: ' + command.slice(0, 50), durationMs: 0 };
+  }
+  return startBackgroundCommand(command, fullCwd);
+}
+
+async function toolBashRead(args: Record<string, unknown>): Promise<ToolResult> {
+  const id = String(args.session_id ?? '').trim();
+  if (!id) return { id: '', name: 'bash:read', success: false, error: 'session_id is required', durationMs: 0 };
+  const session = readTerminalSession(id, Number(args.cursor ?? 0));
+  if (!session) return { id: '', name: 'bash:read', success: false, error: 'Unknown terminal session: ' + id, durationMs: 0 };
+  const output = [
+    `Terminal session: ${session.id}`,
+    `Command: ${session.command}`,
+    `Status: ${session.status}`,
+    session.exitCode !== null ? `Exit code: ${session.exitCode}` : '',
+    `Elapsed: ${Math.round(session.elapsedMs / 1000)}s`,
+    session.truncated ? '[Earlier output was truncated; showing retained output from the oldest available point.]' : '',
+    session.output || '(no new output since the supplied cursor)',
+    `Next cursor: ${session.nextCursor}`,
+  ].filter(Boolean).join('\n');
+  return { id: '', name: 'bash:read', success: true, output, command: session.command, cwd: session.cwd, exitCode: session.exitCode, durationMs: 0 };
+}
+
+async function toolBashStop(args: Record<string, unknown>): Promise<ToolResult> {
+  const id = String(args.session_id ?? '').trim();
+  if (!id) return { id: '', name: 'bash:stop', success: false, error: 'session_id is required', durationMs: 0 };
+  const session = stopTerminalSession(id);
+  if (!session) return { id: '', name: 'bash:stop', success: false, error: 'Unknown terminal session: ' + id, durationMs: 0 };
+  return { id: '', name: 'bash:stop', success: true, output: `Stop requested for terminal session ${id}. Current status: ${session.status}.`, command: session.command, cwd: session.cwd, durationMs: 0 };
 }
 
 // ── Git Tools ────────────────────────────────────────────────────────────────
