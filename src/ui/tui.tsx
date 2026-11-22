@@ -237,12 +237,14 @@ function App() {
         setSecretMode(false);
         const value = secretDraft();
         setSecretDraft("");
+        setInputActive(false);
         resolve?.(value);
       } else if (name === "escape" || name === "ctrl+c") {
         const resolve = secretResolver;
         secretResolver = null;
         setSecretMode(false);
         setSecretDraft("");
+        setInputActive(false);
         resolve?.(null);
       } else if (name === "backspace") {
         setSecretDraft((value) => [...value].slice(0, -1).join(""));
@@ -646,7 +648,45 @@ export function createInput(): InputController {
       return new Promise((resolve) => { inputResolver = resolve; });
     },
     questionSecret(prompt = ""): Promise<string | null> {
-      if (!renderer) throw new Error("Secret entry requires an interactive Agent-Termo terminal.");
+      if (!renderer) {
+        const stdin = process.stdin;
+        if (!stdin.isTTY || typeof stdin.setRawMode !== "function") {
+          throw new Error("Masked API-key entry requires a TTY. Set the provider API key in an environment variable instead.");
+        }
+        return new Promise((resolve) => {
+          const wasRaw = stdin.isRaw;
+          let value = "";
+          const finish = (result: string | null) => {
+            stdin.off("data", onData);
+            stdin.setRawMode(wasRaw);
+            process.stdout.write("\\n");
+            resolve(result);
+          };
+          const onData = (chunk: Buffer | string) => {
+            for (const character of chunk.toString("utf8")) {
+              if (character === "\\r" || character === "\\n") {
+                finish(value);
+                return;
+              }
+              if (character === "\\u0003" || character === "\\u001b") {
+                finish(null);
+                return;
+              }
+              if (character === "\\u007f" || character === "\\b") {
+                value = [...value].slice(0, -1).join("");
+              } else if (character === "\\u0015") {
+                value = "";
+              } else if (character >= " ") {
+                value += character;
+              }
+            }
+          };
+          process.stdout.write(prompt);
+          stdin.setRawMode(true);
+          stdin.resume();
+          stdin.on("data", onData);
+        });
+      }
       if (inputResolver || secretResolver) throw new Error("An input request is already active.");
       setDraft("");
       setCompletionHiddenFor("");
