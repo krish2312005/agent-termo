@@ -916,8 +916,8 @@ export async function runToolLoop(
 		let result: { content: string; toolCalls: ToolCall[] };
 			try {
 				const tools = nimClient.buildToolDefs([...(agentToolDefinitions ?? [...TOOL_DEFINITIONS, ...getMcpToolDefinitions()]), ...(taskPlan?.status === 'in_progress' ? [PLAN_PROGRESS_TOOL] : [])]);
-				const streamed = new MarkdownPrinter(stopSpinner);
-				result = await withEscapeCancellation(nimClient, () => completeWithContextRecovery(nimClient, conversation, tools, (chunk) => { streamed.push(chunk); streamed.flushPartial(); }, onMessagesCompacted));
+				const streamed = new MarkdownPrinter();
+				result = await withEscapeCancellation(nimClient, () => completeWithContextRecovery(nimClient, conversation, tools, (chunk) => { setScreenStatus({ usage: nimClient.formatUsage() }); streamed.push(chunk); streamed.flushPartial(); }, onMessagesCompacted));
 				streamed.end();
 				if (!streamed.printed) {
 					stopSpinner();
@@ -944,8 +944,8 @@ export async function runToolLoop(
 				}
 // and parse any JSON tool calls emitted in the content.
 					try {
-						const fallbackStream = new MarkdownPrinter(stopSpinner);
-					const fallback = await withEscapeCancellation(nimClient, () => completeWithContextRecovery(nimClient, conversation, undefined, (chunk) => { fallbackStream.push(chunk); fallbackStream.flushPartial(); }, onMessagesCompacted));
+						const fallbackStream = new MarkdownPrinter();
+					const fallback = await withEscapeCancellation(nimClient, () => completeWithContextRecovery(nimClient, conversation, undefined, (chunk) => { setScreenStatus({ usage: nimClient.formatUsage() }); fallbackStream.push(chunk); fallbackStream.flushPartial(); }, onMessagesCompacted));
 					fallbackStream.end();
 					if (!fallbackStream.printed) stopSpinner();
 				setScreenStatus({ usage: nimClient.formatUsage() });
@@ -2343,8 +2343,8 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				{
 					startSpinner('Working');
 					try {
-							const streamed = new MarkdownPrinter(stopSpinner);
-						const result = await withEscapeCancellation(nimClient, () => completeWithContextRecovery(nimClient, conversation, tools, (chunk) => { streamed.push(chunk); streamed.flushPartial(); }, (messages) => appendSessionArchive(projectRoot, session.id, messages)));
+							const streamed = new MarkdownPrinter();
+						const result = await withEscapeCancellation(nimClient, () => completeWithContextRecovery(nimClient, conversation, tools, (chunk) => { setScreenStatus({ usage: nimClient.formatUsage() }); streamed.push(chunk); streamed.flushPartial(); }, (messages) => appendSessionArchive(projectRoot, session.id, messages)));
 						streamed.end();
 						if (!streamed.printed) stopSpinner();
 						setScreenStatus({ usage: nimClient.formatUsage() });
@@ -2400,8 +2400,8 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					// any JSON tool calls the model may have emitted as plain text.
 						printInfo(nimClient.getProviderName() + ' tool request failed: ' + providerError(err) + ' — retrying without tools.');
 						try {
-								const fallbackStream = new MarkdownPrinter(stopSpinner);
-					const fallback = await withEscapeCancellation(nimClient, () => completeWithContextRecovery(nimClient, conversation, undefined, (chunk) => { fallbackStream.push(chunk); fallbackStream.flushPartial(); }, (messages) => appendSessionArchive(projectRoot, session.id, messages)));
+								const fallbackStream = new MarkdownPrinter();
+					const fallback = await withEscapeCancellation(nimClient, () => completeWithContextRecovery(nimClient, conversation, undefined, (chunk) => { setScreenStatus({ usage: nimClient.formatUsage() }); fallbackStream.push(chunk); fallbackStream.flushPartial(); }, (messages) => appendSessionArchive(projectRoot, session.id, messages)));
 					fallbackStream.end();
 					if (!fallbackStream.printed) stopSpinner();
 							setScreenStatus({ usage: nimClient.formatUsage() });
