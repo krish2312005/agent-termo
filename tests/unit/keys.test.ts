@@ -1,10 +1,17 @@
 import { describe, it, expect } from 'vitest';
 import { parseKeys } from '../../src/ui/screen.js';
-import { promptInputHeight, promptInputKeyBindings, usesLegacyAppleTerminal } from '../../src/ui/tui.js';
+import { isPromptSubmitKey, promptInputHeight, promptInputKeyBindings, usesLegacyAppleTerminal } from '../../src/ui/tui.js';
 
 const parse = (chunk: string, state: { paste: string | null } = { paste: null }) => parseKeys(chunk, state);
 
 describe('prompt keyboard bindings', () => {
+  it('recognizes Return and keypad Enter as prompt submission keys', () => {
+    expect(isPromptSubmitKey('enter')).toBe(true);
+    expect(isPromptSubmitKey('kpenter')).toBe(true);
+    expect(isPromptSubmitKey('shift+enter')).toBe(false);
+    expect(isPromptSubmitKey('escape')).toBe(false);
+  });
+
   it('uses native Shift+Enter newline and Enter submit bindings where modifiers are reported', () => {
     expect(promptInputKeyBindings(false)).toEqual([
       { name: 'return', shift: true, action: 'newline' },
