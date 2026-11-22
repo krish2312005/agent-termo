@@ -90,15 +90,51 @@ function loadStoredPermissionMode(): void {
 }
 
 export function listSavedProviders(): StoredProviderConfig[] {
-  const { providers } = readStoredConfig();
-  if (!providers || typeof providers !== 'object' || Array.isArray(providers)) return [];
-  return Object.values(providers as Record<string, unknown>).filter((value): value is StoredProviderConfig => {
-    if (!value || typeof value !== 'object') return false;
-    const item = value as Partial<StoredProviderConfig>;
-    return typeof item.id === 'string' && typeof item.name === 'string' &&
-      typeof item.baseUrl === 'string' && (item.protocol === 'openai' || item.protocol === 'anthropic') &&
-      typeof item.apiKey === 'string' && typeof item.model === 'string';
-  });
+  const stored = readStoredConfig();
+  const configured = stored.providers;
+  const providers: StoredProviderConfig[] = [];
+
+  if (configured && typeof configured === 'object' && !Array.isArray(configured)) {
+    for (const value of Object.values(configured as Record<string, unknown>)) {
+      if (!value || typeof value !== 'object') continue;
+      const item = value as Partial<StoredProviderConfig>;
+      if (
+        typeof item.id !== 'string' || typeof item.name !== 'string' ||
+        typeof item.baseUrl !== 'string' ||
+        (item.protocol !== 'openai' && item.protocol !== 'anthropic') ||
+        typeof item.apiKey !== 'string' || typeof item.model !== 'string'
+      ) continue;
+
+      providers.push({
+        id: item.id,
+        name: item.name,
+        baseUrl: item.baseUrl,
+        protocol: item.protocol,
+        description: typeof item.description === 'string' ? item.description : 'Saved API provider',
+        suggestedModels: Array.isArray(item.suggestedModels)
+          ? item.suggestedModels.filter((model): model is string => typeof model === 'string')
+          : [],
+        apiKey: item.apiKey,
+        model: item.model,
+      });
+    }
+  }
+
+  // Make older installations' saved NIM key selectable after upgrading.
+  if (!providers.some((provider) => provider.id === 'nvidia') && typeof stored.nimApiKey === 'string' && stored.nimApiKey.trim()) {
+    providers.push({
+      id: 'nvidia',
+      name: 'NVIDIA NIM',
+      baseUrl: typeof stored.nimBaseUrl === 'string' ? stored.nimBaseUrl : process.env.NIM_BASE_URL ?? 'https://integrate.api.nvidia.com/v1',
+      protocol: 'openai',
+      description: 'NVIDIA-hosted models',
+      suggestedModels: ['stepfun-ai/step-3.7-flash', 'meta/llama-3.3-70b-instruct'],
+      apiKey: stored.nimApiKey,
+      model: typeof stored.nimModel === 'string' ? stored.nimModel : process.env.NIM_MODEL ?? 'stepfun-ai/step-3.7-flash',
+    });
+  }
+
+  return providers;
 }
 
 export function getActiveProviderId(): string {
