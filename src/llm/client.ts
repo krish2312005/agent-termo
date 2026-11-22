@@ -225,11 +225,17 @@ export class NimClient {
 	private usage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
   constructor(_projectRoot?: string) {
-    const providerId = process.env.AGENT_TERMO_PROVIDER ?? 'nvidia';
+    const providerId = process.env.AGENT_TERMO_PROVIDER
+      ?? (process.env.ANTHROPIC_API_KEY ? 'anthropic'
+        : process.env.OPENROUTER_API_KEY ? 'openrouter'
+          : process.env.OPENAI_API_KEY ? 'openai'
+            : 'nvidia');
     const saved = listSavedProviders().find((item) => item.id === providerId);
     const definition = getProviderDefinition(providerId) ?? getProviderDefinition('custom')!;
     const isNim = providerId === 'nvidia';
-    const apiKey = process.env.AGENT_TERMO_API_KEY ?? saved?.apiKey ?? (isNim ? process.env.NIM_API_KEY : '') ?? '';
+    const providerEnvKey = process.env[providerId.toUpperCase().replace(/[^A-Z0-9]/g, '_') + '_API_KEY']
+      ?? (providerId === 'google' ? process.env.GEMINI_API_KEY : undefined);
+    const apiKey = process.env.AGENT_TERMO_API_KEY ?? saved?.apiKey ?? providerEnvKey ?? (isNim ? process.env.NIM_API_KEY : '') ?? '';
     const baseUrl = process.env.AGENT_TERMO_BASE_URL ?? saved?.baseUrl ?? (isNim ? process.env.NIM_BASE_URL : undefined) ?? definition.baseUrl;
     const model = process.env.AGENT_TERMO_MODEL ?? saved?.model ?? (isNim ? process.env.NIM_MODEL : undefined) ?? definition.suggestedModels[0] ?? '';
     this.provider = { ...definition, apiKey, baseUrl, model };
