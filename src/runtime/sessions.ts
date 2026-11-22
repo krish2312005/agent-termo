@@ -32,6 +32,7 @@ export interface StoredSession {
   currentGoal?: string;
   activeAgentName?: string;
   model?: string;
+  providerId?: string;
   thinkingCapacity?: string;
   taskState?: SessionTaskState;
   taskPlan?: TaskPlan;
