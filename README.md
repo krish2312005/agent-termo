@@ -46,16 +46,16 @@ Build, debug, refactor, and manage software projects with natural language, spec
 
 ## What is Agent-Termo?
 
-**Agent-Termo** is a terminal-based AI coding agent powered by NVIDIA NIM APIs. It brings AI-assisted software development into your existing project workspace.
+**Agent-Termo** is a terminal-based AI coding agent that connects to NVIDIA NIM, OpenAI, Anthropic, OpenRouter, Gemini, DeepSeek, and other model API providers.
 
 Describe a task in plain language and Agent-Termo can inspect your codebase, read and edit files, run terminal commands, work with Git, and coordinate focused tasks through specialist agents. Its interactive terminal interface streams responses and tool activity while keeping the input area available at the bottom of the screen.
 
 Agent-Termo is designed around a reviewable workflow: file changes can be previewed as diffs before they are applied, and permission modes let you choose how much approval is required.
 
 > [!IMPORTANT]
-> **Agent-Termo requires an NVIDIA NIM API key.**
+> **Agent-Termo requires an API key from at least one supported provider.**
 >
-> Create an API key at [build.nvidia.com](https://build.nvidia.com/). Agent-Termo uses NVIDIA NIM's OpenAI-compatible API endpoint.
+> Run `/providers` inside the CLI to select a provider, enter its API key, and choose a model. NVIDIA NIM remains available as the default provider.
 
 ## Features
 
@@ -63,7 +63,8 @@ Agent-Termo is designed around a reviewable workflow: file changes can be previe
 |---|---|
 | **Interactive Terminal UI** | Scrollable conversation, pinned multi-line input, streaming output, and command completion. |
 | **AI Coding Workflow** | Ask the agent to build, inspect, debug, refactor, test, or explain a project. |
-| **NVIDIA NIM Models** | Connect to chat models available to your NVIDIA NIM API key. |
+| **Multiple API Providers** | Connect to NVIDIA NIM, OpenAI, Anthropic, OpenRouter, Gemini, DeepSeek, Groq, Mistral, xAI, and other compatible providers. |
+| **Provider Management** | Add providers, securely enter API keys, switch providers, and choose models with `/providers`. |
 | **Live Model Picker** | Browse the live model catalogue or enter a model ID directly. |
 | **Thinking Capacity** | Choose off, auto, low, medium, or high where supported by the model. |
 | **File Tools** | Read, create, edit, delete, glob, and search project files. |
@@ -89,7 +90,7 @@ Agent-Termo is designed around a reviewable workflow: file changes can be previe
 
 - Bun 1.3.14 or higher (Bun 1.4+ for native Windows arm64)
 - npm
-- An NVIDIA NIM API key
+- An API key from at least one supported model provider (configure it with `/providers`)
 - An interactive terminal for the full-screen interface
 
 ### 1. Install Agent-Termo
@@ -110,7 +111,7 @@ cd /path/to/your-project
 agent-termo
 ~~~
 
-On first launch, Agent-Termo asks for your NVIDIA NIM API key if one is not already configured. The key prompt hides your input, and the key is saved in your user configuration for subsequent sessions.
+On first launch, Agent-Termo can accept an NVIDIA NIM key, or you can skip setup and run `/providers` to configure OpenAI, Claude, OpenRouter, Gemini, or another supported provider. API keys are entered using a masked prompt and saved in your user configuration.
 
 ### 4. Give it a task
 
@@ -153,9 +154,11 @@ bun run build
 bun run dev
 ~~~
 
-### Configure NVIDIA NIM
+### Configure API providers
 
-Open the .env file and set your API key:
+Use `/providers` inside Agent-Termo to configure a provider interactively. See [API Providers](docs/PROVIDERS.md) for the built-in integrations, environment variables, and custom endpoint setup.
+
+To configure NVIDIA NIM through `.env`, set its API key:
 
 ~~~env
 NIM_API_KEY=nvapi-YOUR_API_KEY
@@ -176,7 +179,12 @@ Incorrect: meta/llama-3_1-8b-instruct
 
 | Variable | Purpose | Default / Example |
 |---|---|---|
-| NIM_API_KEY | NVIDIA NIM API key. | Required unless saved locally. |
+| NIM_API_KEY | NVIDIA NIM API key. | Required only when using NVIDIA NIM and not saved locally. |
+| OPENAI_API_KEY | OpenAI API key. | Optional; can also be entered with `/providers`. |
+| ANTHROPIC_API_KEY | Anthropic API key. | Optional; can also be entered with `/providers`. |
+| OPENROUTER_API_KEY | OpenRouter API key. | Optional; can also be entered with `/providers`. |
+| GOOGLE_API_KEY / GEMINI_API_KEY | Google AI Studio API key. | Optional. |
+| DEEPSEEK_API_KEY, GROQ_API_KEY, MISTRAL_API_KEY, XAI_API_KEY, TOGETHER_API_KEY, FIREWORKS_API_KEY, CEREBRAS_API_KEY | Provider API keys. | Optional. |
 | NIM_BASE_URL | OpenAI-compatible API base URL. | https://integrate.api.nvidia.com/v1 |
 | NIM_MODEL | Model ID to use. | Set in .env; otherwise the built-in default is used. |
 | LOG_LEVEL | Logging verbosity. | info |
@@ -194,7 +202,7 @@ By default, Agent-Termo stores user-level settings in:
 ~/.agent-termo/config.json
 ~~~
 
-This file can hold the saved NVIDIA NIM API key, selected model, thinking capacity, and permission mode. The application creates the configuration directory and restricts file permissions on supported Unix systems.
+This file can hold saved provider API keys, provider endpoints, selected models, thinking capacity, and permission mode. The application creates the configuration directory and restricts file permissions on supported Unix systems.
 
 Do not commit your .env file or share your API key.
 
@@ -317,7 +325,7 @@ File mentions are resolved against the project files discovered by Agent-Termo. 
 
 ### Choose a Model
 
-Open the interactive NVIDIA NIM model picker:
+Open the model picker for the currently active provider:
 
 ~~~text
 /model
@@ -329,7 +337,7 @@ Or switch directly to a model ID:
 /model meta/llama-3.3-70b-instruct
 ~~~
 
-The model picker fetches available models from NVIDIA NIM, filters out obvious non-chat model categories, and places curated suggestions before the remaining chat models. When the live catalogue cannot be fetched, Agent-Termo displays its built-in suggestions; you can also enter a model ID manually.
+The model picker queries the active provider's model catalogue when available. If live discovery is unavailable, Agent-Termo shows provider suggestions and lets you enter a model ID manually. Provider switching and configuration are handled separately with `/providers`.
 
 Your selected model is saved for future sessions.
 
@@ -420,7 +428,10 @@ Use /help inside Agent-Termo to display the available commands.
 | /redo | Preview and reapply the most recently undone checkpoint. |
 | /memory | Display shared project memory. |
 | /timeline | Display the shared project timeline. |
-| /model | Open the model picker or switch to a specified model. |
+| /providers | Add or configure a model API provider. |
+| /providers list | List configured providers and show the active provider. |
+| /providers use <id> | Switch to a previously configured provider. |
+| /model | Open the active provider's model picker or switch to a specified model. |
 | /thinking | Open the thinking-capacity picker or set a mode. |
 | /permissions | Cycle permission modes or select ask, files, or auto. |
 | /agents | List and select available agents. |
@@ -1049,7 +1060,7 @@ Agent-Termo's package metadata declares the MIT license.
 ## Acknowledgments
 
 - Inspired by modern terminal-based AI coding agents, including Claude Code.
-- Powered by [NVIDIA NIM](https://build.nvidia.com/).
+- Supports [NVIDIA NIM](https://build.nvidia.com/), [OpenAI](https://platform.openai.com/), [Anthropic](https://www.anthropic.com/), and [OpenRouter](https://openrouter.ai/).
 - Built with TypeScript and the Bun ecosystem.
 
 Agent-Termo is an independent project. It is not affiliated with, endorsed by, or maintained by Anthropic or NVIDIA.
