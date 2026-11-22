@@ -237,7 +237,7 @@ function App() {
         setSecretMode(false);
         const value = secretDraft();
         setSecretDraft("");
-        resolve?.(value || null);
+        resolve?.(value);
       } else if (name === "escape" || name === "ctrl+c") {
         const resolve = secretResolver;
         secretResolver = null;
