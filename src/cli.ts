@@ -97,7 +97,14 @@ async function startAgent(
 		process.env.AGENT_TERMO_AUTO_APPROVE = '1';
 	}
 
-  if (!process.env.NIM_API_KEY?.trim() && !process.env.AGENT_TERMO_API_KEY?.trim() && !process.env.OPENAI_API_KEY?.trim()) {
+  const hasProviderKey = [
+    'NIM_API_KEY', 'AGENT_TERMO_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY',
+    'OPENROUTER_API_KEY', 'GOOGLE_API_KEY', 'GEMINI_API_KEY', 'DEEPSEEK_API_KEY',
+    'GROQ_API_KEY', 'MISTRAL_API_KEY', 'XAI_API_KEY', 'TOGETHER_API_KEY',
+    'FIREWORKS_API_KEY', 'CEREBRAS_API_KEY',
+  ].some((name) => Boolean(process.env[name]?.trim()));
+
+  if (!hasProviderKey && process.stdin.isTTY && typeof process.stdin.setRawMode === 'function') {
     const apiKey = await promptForApiKey();
     if (apiKey) {
       saveNimApiKey(apiKey);
@@ -106,6 +113,8 @@ async function startAgent(
     } else {
       console.log('No API key entered. Start Agent-Termo and run /providers to configure OpenAI, Claude, OpenRouter, and other providers.');
     }
+  } else if (!hasProviderKey) {
+    console.log('No API key detected. Start Agent-Termo and run /providers to configure an API provider.');
   }
 
   console.log(`Starting Agent-Termo in: ${project}`);
