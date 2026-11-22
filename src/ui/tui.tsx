@@ -389,7 +389,7 @@ function App() {
       </scrollbox>
       <Show when={terminalVisible() && terminal()} fallback={<box height={0} />}>
         <box height={8} border borderStyle="single" borderColor="#6D625A" paddingX={1} flexDirection="column">
-          <text fg="#D99168">Terminal · {terminal()!.command} · {terminal()!.exitCode === null ? "running" : "exit " + terminal()!.exitCode}</text>
+          <text fg="#D99168">Terminal · {terminal()!.exitCode === null ? "running" : "exit " + terminal()!.exitCode}</text>
           <scrollbox flexGrow={1} minHeight={0} stickyScroll stickyStart="bottom">
             <text fg="#C9C1BA">{terminal()!.lines.slice(-5).join("\n")}</text>
           </scrollbox>
