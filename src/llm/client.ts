@@ -225,11 +225,21 @@ export class NimClient {
 	private usage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
   constructor(_projectRoot?: string) {
-    const providerId = process.env.AGENT_TERMO_PROVIDER
-      ?? (process.env.ANTHROPIC_API_KEY ? 'anthropic'
-        : process.env.OPENROUTER_API_KEY ? 'openrouter'
-          : process.env.OPENAI_API_KEY ? 'openai'
-            : 'nvidia');
+    const inferredProvider = [
+      ['ANTHROPIC_API_KEY', 'anthropic'],
+      ['OPENROUTER_API_KEY', 'openrouter'],
+      ['OPENAI_API_KEY', 'openai'],
+      ['GEMINI_API_KEY', 'google'],
+      ['GOOGLE_API_KEY', 'google'],
+      ['DEEPSEEK_API_KEY', 'deepseek'],
+      ['GROQ_API_KEY', 'groq'],
+      ['MISTRAL_API_KEY', 'mistral'],
+      ['XAI_API_KEY', 'xai'],
+      ['TOGETHER_API_KEY', 'together'],
+      ['FIREWORKS_API_KEY', 'fireworks'],
+      ['CEREBRAS_API_KEY', 'cerebras'],
+    ].find(([key]) => Boolean(process.env[key!]?.trim()))?.[1];
+    const providerId = process.env.AGENT_TERMO_PROVIDER ?? inferredProvider ?? 'nvidia';
     const saved = listSavedProviders().find((item) => item.id === providerId);
     const definition = getProviderDefinition(providerId) ?? getProviderDefinition('custom')!;
     const isNim = providerId === 'nvidia';
