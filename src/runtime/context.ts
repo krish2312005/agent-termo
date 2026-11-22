@@ -1,4 +1,5 @@
 import type { ConversationMessage } from '../types/index.js';
+import { getProviderModelLimits } from '../llm/models.js';
 
 export const DEFAULT_CONTEXT_WINDOW_TOKENS = 32_768;
 export const DEFAULT_OUTPUT_RESERVE_TOKENS = 8_192;
@@ -10,6 +11,7 @@ const TOOL_MESSAGE_LIMIT = 10_000;
 export interface ContextBudget {
   contextWindowTokens: number;
   outputReserveTokens: number;
+  maxOutputTokens: number;
   safetyMarginTokens: number;
   inputBudgetTokens: number;
 }
@@ -29,16 +31,18 @@ function positiveInteger(value: string | undefined, fallback: number): number {
 }
 
 /**
- * NIM does not expose a dependable context-window value for every chat model.
- * Use an explicit environment override where known and a conservative fallback.
+ * NIM does not expose a dependable context-window value in /v1/models.
+ * Known model IDs use limits published in NVIDIA's per-model API references.
+ * Explicit environment settings take precedence; unknown models stay conservative.
  */
 export function resolveContextBudget(
-  _model: string,
+  model: string,
   env: NodeJS.ProcessEnv = process.env,
 ): ContextBudget {
+  const providerLimits = getProviderModelLimits(model);
   const contextWindowTokens = Math.max(
     4_096,
-    positiveInteger(env.AGENT_TERMO_CONTEXT_WINDOW, DEFAULT_CONTEXT_WINDOW_TOKENS),
+    positiveInteger(env.AGENT_TERMO_CONTEXT_WINDOW, providerLimits?.contextWindowTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS),
   );
   const outputReserveTokens = Math.min(
     contextWindowTokens - 1_024,
@@ -46,6 +50,10 @@ export function resolveContextBudget(
       env.AGENT_TERMO_OUTPUT_RESERVE_TOKENS,
       Math.min(DEFAULT_OUTPUT_RESERVE_TOKENS, Math.floor(contextWindowTokens / 4)),
     ),
+  );
+  const maxOutputTokens = Math.max(
+    1,
+    Math.min(outputReserveTokens, providerLimits?.maxOutputTokens ?? outputReserveTokens),
   );
   const safetyMarginTokens = Math.min(
     contextWindowTokens - outputReserveTokens - 512,
@@ -57,6 +65,7 @@ export function resolveContextBudget(
   return {
     contextWindowTokens,
     outputReserveTokens,
+    maxOutputTokens,
     safetyMarginTokens,
     inputBudgetTokens: Math.max(512, contextWindowTokens - outputReserveTokens - safetyMarginTokens),
   };

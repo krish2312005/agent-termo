@@ -359,7 +359,7 @@ export class NimClient {
 				}),
 				tools,
 				temperature: 0.3,
-				max_tokens: resolveContextBudget(this.getModel()).outputReserveTokens,
+				max_tokens: resolveContextBudget(this.getModel()).maxOutputTokens,
 				stream: true,
 			}, { signal: controller.signal });
 
@@ -477,7 +477,7 @@ export class NimClient {
       }),
       tools: tools,
       temperature: 0.3,
-		max_tokens: resolveContextBudget(this.getModel()).outputReserveTokens,
+		max_tokens: resolveContextBudget(this.getModel()).maxOutputTokens,
 			stream: false,
 		}, { signal: controller.signal });
 

@@ -42,6 +42,42 @@ describe('context budgeting and compaction', () => {
     expect(configured.inputBudgetTokens).toBe(60_416);
   });
 
+  it('uses the context and output limits published for the selected NVIDIA model', () => {
+    expect(resolveContextBudget('stepfun-ai/step-3.7-flash', {})).toMatchObject({
+      contextWindowTokens: 262_144,
+      outputReserveTokens: 8_192,
+      maxOutputTokens: 8_192,
+      safetyMarginTokens: 2_048,
+      inputBudgetTokens: 251_904,
+    });
+
+    expect(resolveContextBudget('meta/llama-3.1-8b-instruct', {})).toMatchObject({
+      contextWindowTokens: 131_072,
+      outputReserveTokens: 8_192,
+      maxOutputTokens: 4_096,
+      safetyMarginTokens: 2_048,
+      inputBudgetTokens: 120_832,
+    });
+
+    expect(resolveContextBudget('qwen/qwen2.5-coder-32b-instruct', {})).toMatchObject({
+      outputReserveTokens: 8_192,
+      maxOutputTokens: 4_000,
+    });
+  });
+
+  it('lets an explicit context-window override take precedence over provider metadata', () => {
+    expect(resolveContextBudget('stepfun-ai/step-3.7-flash', {
+      AGENT_TERMO_CONTEXT_WINDOW: '65536',
+      AGENT_TERMO_OUTPUT_RESERVE_TOKENS: '4096',
+      AGENT_TERMO_CONTEXT_SAFETY_MARGIN: '1024',
+    })).toMatchObject({
+      contextWindowTokens: 65_536,
+      outputReserveTokens: 4_096,
+      safetyMarginTokens: 1_024,
+      inputBudgetTokens: 60_416,
+    });
+  });
+
   it('summarizes tool results and preserves recent complete tool exchanges', () => {
     const conversation: ConversationMessage[] = [
       message('system', 'Base system prompt'),
