@@ -1140,8 +1140,9 @@ async function handleProvidersCommand(
 			printError('A provider name is required.');
 			return;
 		}
-		customBaseUrl = (await input.question('OpenAI-compatible API base URL: ')).trim().replace(/\\/+$/, '');
-		if (!/^https?:\\/\\//i.test(customBaseUrl)) {
+		customBaseUrl = (await input.question('OpenAI-compatible API base URL: ')).trim();
+		while (customBaseUrl.endsWith('/')) customBaseUrl = customBaseUrl.slice(0, -1);
+		if (!customBaseUrl.startsWith('https://') && !customBaseUrl.startsWith('http://')) {
 			printError('Enter a valid HTTP or HTTPS API base URL.');
 			return;
 		}
