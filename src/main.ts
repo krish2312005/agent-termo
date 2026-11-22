@@ -8,6 +8,9 @@ import { activeManualCheckpointIds, createCheckpoint, findCheckpoint, latestRedo
 import { TOOL_DEFINITIONS } from './llm/tools.js';
 import { executeTool, applyFileChange, setTerminalHooks, killRunningTerminal } from './tools/index.js';
 import { appendToMemory, loadMemory, loadMemorySync, loadTimeline, loadTimelineSync, loadSessionLogContext, logToTimeline, logAgentTermoTimeline, appendToSessionLog, appendToTimeline } from './memory/index.js';
+import { createApprovalQueue } from './runtime/approval-queue.js';
+
+const withApprovalPrompt = createApprovalQueue();
 import { buildSystemPrompt, filterAgentTools, resolveDelegation } from './agents/index.js';
 import { resolveProjectRoot, saveNimModel, saveNimThinking, savePermissionMode, listSavedProviders, activateProvider, saveProviderConfig } from './utils/config.js';
 import { BUILTIN_PROVIDERS, type ProviderDefinition, type StoredProviderConfig } from './llm/providers.js';
@@ -507,11 +510,16 @@ async function executeToolWithReview(
 	const approvalKey = commandApprovalKey(toolName, args);
 	const hasPersistentApproval = !toolName.startsWith('mcp_') && allowedCommands.has(approvalKey);
 	if (permissionMode !== 'auto' && isCommandApprovalRequired(toolName) && !hasPersistentApproval) {
-		input.close();
-		onWaiting?.(true);
-		const decision = await promptCommandApproval(typeof args.command === 'string' ? args.command : approvalKey);
-		onWaiting?.(false);
-		input.showPrompt();
+		const decision = await withApprovalPrompt(async () => {
+			input.close();
+			onWaiting?.(true);
+			try {
+				return await promptCommandApproval(typeof args.command === 'string' ? args.command : approvalKey);
+			} finally {
+				onWaiting?.(false);
+				input.showPrompt();
+			}
+		});
 		if (decision === 'reject') return { toolResult: { success: false, error: 'Command rejected by user' }, applied: false };
 		if (decision === 'always' && !toolName.startsWith('mcp_')) {
 			allowedCommands.add(approvalKey);
@@ -538,18 +546,18 @@ async function executeToolWithReview(
 			} else printError(applyResult.error ?? 'Failed to auto-apply change');
 			return { toolResult: applyResult, change: proposedChange, applied: applyResult.success };
 		}
-			// Pause REPL input to prevent stale listeners from interfering with promptAcceptReject
-		input.close();
-
-		// Show terminal diff viewer
+			// Only one delegated worker may own the shared interactive approval prompt at a time.
 		printToolResult(toolName, { success: toolResult.success, output: toolResult.output, error: toolResult.error }, { needsApproval: true, proposedChange });
-
+		const decision = await withApprovalPrompt(async () => {
+			input.close();
 			onWaiting?.(true);
-			const decision = await promptAcceptReject('Accept this change?');
-			onWaiting?.(false);
-
-		// Restore input for next REPL iteration
-		input.showPrompt();
+			try {
+				return await promptAcceptReject('Accept this change?');
+			} finally {
+				onWaiting?.(false);
+				input.showPrompt();
+			}
+		});
 
 		if (decision === 'accept') {
 			startSpinner('Writing to disk');

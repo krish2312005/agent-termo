@@ -8,6 +8,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { glob as globPromise } from 'glob';
 import { simpleGit } from 'simple-git';
 import { statSync, existsSync, mkdirSync } from 'node:fs';
+import { isPathWithinWorkspace } from '../runtime/workspace.js';
 import { getConfig } from '../utils/config.js';
 import { resolveShell } from '../utils/shell.js';
 import { fromWireToolName } from '../llm/client.js';
@@ -202,13 +203,7 @@ function toProjectPath(path: string, projectRoot: string): string {
 }
 
 function withinProject(path: string, projectRoot: string): boolean {
-	try {
-		const resolved = toProjectPath(path, projectRoot);
-		const rel = relative(projectRoot, resolved);
-		return !rel.startsWith('..') && !isAbsolute(rel);
-	} catch {
-		return false;
-	}
+	return isPathWithinWorkspace(path, projectRoot);
 }
 
 // ── Propose a file change (returns ProposedFileChange without writing) ───────
@@ -269,19 +264,28 @@ export async function applyFileChange(change: ProposedFileChange, projectRoot: s
 	}
 
 	try {
-		if (change.isDeletion) {
-			if (existsSync(fullPath)) {
-					await unlinkAsync(fullPath);
+		const currentExists = existsSync(fullPath);
+		if (change.isNewFile && currentExists) {
+			return { id: '', name: 'file:write', success: false, error: 'File changed after its preview: ' + change.path + ' already exists. Re-read it and prepare a new change.', durationMs: Date.now() - start };
+		}
+		if (!change.isNewFile && !currentExists) {
+			return { id: '', name: 'file:write', success: false, error: 'File changed after its preview: ' + change.path + ' no longer exists. Re-read it and prepare a new change.', durationMs: Date.now() - start };
+		}
+		if (!change.isNewFile) {
+			const currentContent = await readFileAsync(fullPath, 'utf-8');
+			if (currentContent !== change.originalContent) {
+				return { id: '', name: 'file:write', success: false, error: 'File changed after its preview: ' + change.path + ' was modified independently. Re-read it and prepare a new change.', durationMs: Date.now() - start };
 			}
+		}
+		if (change.isDeletion) {
+			await unlinkAsync(fullPath);
 		} else {
 			const dir = resolve(fullPath, '..');
-			if (!existsSync(dir)) {
-				mkdirSync(dir, { recursive: true });
-			}
-				await writeFileAsync(fullPath, change.proposedContent, 'utf-8');
-			}
-			invalidateToolCache(projectRoot);
-			return {
+			if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+			await writeFileAsync(fullPath, change.proposedContent, 'utf-8');
+		}
+		invalidateToolCache(projectRoot);
+		return {
 			id: '',
 			name: 'file:write',
 			success: true,
@@ -298,7 +302,6 @@ export async function applyFileChange(change: ProposedFileChange, projectRoot: s
 		};
 	}
 }
-
 // ── File Tools ──────────────────────────────────────────────────────────────
 
 async function toolFileRead(args: Record<string, unknown>, projectRoot: string): Promise<ToolResult> {
