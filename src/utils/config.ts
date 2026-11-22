@@ -6,20 +6,18 @@ import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AppConfig } from '../types/index.js';
+import type { StoredProviderConfig } from '../llm/providers.js';
 
 // Find project root reliably (works even when cwd != project dir)
 function getProjectRoot(): string {
-  // Try import.meta.url first (ESM)
   try {
     const thisFile = fileURLToPath(import.meta.url);
-    return dirname(dirname(thisFile)); // src/utils/ → src/ → project root
+    return dirname(dirname(thisFile));
   } catch {
-    // Fall back to process.cwd()
     return process.cwd();
   }
 }
 
-// Load .env files at startup
 function loadEnvFile(envPath: string): void {
   try {
     const content = readFileSync(envPath, 'utf-8');
@@ -37,29 +35,22 @@ function loadEnvFile(envPath: string): void {
   }
 }
 
-// Load .env from project root and current directory
 const PROJECT_ROOT = getProjectRoot();
 loadEnvFile(resolve(PROJECT_ROOT, '.env'));
-loadEnvFile(resolve('.env')); // also try cwd
+loadEnvFile(resolve('.env'));
 
 export { PROJECT_ROOT };
 
 export function getAgentTermoDir(): string {
   const envDir = process.env.AGENT_TERMO_DIR;
-  if (envDir) {
-    return resolve(process.env.HOME || process.env.USERPROFILE || '.', envDir);
-  }
+  if (envDir) return resolve(process.env.HOME || process.env.USERPROFILE || '.', envDir);
   return resolve(process.env.HOME || process.env.USERPROFILE || '.', '.agent-termo');
 }
 
 function readStoredConfig(): Record<string, unknown> {
   try {
-    const existing: unknown = JSON.parse(
-      readFileSync(resolve(getAgentTermoDir(), 'config.json'), 'utf-8'),
-    );
-    if (existing && typeof existing === 'object' && !Array.isArray(existing)) {
-      return existing as Record<string, unknown>;
-    }
+    const existing: unknown = JSON.parse(readFileSync(resolve(getAgentTermoDir(), 'config.json'), 'utf-8'));
+    if (existing && typeof existing === 'object' && !Array.isArray(existing)) return existing as Record<string, unknown>;
   } catch {
     // No saved user configuration yet.
   }
@@ -70,46 +61,77 @@ function updateStoredConfig(patch: Record<string, unknown>): void {
   const configDir = getAgentTermoDir();
   const configPath = resolve(configDir, 'config.json');
   const storedConfig = { ...readStoredConfig(), ...patch };
-
   mkdirSync(configDir, { recursive: true, mode: 0o700 });
-  writeFileSync(configPath, `${JSON.stringify(storedConfig, null, 2)}\n`, {
-    encoding: 'utf-8',
-    mode: 0o600,
-  });
-
-  // Restrict permissions even when updating an existing file on Unix.
+  writeFileSync(configPath, JSON.stringify(storedConfig, null, 2) + '\n', { encoding: 'utf-8', mode: 0o600 });
   if (process.platform !== 'win32') chmodSync(configPath, 0o600);
 }
 
 function loadStoredNimApiKey(): void {
   if (process.env.NIM_API_KEY) return;
-
   const { nimApiKey } = readStoredConfig();
-  if (typeof nimApiKey === 'string' && nimApiKey.trim()) {
-    process.env.NIM_API_KEY = nimApiKey;
-  }
+  if (typeof nimApiKey === 'string' && nimApiKey.trim()) process.env.NIM_API_KEY = nimApiKey;
 }
 
-/**
- * A model picked with /model is saved and wins over NIM_MODEL from .env, so
- * the choice survives restarts. The --model CLI flag still overrides it.
- */
+/** Existing NIM preferences stay backward compatible with older config files. */
 function loadStoredNimModel(): void {
   const { nimModel } = readStoredConfig();
-  if (typeof nimModel === 'string' && nimModel.trim()) {
-    process.env.NIM_MODEL = nimModel;
-	}
+  if (typeof nimModel === 'string' && nimModel.trim()) process.env.NIM_MODEL = nimModel;
 }
 
 function loadStoredNimThinking(): void {
-	const { nimThinking } = readStoredConfig();
-	if (typeof nimThinking === 'string' && nimThinking.trim()) process.env.NIM_THINKING = nimThinking;
+  const { nimThinking } = readStoredConfig();
+  if (typeof nimThinking === 'string' && nimThinking.trim()) process.env.NIM_THINKING = nimThinking;
 }
 
 function loadStoredPermissionMode(): void {
-	const { permissionMode, autoApprove } = readStoredConfig();
-	if (permissionMode === 'ask' || permissionMode === 'files' || permissionMode === 'auto') process.env.AGENT_TERMO_PERMISSION_MODE = permissionMode;
-	else if (autoApprove === true) process.env.AGENT_TERMO_PERMISSION_MODE = 'auto';
+  const { permissionMode, autoApprove } = readStoredConfig();
+  if (permissionMode === 'ask' || permissionMode === 'files' || permissionMode === 'auto') process.env.AGENT_TERMO_PERMISSION_MODE = permissionMode;
+  else if (autoApprove === true) process.env.AGENT_TERMO_PERMISSION_MODE = 'auto';
+}
+
+export function listSavedProviders(): StoredProviderConfig[] {
+  const { providers } = readStoredConfig();
+  if (!providers || typeof providers !== 'object' || Array.isArray(providers)) return [];
+  return Object.values(providers as Record<string, unknown>).filter((value): value is StoredProviderConfig => {
+    if (!value || typeof value !== 'object') return false;
+    const item = value as Partial<StoredProviderConfig>;
+    return typeof item.id === 'string' && typeof item.name === 'string' &&
+      typeof item.baseUrl === 'string' && (item.protocol === 'openai' || item.protocol === 'anthropic') &&
+      typeof item.apiKey === 'string' && typeof item.model === 'string';
+  });
+}
+
+export function getActiveProviderId(): string {
+  const { activeProvider } = readStoredConfig();
+  return typeof activeProvider === 'string' ? activeProvider : 'nvidia';
+}
+
+export function saveProviderConfig(provider: StoredProviderConfig, activate = true): void {
+  const stored = readStoredConfig();
+  const providers = stored.providers && typeof stored.providers === 'object' && !Array.isArray(stored.providers)
+    ? stored.providers as Record<string, StoredProviderConfig>
+    : {};
+  updateStoredConfig({
+    providers: { ...providers, [provider.id]: provider },
+    ...(activate ? { activeProvider: provider.id } : {}),
+  });
+  if (activate) {
+    process.env.AGENT_TERMO_PROVIDER = provider.id;
+    process.env.AGENT_TERMO_API_KEY = provider.apiKey;
+    process.env.AGENT_TERMO_BASE_URL = provider.baseUrl;
+    process.env.AGENT_TERMO_MODEL = provider.model;
+  }
+}
+
+export function activateProvider(id: string): StoredProviderConfig | undefined {
+  const provider = listSavedProviders().find((item) => item.id === id);
+  if (!provider) return undefined;
+  updateStoredConfig({ activeProvider: id });
+  process.env.AGENT_TERMO_PROVIDER = provider.id;
+  process.env.AGENT_TERMO_API_KEY = provider.apiKey;
+  process.env.AGENT_TERMO_BASE_URL = provider.baseUrl;
+  process.env.AGENT_TERMO_MODEL = provider.model;
+  return provider;
 }
 
 export function saveNimApiKey(apiKey: string): void {
@@ -117,15 +139,15 @@ export function saveNimApiKey(apiKey: string): void {
 }
 
 export function saveNimModel(model: string): void {
-	updateStoredConfig({ nimModel: model });
+  updateStoredConfig({ nimModel: model });
 }
 
 export function saveNimThinking(thinking: string): void {
-	updateStoredConfig({ nimThinking: thinking });
+  updateStoredConfig({ nimThinking: thinking });
 }
 
 export function savePermissionMode(permissionMode: 'ask' | 'files' | 'auto'): void {
-	updateStoredConfig({ permissionMode, autoApprove: permissionMode === 'auto' });
+  updateStoredConfig({ permissionMode, autoApprove: permissionMode === 'auto' });
 }
 
 loadStoredNimApiKey();
@@ -135,6 +157,13 @@ loadStoredPermissionMode();
 
 export function getConfig(projectRoot: string): AppConfig {
   loadEnvFile(resolve(projectRoot, '.env'));
+  const active = listSavedProviders().find((provider) => provider.id === getActiveProviderId());
+  if (active && !process.env.AGENT_TERMO_PROVIDER) {
+    process.env.AGENT_TERMO_PROVIDER = active.id;
+    process.env.AGENT_TERMO_API_KEY = active.apiKey;
+    process.env.AGENT_TERMO_BASE_URL = active.baseUrl;
+    process.env.AGENT_TERMO_MODEL = active.model;
+  }
 
   return {
     nimApiKey: process.env.NIM_API_KEY ?? '',
@@ -143,9 +172,7 @@ export function getConfig(projectRoot: string): AppConfig {
     agentTermoDir: process.env.AGENT_TERMO_DIR ?? '.claude',
     logLevel: (process.env.LOG_LEVEL as AppConfig['logLevel']) || 'info',
     confirmDestructive: process.env.CONFIRM_DESTRUCTIVE !== 'false',
-    allowedCommands: (
-      process.env.ALLOWED_COMMANDS ?? 'git,npm,node,pnpm,yarn,tsx,tsc,npx'
-    ).split(','),
+    allowedCommands: (process.env.ALLOWED_COMMANDS ?? 'git,npm,node,pnpm,yarn,tsx,tsc,npx').split(','),
     llmTimeout: parseInt(process.env.LLM_TIMEOUT ?? '120000', 10),
     bashTimeout: parseInt(process.env.BASH_TIMEOUT ?? '300000', 10),
   };
