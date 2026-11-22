@@ -278,8 +278,8 @@ function App() {
     // Textarea's internal keybinding dispatch. This keeps prompt submission
     // reliable across terminal key protocols.
     if (inputActive() && isPromptSubmitKey(name)) {
-      submitInput();
       event.preventDefault();
+      submitInput();
       return;
     }
 
