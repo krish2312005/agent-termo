@@ -223,6 +223,7 @@ export class NimClient {
 	private thinkingCapacity: ThinkingCapacity;
 	private activeController: AbortController | null = null;
 	private usage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+	private inFlightUsage: TokenUsage | null = null;
 
   constructor(_projectRoot?: string) {
     const inferredProvider = [
@@ -299,11 +300,19 @@ export class NimClient {
 	}
 
 	getUsage(): TokenUsage {
-		return { ...this.usage };
+		const current = this.inFlightUsage;
+		return current
+			? {
+				promptTokens: this.usage.promptTokens + current.promptTokens,
+				completionTokens: this.usage.completionTokens + current.completionTokens,
+				totalTokens: this.usage.totalTokens + current.totalTokens,
+			}
+			: { ...this.usage };
 	}
 
 	formatUsage(): string {
-		return `${this.usage.totalTokens.toLocaleString()} tokens`;
+		const usage = this.getUsage();
+		return `${this.inFlightUsage ? '~' : ''}${usage.totalTokens.toLocaleString()} tokens`;
 	}
 
 	private recordUsage(promptTokens: number, completionTokens: number): void {
@@ -314,6 +323,22 @@ export class NimClient {
 
 	private estimatePromptTokens(messages: ConversationMessage[]): number {
 		return estimateContextTokens(messages);
+	}
+
+	private beginRequestUsage(messages: ConversationMessage[]): void {
+		const promptTokens = this.estimatePromptTokens(messages);
+		this.inFlightUsage = { promptTokens, completionTokens: 0, totalTokens: promptTokens };
+	}
+
+	private updateRequestOutputUsage(completionTokens: number): void {
+		if (!this.inFlightUsage) return;
+		this.inFlightUsage.completionTokens = Math.max(0, Math.round(completionTokens));
+		this.inFlightUsage.totalTokens = this.inFlightUsage.promptTokens + this.inFlightUsage.completionTokens;
+	}
+
+	private finishRequestUsage(promptTokens: number, completionTokens: number): void {
+		this.recordUsage(promptTokens, completionTokens);
+		this.inFlightUsage = null;
 	}
 
 	setThinkingCapacity(capacity: ThinkingCapacity): void {
@@ -397,6 +422,9 @@ export class NimClient {
 	): AsyncGenerator<{ content: string; toolCalls: ToolCall[] }, void, unknown> {
 		const controller = new AbortController();
 		this.activeController = controller;
+		this.beginRequestUsage(messages);
+		onChunk?.('');
+		let outputCharacters = 0;
 		try {
 			const system = messages.filter((message) => message.role === 'system').map((message) => this.messageContent(message)).join('\\n\\n');
 			const payloadMessages = messages.filter((message) => message.role !== 'system').map((message) => {
@@ -463,13 +491,18 @@ export class NimClient {
 				if (data.type === 'content_block_delta' && data.delta?.type === 'text_delta') {
 					const text = data.delta.text ?? '';
 					content += text;
+					outputCharacters += text.length;
+					this.updateRequestOutputUsage(Math.ceil(outputCharacters / 4));
 					onChunk?.(text);
 				}
 				if (data.type === 'content_block_delta' && data.delta?.type === 'input_json_delta') {
 					const index = data.index ?? 0;
 					const call = calls.get(index);
 					if (call) {
-						call.arguments += data.delta.partial_json ?? '';
+						const partialJson = data.delta.partial_json ?? '';
+						call.arguments += partialJson;
+						outputCharacters += partialJson.length;
+						this.updateRequestOutputUsage(Math.ceil(outputCharacters / 4));
 						let validJson = false;
 						try { JSON.parse(call.arguments); validJson = true; } catch { /* more fragments are arriving */ }
 						onToolCallDelta?.({ index, name: call.name, arguments: call.arguments, validJson });
@@ -499,9 +532,10 @@ export class NimClient {
 				} catch { args = { _raw: call.arguments }; }
 				return { id: call.id, name: fromWireToolName(call.name), arguments: args };
 			});
-			this.recordUsage(inputTokens || this.estimatePromptTokens(messages), outputTokens || Math.ceil(content.length / 4));
+			this.finishRequestUsage(inputTokens || this.estimatePromptTokens(messages), outputTokens || Math.ceil(outputCharacters / 4));
 			yield { content, toolCalls };
 		} finally {
+			this.inFlightUsage = null;
 			if (this.activeController === controller) this.activeController = null;
 		}
 	}
@@ -518,6 +552,9 @@ export class NimClient {
 		}
 		const controller = new AbortController();
 		this.activeController = controller;
+		this.beginRequestUsage(messages);
+		onChunk?.('');
+		let outputCharacters = 0;
 		try {
 			const stream = await this.client.chat.completions.create({
 				model: this.model,
@@ -590,6 +627,8 @@ export class NimClient {
 				const rawContent = delta.content ?? '';
 				if (rawContent) {
 					rawChunks.push(rawContent);
+					outputCharacters += rawContent.length;
+					this.updateRequestOutputUsage(Math.ceil(outputCharacters / 4));
 					emitTextChunk(rawContent);
 				}
 				if (delta.tool_calls) {
@@ -598,7 +637,10 @@ export class NimClient {
 						toolCalls.add(toolCall);
 						const current = toolCallSnapshots.get(index) ?? { name: '', arguments: '' };
 						current.name += toolCall.function?.name ?? '';
-						current.arguments += toolCall.function?.arguments ?? '';
+						const argumentDelta = toolCall.function?.arguments ?? '';
+						current.arguments += argumentDelta;
+						outputCharacters += argumentDelta.length;
+						this.updateRequestOutputUsage(Math.ceil(outputCharacters / 4));
 						toolCallSnapshots.set(index, current);
 						let validJson = false;
 						try {
@@ -612,7 +654,7 @@ export class NimClient {
 
 			if (!insideMarkupCall) emitVisible(pendingText);
 			const content = rawChunks.join('');
-			this.recordUsage(this.estimatePromptTokens(messages), Math.ceil(content.length / 4));
+			this.finishRequestUsage(this.estimatePromptTokens(messages), Math.ceil(outputCharacters / 4));
 			const parsedToolCalls = toolCalls.toToolCalls();
 			let visibleContent = content;
 			if (parsedToolCalls.length === 0) {
@@ -624,6 +666,7 @@ export class NimClient {
 			}
 			yield { content: visibleContent, toolCalls: parsedToolCalls };
 		} finally {
+			this.inFlightUsage = null;
 			if (this.activeController === controller) this.activeController = null;
 		}
 	}
