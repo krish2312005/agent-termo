@@ -39,6 +39,8 @@ export const COMMANDS: CommandInfo[] = [
   { name: "/undo", description: "restore the latest or selected checkpoint" },
   { name: "/redo", description: "reapply the most recently undone checkpoint" },
   { name: "/memory", description: "view project memory (docs/MEMORY.md)" },
+  { name: "/remember", description: "save a durable project fact to memory" },
+  { name: "/recall", description: "search earlier saved sessions" },
   { name: "/timeline", description: "view project timeline (docs/TIMELINE.md)" },
   { name: "/model", description: "switch NVIDIA NIM model (or /model <id>)" },
   { name: "/thinking", description: "select NVIDIA reasoning capacity" },

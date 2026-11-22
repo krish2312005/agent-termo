@@ -76,6 +76,12 @@ Available functions:
 - git:status() / git:commit(message) / git:push() → version control
 - agent:delegate(agent, task, context?) → spawn a specialist sub-agent and receive its result
 - skill:read(name, path?) → load a relevant skill's SKILL.md or one of its supporting reference files
+- memory:remember(entry) → save a stable project fact or decision to docs/MEMORY.md for future sessions
+
+MEMORY RULES:
+- Use memory:remember for durable architecture facts, coding conventions, decisions, and constraints that should survive separate sessions.
+- Never store credentials, API keys, secrets, private personal information, transient debugging output, or speculative claims.
+- Do not copy the entire conversation or tool output into project memory; full session history is archived separately.
 
 WORKFLOW CONTINUITY:
 - When the user says "continue", resume the interrupted task from the last completed step using the conversation history. Never restart the task from the beginning or redo work that is already done.
@@ -151,6 +157,13 @@ function rosterSection(roster: Array<{ name: string; description: string }>): st
 	);
 }
 
+function boundPromptSection(value: string, maxChars: number): string {
+	if (value.length <= maxChars) return value;
+	const marker = '\n\n[Middle of this section omitted to keep the prompt bounded.]\n\n';
+	const side = Math.floor((maxChars - marker.length) / 2);
+	return value.slice(0, side) + marker + value.slice(-side);
+}
+
 export function buildSystemPrompt(
 	memory: string,
 	timeline: string,
@@ -165,21 +178,21 @@ export function buildSystemPrompt(
 	prompt += `\n\n## Shell\nbash:execute runs commands with ${shellDescription()}. Use syntax that matches this shell, keep paths relative to the project, and prefer the dedicated file tools for creating and editing files.`;
 
 	if (termoInstructions) {
-		prompt += '\n\n## Project Instructions (TERMO.md)\n' + termoInstructions;
+		prompt += '\n\n## Project Instructions (TERMO.md)\n' + boundPromptSection(termoInstructions, 12_000);
 	}
 
 	if (skillsPrompt) {
-		prompt += '\n\n' + skillsPrompt;
+		prompt += '\n\n' + boundPromptSection(skillsPrompt, 6_000);
 	}
 
 	if (activeAgentPrompt) {
-		prompt += '\n\n## Active Custom Agent Instructions\n' + activeAgentPrompt;
+		prompt += '\n\n## Active Custom Agent Instructions\n' + boundPromptSection(activeAgentPrompt, 8_000);
 	}
 
 	if (roster.length > 0) prompt += rosterSection(roster);
 
   if (memory) {
-    prompt += '\n\n## Project Memory\n' + memory;
+    prompt += '\n\n## Project Memory\n' + boundPromptSection(memory, 8_000);
   }
 
 	if (timeline) {

@@ -55,13 +55,22 @@ export function logAgentTermoTimeline(message: string, projectRoot: string): voi
 
 // ── Shared project memory (docs/MEMORY.md) ──────────────────────────────────
 
-export async function loadMemory(projectRoot: string): Promise<string> {
+export function loadMemorySync(projectRoot: string): string {
   try {
     const { memoryPath } = ensureProjectDocs(projectRoot);
     return readIfExists(memoryPath);
   } catch {
     return '';
   }
+}
+
+export async function loadMemory(projectRoot: string): Promise<string> {
+  return loadMemorySync(projectRoot);
+}
+
+export function loadSessionLogContext(projectRoot: string, maxChars = 8_000): string {
+  if (maxChars <= 0) return '';
+  return loadSessionLog(projectRoot).slice(-maxChars);
 }
 
 export async function appendToMemory(projectRoot: string, entry: string): Promise<void> {
@@ -77,13 +86,17 @@ export async function appendToMemory(projectRoot: string, entry: string): Promis
 
 // ── Shared project timeline (docs/TIMELINE.md) ──────────────────────────────
 
-export async function loadTimeline(projectRoot: string): Promise<string> {
+export function loadTimelineSync(projectRoot: string): string {
   try {
     const { timelinePath } = ensureProjectDocs(projectRoot);
     return readIfExists(timelinePath);
   } catch {
     return '';
   }
+}
+
+export async function loadTimeline(projectRoot: string): Promise<string> {
+  return loadTimelineSync(projectRoot);
 }
 
 export async function appendToTimeline(
