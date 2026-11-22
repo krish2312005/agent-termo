@@ -298,6 +298,11 @@ function App() {
     }
 
     dispatchKey(key);
+    if (shouldSubmitLegacyAppleTerminalReturn(legacyAppleTerminal, inputActive(), name)) {
+      submitInput();
+      event.preventDefault();
+      return;
+    }
     if (name === "ctrl+o" || name === "ctrl+t") {
       if (terminal()) setTerminalVisible((visible) => !visible);
       event.preventDefault();
@@ -418,12 +423,14 @@ export async function initScreen(info: { model: string; project: string; thinkin
   setScreen((current) => ({ ...current, ...info, thinking: info.thinking ?? current.thinking }));
   if (!layoutSupported()) return;
   if (renderer) return;
-  if (shouldDisableGraphicsProbe(usesLegacyAppleTerminal(), process.env.OPENTUI_GRAPHICS)) {
-    // Apple Terminal does not support the Kitty/Sixel graphics protocol. OpenTUI's
-    // startup capability probe (an APC query ending in "Gi=...") bleeds its raw
-    // reply onto the screen and can desync input parsing on this terminal. Skip
-    // the probe here instead of letting it corrupt the session.
+  const legacyAppleTerminal = usesLegacyAppleTerminal();
+  if (shouldDisableGraphicsProbe(legacyAppleTerminal, process.env.OPENTUI_GRAPHICS)) {
+    // Apple Terminal does not support the Kitty/Sixel graphics protocol.
     process.env.OPENTUI_GRAPHICS = "false";
+  }
+  if (shouldForceTruecolor(legacyAppleTerminal, process.env.OPENTUI_FORCE_TRUECOLOR)) {
+    // Avoid OpenTUI's RGB/Tc XTGETTCAP probes; Apple Terminal supports truecolor.
+    process.env.OPENTUI_FORCE_TRUECOLOR = "1";
   }
   renderer = await createCliRenderer({
     stdin: process.stdin,
@@ -433,7 +440,7 @@ export async function initScreen(info: { model: string; project: string; thinkin
     exitOnCtrlC: false,
     // Agent-Termo owns SIGINT cleanup; do not install a second renderer handler.
     exitSignals: [],
-    useKittyKeyboard: {},
+    useKittyKeyboard: legacyAppleTerminal ? null : {},
     autoFocus: false,
     openConsoleOnError: false,
   });
@@ -491,10 +498,19 @@ export function usesLegacyAppleTerminal(
   return platform === "darwin" && terminalProgram === "Apple_Terminal";
 }
 
-// Only skip OpenTUI's graphics capability probe on Apple Terminal, and only when
-// the person hasn't already set OPENTUI_GRAPHICS themselves.
+// Avoid terminal protocols that Apple Terminal does not support, while preserving overrides.
 export function shouldDisableGraphicsProbe(legacyAppleTerminal: boolean, existingOverride: string | undefined): boolean {
   return legacyAppleTerminal && existingOverride === undefined;
+}
+export function shouldForceTruecolor(legacyAppleTerminal: boolean, existingOverride: string | undefined): boolean {
+  return legacyAppleTerminal && existingOverride === undefined;
+}
+export function shouldSubmitLegacyAppleTerminalReturn(
+  legacyAppleTerminal: boolean,
+  promptActive: boolean,
+  keyName: string,
+): boolean {
+  return legacyAppleTerminal && promptActive && keyName === "enter";
 }
 
 export function promptInputKeyBindings(_legacyAppleTerminal: boolean) {

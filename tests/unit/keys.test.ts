@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parseKeys } from '../../src/ui/screen.js';
-import { promptInputHeight, promptInputKeyBindings, usesLegacyAppleTerminal, shouldDisableGraphicsProbe } from '../../src/ui/tui.js';
+import { promptInputHeight, promptInputKeyBindings, usesLegacyAppleTerminal, shouldDisableGraphicsProbe, shouldForceTruecolor, shouldSubmitLegacyAppleTerminalReturn } from '../../src/ui/tui.js';
 
 const parse = (chunk: string, state: { paste: string | null } = { paste: null }) => parseKeys(chunk, state);
 
@@ -39,6 +39,33 @@ describe('shouldDisableGraphicsProbe', () => {
 
   it('does nothing outside legacy Apple Terminal', () => {
     expect(shouldDisableGraphicsProbe(false, undefined)).toBe(false);
+  });
+});
+
+describe('shouldForceTruecolor', () => {
+  it('forces truecolor on Apple Terminal when no override is supplied', () => {
+    expect(shouldForceTruecolor(true, undefined)).toBe(true);
+  });
+
+  it('preserves an explicit truecolor override', () => {
+    expect(shouldForceTruecolor(true, '0')).toBe(false);
+    expect(shouldForceTruecolor(true, 'true')).toBe(false);
+  });
+
+  it('does nothing outside Apple Terminal', () => {
+    expect(shouldForceTruecolor(false, undefined)).toBe(false);
+  });
+});
+
+describe('shouldSubmitLegacyAppleTerminalReturn', () => {
+  it('submits plain Return while the Apple Terminal prompt is active', () => {
+    expect(shouldSubmitLegacyAppleTerminalReturn(true, true, 'enter')).toBe(true);
+  });
+
+  it('does not submit for other terminals, inactive prompts, or other keys', () => {
+    expect(shouldSubmitLegacyAppleTerminalReturn(false, true, 'enter')).toBe(false);
+    expect(shouldSubmitLegacyAppleTerminalReturn(true, false, 'enter')).toBe(false);
+    expect(shouldSubmitLegacyAppleTerminalReturn(true, true, 'space')).toBe(false);
   });
 });
 
