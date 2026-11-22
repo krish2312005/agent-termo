@@ -234,6 +234,22 @@ export function printSubAgents(selectedId?: string): void {
 }
 
 export function printToolCall(toolName: string, args: Record<string, unknown>): void {
+  if (toolName === "bash:execute" && typeof args.command === "string") {
+    print("● " + toolName, "tool");
+    print("  command:", "dim");
+    const width = Math.max(20, terminalWidth() - 8);
+    for (const line of args.command.split(/\r?\n/)) {
+      let remaining = line;
+      if (!remaining) print("    ", "dim");
+      while (remaining.length > width) {
+        print("    " + remaining.slice(0, width), "dim");
+        remaining = remaining.slice(width);
+      }
+      print("    " + remaining, "dim");
+    }
+    return;
+  }
+
   const summary = Object.entries(args).map(([key, value]) => key + "=" + clipText(String(typeof value === "string" ? value : JSON.stringify(value) ?? "").replace(/\s+/g, " "), 40)).join(", ");
   print("● " + toolName + "(" + clipText(summary, terminalWidth() - toolName.length - 6) + ")", "tool");
 }
