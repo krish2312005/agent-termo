@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parseKeys } from '../../src/ui/screen.js';
-import { promptInputHeight, promptInputKeyBindings, usesLegacyAppleTerminal } from '../../src/ui/tui.js';
+import { promptInputHeight, promptInputKeyBindings, usesLegacyAppleTerminal, shouldDisableGraphicsProbe } from '../../src/ui/tui.js';
 
 const parse = (chunk: string, state: { paste: string | null } = { paste: null }) => parseKeys(chunk, state);
 
@@ -24,6 +24,21 @@ describe('prompt keyboard bindings', () => {
       { name: 'return', ctrl: true, action: 'newline' },
       { name: 'return', ctrl: false, shift: false, meta: false, action: 'submit' },
     ]);
+  });
+});
+
+describe('shouldDisableGraphicsProbe', () => {
+  it('disables the graphics probe on legacy Apple Terminal when nothing overrides it', () => {
+    expect(shouldDisableGraphicsProbe(true, undefined)).toBe(true);
+  });
+
+  it('leaves a user-provided OPENTUI_GRAPHICS override untouched', () => {
+    expect(shouldDisableGraphicsProbe(true, 'true')).toBe(false);
+    expect(shouldDisableGraphicsProbe(true, 'false')).toBe(false);
+  });
+
+  it('does nothing outside legacy Apple Terminal', () => {
+    expect(shouldDisableGraphicsProbe(false, undefined)).toBe(false);
   });
 });
 

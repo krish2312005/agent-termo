@@ -418,6 +418,13 @@ export async function initScreen(info: { model: string; project: string; thinkin
   setScreen((current) => ({ ...current, ...info, thinking: info.thinking ?? current.thinking }));
   if (!layoutSupported()) return;
   if (renderer) return;
+  if (shouldDisableGraphicsProbe(usesLegacyAppleTerminal(), process.env.OPENTUI_GRAPHICS)) {
+    // Apple Terminal does not support the Kitty/Sixel graphics protocol. OpenTUI's
+    // startup capability probe (an APC query ending in "Gi=...") bleeds its raw
+    // reply onto the screen and can desync input parsing on this terminal. Skip
+    // the probe here instead of letting it corrupt the session.
+    process.env.OPENTUI_GRAPHICS = "false";
+  }
   renderer = await createCliRenderer({
     stdin: process.stdin,
     externalOutputMode: "passthrough",
@@ -482,6 +489,12 @@ export function usesLegacyAppleTerminal(
   terminalProgram = process.env.TERM_PROGRAM ?? "",
 ): boolean {
   return platform === "darwin" && terminalProgram === "Apple_Terminal";
+}
+
+// Only skip OpenTUI's graphics capability probe on Apple Terminal, and only when
+// the person hasn't already set OPENTUI_GRAPHICS themselves.
+export function shouldDisableGraphicsProbe(legacyAppleTerminal: boolean, existingOverride: string | undefined): boolean {
+  return legacyAppleTerminal && existingOverride === undefined;
 }
 
 export function promptInputKeyBindings(_legacyAppleTerminal: boolean) {
