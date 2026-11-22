@@ -1341,12 +1341,19 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 		});
 	};
 	process.on('SIGINT', cleanup);
-		const mcpStatuses = await initializeMcpServers(projectRoot);
-	for (const status of mcpStatuses) {
-		if (status.connected) printSuccess('MCP server connected: ' + status.name + ' (' + status.tools + ' tools)');
-		else if (status.error) printInfo('MCP server unavailable: ' + status.name + ' — ' + status.error);
-	}
-	refreshSystemPrompt();
+
+	// Start MCP connections without holding the interactive prompt hostage.
+	// A configured server can take up to 15 seconds (or fail during shutdown);
+	// slash commands and ordinary chat must remain usable while it connects.
+	void initializeMcpServers(projectRoot).then((mcpStatuses) => {
+		for (const status of mcpStatuses) {
+			if (status.connected) printSuccess('MCP server connected: ' + status.name + ' (' + status.tools + ' tools)');
+			else if (status.error) printInfo('MCP server unavailable: ' + status.name + ' — ' + status.error);
+		}
+		refreshSystemPrompt();
+	}).catch((error: unknown) => {
+		printError('MCP initialization failed: ' + (error instanceof Error ? error.message : String(error)));
+	});
 
 	mainLoop: while (true) {
 		try {
