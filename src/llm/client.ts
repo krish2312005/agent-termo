@@ -340,7 +340,7 @@ export class NimClient {
 		try {
 			let ids: string[];
 			if (this.provider.protocol === 'anthropic') {
-				const response = await fetch(`${this.provider.baseUrl.replace(/\\/$/, '')}/v1/models?limit=100`, {
+				const response = await fetch(`${this.provider.baseUrl.endsWith('/') ? this.provider.baseUrl.slice(0, -1) : this.provider.baseUrl}/v1/models?limit=100`, {
 					headers: { 'x-api-key': this.provider.apiKey, 'anthropic-version': '2023-06-01' },
 					signal: controller.signal,
 				});
@@ -409,7 +409,7 @@ export class NimClient {
 				description: tool.function.description ?? '',
 				input_schema: tool.function.parameters,
 			}] : []);
-			const response = await fetch(`${this.provider.baseUrl.replace(/\\/$/, '')}/v1/messages`, {
+			const response = await fetch(`${this.provider.baseUrl.endsWith('/') ? this.provider.baseUrl.slice(0, -1) : this.provider.baseUrl}/v1/messages`, {
 				method: 'POST',
 				headers: {
 					'content-type': 'application/json',
