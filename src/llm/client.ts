@@ -408,7 +408,7 @@ export class NimClient {
 					const content: Array<Record<string, unknown>> = [];
 					if (message.content) content.push({ type: 'text', text: message.content });
 					for (const call of message.toolCalls) content.push({
-						type: 'tool_use', id: call.id, name: call.name, input: call.arguments,
+						type: 'tool_use', id: call.id, name: toWireToolName(call.name), input: call.arguments,
 					});
 					return { role: 'assistant', content };
 				}
