@@ -1011,14 +1011,14 @@ export async function runToolLoop(
 }
 
 /**
- * /model            — pick from the live NVIDIA NIM catalogue (falls back to a built-in list)
- * /model <model-id> — switch directly, e.g. /model meta/llama-3.3-70b-instruct
+ * /model            — pick from the active provider's model catalogue
+ * /model <model-id> — switch directly to a model ID
  */
 async function handleModelCommand(arg: string, nimClient: NimClient, projectRoot: string): Promise<void> {
 	let selected: string | null = arg || null;
 
 	if (!selected) {
-		startSpinner('Fetching NVIDIA NIM models');
+		startSpinner('Fetching ' + nimClient.getProviderName() + ' models');
 			let modelList: Awaited<ReturnType<NimClient['listModels']>>;
 			try {
 				modelList = await withEscapeCancellation(nimClient, () => nimClient.listModels());
@@ -1030,7 +1030,7 @@ async function handleModelCommand(arg: string, nimClient: NimClient, projectRoot
 			const { models, live, error } = modelList;
 		stopSpinner();
 		if (!live) {
-			printInfo('Could not fetch the live model list (' + (error ?? 'unknown error') + '). Showing built-in suggestions; you can type any model ID.');
+			printInfo('Could not fetch the live model list (' + (error ?? 'unknown error') + '). Showing provider suggestions; you can type any model ID.');
 		}
 
 		selected = await pick({
@@ -1057,6 +1057,7 @@ async function handleModelCommand(arg: string, nimClient: NimClient, projectRoot
 
 	try {
 		saveNimModel(selected);
+		saveProviderConfig(nimClient.getProvider());
 		printSuccess('Model set to ' + selected + ' (saved as your default)');
 	} catch {
 		printSuccess('Model set to ' + selected + ' for this session');
@@ -1296,7 +1297,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 	let activePlan: TaskPlan | undefined = session.taskPlan;
 	const sessionStartedAt = Date.now();
 
-	if (session.model && (!session.providerId || session.providerId === nimClient.getProvider().id)) nimClient.setModel(session.model);
+	if (session.model && session.providerId === nimClient.getProvider().id) nimClient.setModel(session.model);
 	if (session.thinkingCapacity) nimClient.setThinkingCapacity(session.thinkingCapacity as ThinkingCapacity);
 	currentGoal = session.currentGoal ?? '';
 	if (session.activeAgentName) {
@@ -2385,7 +2386,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 									continue mainLoop;
 							}
 							if (!tools || isTransientError(err) || isPartialStreamFailure(err)) {
-								printError('NVIDIA NIM provider error: ' + providerError(err), 'Try /model to select an available model, then retry.');
+								printError(nimClient.getProviderName() + ' provider error: ' + providerError(err), 'Try /providers to switch providers or /model to select another model.');
 								if (taskState.status === 'running') {
 									taskState.status = 'interrupted';
 									taskState.reason = providerError(err);
@@ -2396,7 +2397,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 							// Tool calling failed (e.g. HTTP 400 because the model does not
 					// support the `tools` parameter). Retry without tools and parse
 					// any JSON tool calls the model may have emitted as plain text.
-						printInfo('NVIDIA NIM tool request failed: ' + providerError(err) + ' — retrying without tools.');
+						printInfo(nimClient.getProviderName() + ' tool request failed: ' + providerError(err) + ' — retrying without tools.');
 						try {
 								const fallbackStream = new MarkdownPrinter(stopSpinner);
 					const fallback = await withEscapeCancellation(nimClient, () => completeWithContextRecovery(nimClient, conversation, undefined, (chunk) => { fallbackStream.push(chunk); fallbackStream.flushPartial(); }, (messages) => appendSessionArchive(projectRoot, session.id, messages)));
