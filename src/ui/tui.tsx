@@ -1,6 +1,6 @@
 import { createCliRenderer, RGBA, SyntaxStyle, type CliRenderer, type TextareaRenderable } from "@opentui/core";
 import { render, useKeyboard, useRenderer } from "@opentui/solid";
-import { For, Show, createSignal, onCleanup, type Accessor } from "solid-js";
+import { For, Show, createEffect, createSignal, onCleanup, type Accessor } from "solid-js";
 import { createInterface } from "node:readline";
 import packageJson from "../../package.json" with { type: "json" };
 
@@ -274,6 +274,15 @@ function App() {
       }
     }
 
+    // Submit at the application layer instead of depending only on the
+    // Textarea's internal keybinding dispatch. This keeps prompt submission
+    // reliable across terminal key protocols.
+    if (inputActive() && isPromptSubmitKey(name)) {
+      submitInput();
+      event.preventDefault();
+      return;
+    }
+
     if (inputActive() && (name === "up" || name === "down")) {
       const currentText = textarea?.plainText ?? draft();
       const cursorRow = textarea?.logicalCursor.row ?? 0;
@@ -316,6 +325,20 @@ function App() {
       }
       event.preventDefault();
       return;
+    }
+  });
+
+  // Keep prompt focus in sync with the REPL/picker state. A one-time
+  // focus() call can be lost when terminal focus or overlays change.
+  createEffect(() => {
+    const current = textarea;
+    const active = inputActive() && !currentPicker();
+    if (!current || current.isDestroyed) return;
+    current.focusable = active;
+    if (active) {
+      if (!current.focused) current.focus();
+    } else if (current.focused) {
+      current.blur();
     }
   });
 
@@ -482,6 +505,10 @@ export function usesLegacyAppleTerminal(
   terminalProgram = process.env.TERM_PROGRAM ?? "",
 ): boolean {
   return platform === "darwin" && terminalProgram === "Apple_Terminal";
+}
+
+export function isPromptSubmitKey(name: string): boolean {
+  return name === "enter" || name === "kpenter";
 }
 
 export function promptInputKeyBindings(_legacyAppleTerminal: boolean) {
