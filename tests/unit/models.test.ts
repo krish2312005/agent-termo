@@ -1,5 +1,19 @@
 import { describe, it, expect } from 'vitest';
-import { CURATED_MODELS, isChatModel, mergeModels } from '../../src/llm/models.js';
+import { CURATED_MODELS, getProviderModelLimits, isChatModel, mergeModels } from '../../src/llm/models.js';
+
+describe('NVIDIA NIM model limits', () => {
+  it('uses provider-published limits for known models and no guessed limits for unknown models', () => {
+    expect(getProviderModelLimits('stepfun-ai/step-3.7-flash')).toMatchObject({
+      contextWindowTokens: 262_144,
+      maxOutputTokens: 262_144,
+    });
+    expect(getProviderModelLimits('qwen/qwen2.5-coder-32b-instruct')).toMatchObject({
+      contextWindowTokens: 32_768,
+      maxOutputTokens: 4_000,
+    });
+    expect(getProviderModelLimits('deepseek-ai/deepseek-r1')).toBeUndefined();
+  });
+});
 
 describe('isChatModel', () => {
   it('hides embedding, reranking and guard models', () => {

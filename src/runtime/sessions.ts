@@ -6,7 +6,7 @@
 // =============================================================================
 
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { ConversationMessage } from '../types/index.js';
 import { normalizeTaskPlan, type TaskPlan } from './plans.js';
@@ -47,6 +47,80 @@ export interface SessionSummary {
 }
 
 const SESSION_ID_PATTERN = /^[a-f0-9-]{8,64}$/i;
+
+export interface SessionHistoryMatch {
+  sessionId: string;
+  title: string;
+  role: string;
+  timestamp: string;
+  excerpt: string;
+}
+
+function sessionArchivePath(projectRoot: string, id: string): string {
+  if (!SESSION_ID_PATTERN.test(id)) throw new Error('Invalid session ID.');
+  return resolve(agentTermoSessionsDir(projectRoot), id + '.archive.jsonl');
+}
+
+/** Append complete messages removed by compaction to a private JSONL archive. */
+export function appendSessionArchive(projectRoot: string, sessionId: string, messages: ConversationMessage[]): void {
+  if (messages.length === 0) return;
+  const directory = agentTermoSessionsDir(projectRoot);
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const records = messages.map((message) => JSON.stringify({
+    ...message,
+    timestamp: message.timestamp instanceof Date ? message.timestamp.toISOString() : message.timestamp,
+  })).join('\n') + '\n';
+  appendFileSync(sessionArchivePath(projectRoot, sessionId), records, { encoding: 'utf-8', mode: 0o600 });
+}
+
+/** Search the saved active transcripts and the full messages removed by compaction. */
+export function searchSessionHistory(projectRoot: string, query: string, limit = 8): SessionHistoryMatch[] {
+  const needle = query.trim().toLowerCase();
+  if (needle.length < 2 || limit <= 0) return [];
+  const matches: SessionHistoryMatch[] = [];
+
+  for (const summary of listSessions(projectRoot).slice(0, 40)) {
+    const session = loadSession(projectRoot, summary.id);
+    if (!session) continue;
+    const candidates: ConversationMessage[] = [...session.messages.filter((item) => item.role !== 'system')];
+
+    try {
+      const archive = sessionArchivePath(projectRoot, session.id);
+      if (existsSync(archive)) {
+        for (const line of readFileSync(archive, 'utf-8').split(/\r?\n/).filter(Boolean)) {
+          try {
+            const item = JSON.parse(line) as ConversationMessage;
+            if (item && typeof item.content === 'string' && typeof item.role === 'string') {
+              candidates.push({ ...item, timestamp: new Date(String(item.timestamp)) });
+            }
+          } catch {
+            // Skip a malformed record while keeping the rest of the archive searchable.
+          }
+        }
+      }
+    } catch {
+      // Missing or unreadable archives do not invalidate the active session.
+    }
+
+    for (const item of candidates.reverse()) {
+      const body = item.content ?? '';
+      const index = body.toLowerCase().indexOf(needle);
+      if (index < 0) continue;
+      const start = Math.max(0, index - 180);
+      const end = Math.min(body.length, index + needle.length + 420);
+      matches.push({
+        sessionId: session.id,
+        title: session.title,
+        role: item.role,
+        timestamp: item.timestamp instanceof Date ? item.timestamp.toISOString() : String(item.timestamp ?? ''),
+        excerpt: (start > 0 ? '…' : '') + body.slice(start, end).replace(/\s+/g, ' ') + (end < body.length ? '…' : ''),
+      });
+      if (matches.length >= limit) return matches;
+    }
+  }
+  return matches;
+}
+
 
 function sessionPath(projectRoot: string, id: string): string {
   if (!SESSION_ID_PATTERN.test(id)) throw new Error('Invalid session ID.');

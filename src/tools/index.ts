@@ -14,6 +14,7 @@ import { fromWireToolName } from '../llm/client.js';
 import { computeDiff } from '../diff/index.js';
 import type { ToolResult, ProposedFileChange } from '../types/index.js';
 import { readSkillFile } from '../runtime/skills.js';
+import { appendToMemory } from '../memory/index.js';
 
 const MAX_GLOB_RESULTS = 500;
 const MAX_GREP_MATCHES = 300;
@@ -76,8 +77,17 @@ async function toolSkillRead(args: Record<string, unknown>, projectRoot: string)
 	}
 }
 
+async function toolMemoryRemember(args: Record<string, unknown>, projectRoot: string): Promise<ToolResult> {
+	const entry = String(args.entry ?? '').trim();
+	if (!entry) return { id: '', name: 'memory:remember', success: false, error: 'entry is required', durationMs: 0 };
+	if (entry.length > 4_000) return { id: '', name: 'memory:remember', success: false, error: 'Memory entries must be 4,000 characters or fewer.', durationMs: 0 };
+	await appendToMemory(projectRoot, entry);
+	return { id: '', name: 'memory:remember', success: true, output: 'Saved durable project memory to docs/MEMORY.md.', durationMs: 0 };
+}
+
 const TOOL_MAP: Record<string, (...args: any[]) => Promise<ToolResult>> = {
 	'skill:read': toolSkillRead,
+	'memory:remember': toolMemoryRemember,
 	'file:read': toolFileRead,
 	'file:write': toolFileWrite,
 	'file:edit': toolFileEdit,

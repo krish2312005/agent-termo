@@ -5,6 +5,7 @@
 import OpenAI from 'openai';
 import type { ToolCall, ConversationMessage, ToolDef, TokenUsage } from '../types/index.js';
 import { mergeModels, type ModelInfo } from './models.js';
+import { estimateContextTokens, resolveContextBudget } from '../runtime/context.js';
 
 type NIMTool = OpenAI.Chat.ChatCompletionTool;
 type NIMFunctionTool = Extract<NIMTool, { type: 'function' }>;
@@ -13,6 +14,7 @@ export type ThinkingCapacity = 'off' | 'auto' | 'low' | 'medium' | 'high';
 
 const TOOL_NAME_ALIASES: Record<string, string> = {
 	'skill:read': 'skill_read',
+	'memory:remember': 'memory_remember',
 	'file:read': 'file_read',
 	'file:write': 'file_write',
 	'file:edit': 'file_edit',
@@ -269,7 +271,7 @@ export class NimClient {
 	}
 
 	private estimatePromptTokens(messages: ConversationMessage[]): number {
-		return Math.ceil(messages.reduce((total, message) => total + message.content.length, 0) / 4);
+		return estimateContextTokens(messages);
 	}
 
 	setThinkingCapacity(capacity: ThinkingCapacity): void {
@@ -357,7 +359,7 @@ export class NimClient {
 				}),
 				tools,
 				temperature: 0.3,
-				max_tokens: 8192,
+				max_tokens: resolveContextBudget(this.getModel()).maxOutputTokens,
 				stream: true,
 			}, { signal: controller.signal });
 
@@ -475,7 +477,7 @@ export class NimClient {
       }),
       tools: tools,
       temperature: 0.3,
-		max_tokens: 8192,
+		max_tokens: resolveContextBudget(this.getModel()).maxOutputTokens,
 			stream: false,
 		}, { signal: controller.signal });
 

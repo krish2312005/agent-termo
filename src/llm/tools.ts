@@ -50,6 +50,17 @@ export const TOOL_DEFINITIONS: ToolDef[] = [
     },
   },
   {
+    name: 'memory:remember',
+    description: 'Save a stable project fact, architecture decision, or convention to docs/MEMORY.md for future sessions. Never save secrets or private personal information.',
+    parameters: {
+      type: 'object',
+      properties: {
+        entry: { type: 'string', description: 'Concise durable project fact or decision to remember.' },
+      },
+      required: ['entry'],
+    },
+  },
+  {
     name: 'file:write',
     description: 'Write or overwrite a complete file. Use this to create new files or replace existing ones entirely.',
     parameters: {

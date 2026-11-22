@@ -7,6 +7,63 @@ export interface ModelInfo {
   note?: string;
 }
 
+export interface ProviderModelLimits {
+  contextWindowTokens: number;
+  maxOutputTokens?: number;
+  source: string;
+}
+
+/**
+ * NVIDIA NIM's /v1/models endpoint returns model IDs, not context limits.
+ * Keep only limits verified against NVIDIA's per-model API reference pages.
+ * Unlisted live models use the conservative runtime fallback.
+ */
+export const NVIDIA_NIM_MODEL_LIMITS: Record<string, ProviderModelLimits> = {
+  'stepfun-ai/step-3.7-flash': {
+    contextWindowTokens: 262_144,
+    maxOutputTokens: 262_144,
+    source: 'https://docs.api.nvidia.com/nim/reference/stepfun-ai-step-3-7-flash',
+  },
+  'meta/llama-3.1-8b-instruct': {
+    contextWindowTokens: 131_072,
+    maxOutputTokens: 4_096,
+    source: 'https://docs.api.nvidia.com/nim/reference/meta-llama-3_1-8b',
+  },
+  'meta/llama-3.1-70b-instruct': {
+    contextWindowTokens: 131_072,
+    maxOutputTokens: 4_096,
+    source: 'https://docs.api.nvidia.com/nim/reference/meta-llama-3_1-8b',
+  },
+  'meta/llama-3.1-405b-instruct': {
+    contextWindowTokens: 131_072,
+    source: 'https://docs.api.nvidia.com/nim/reference/meta-llama-3_1-8b',
+  },
+  'meta/llama-3.3-70b-instruct': {
+    contextWindowTokens: 131_072,
+    maxOutputTokens: 4_096,
+    source: 'https://docs.api.nvidia.com/nim/reference/meta-llama-3_3-70b-instruct',
+  },
+  'qwen/qwen2.5-coder-32b-instruct': {
+    contextWindowTokens: 32_768,
+    maxOutputTokens: 4_000,
+    source: 'https://docs.api.nvidia.com/nim/re/reference/qwen-qwen2_5-coder-32b-instruct',
+  },
+  'moonshotai/kimi-k2-instruct': {
+    contextWindowTokens: 131_072,
+    maxOutputTokens: 16_384,
+    source: 'https://docs.api.nvidia.com/nim/reference/moonshotai-kimi-k2-instruct',
+  },
+  'openai/gpt-oss-120b': {
+    contextWindowTokens: 128_000,
+    maxOutputTokens: 4_096,
+    source: 'https://docs.api.nvidia.com/nim/reference/openai-gpt-oss-120b',
+  },
+};
+
+export function getProviderModelLimits(modelId: string): ProviderModelLimits | undefined {
+  return NVIDIA_NIM_MODEL_LIMITS[modelId];
+}
+
 /**
  * Hand-picked chat/coding models worth surfacing first. This list is only a
  * starting point: when the live catalogue is reachable, entries NIM no longer
