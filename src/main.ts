@@ -1118,7 +1118,7 @@ async function handleProvidersCommand(
 			hint: 'saved custom endpoint',
 		})),
 	];
-	let providerId = requestedId;
+	let providerId: string | null = requestedId ?? null;
 	if (!providerId) {
 		providerId = await pick({
 			title: 'Choose an API provider',
