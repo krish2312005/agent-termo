@@ -6,6 +6,8 @@ import OpenAI from 'openai';
 import type { ToolCall, ConversationMessage, ToolDef, TokenUsage } from '../types/index.js';
 import { mergeModels, type ModelInfo } from './models.js';
 import { estimateContextTokens, resolveContextBudget } from '../runtime/context.js';
+import { getProviderDefinition, type StoredProviderConfig } from './providers.js';
+import { listSavedProviders } from '../utils/config.js';
 
 type NIMTool = OpenAI.Chat.ChatCompletionTool;
 type NIMFunctionTool = Extract<NIMTool, { type: 'function' }>;
@@ -216,25 +218,62 @@ export class ToolCallStreamAccumulator {
 
 export class NimClient {
 	private client: OpenAI;
+	private provider: StoredProviderConfig;
 	private model: string;
 	private thinkingCapacity: ThinkingCapacity;
 	private activeController: AbortController | null = null;
 	private usage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+	private inFlightUsage: TokenUsage | null = null;
 
   constructor(_projectRoot?: string) {
-    const apiKey = process.env.NIM_API_KEY ?? '';
-    const baseUrl = process.env.NIM_BASE_URL ?? 'https://integrate.api.nvidia.com/v1';
-	    this.model = process.env.NIM_MODEL ?? 'stepfun-ai/step-3.7-flash';
-	    const thinking = process.env.NIM_THINKING;
-	    this.thinkingCapacity = thinking === 'off' || thinking === 'low' || thinking === 'medium' || thinking === 'high' || thinking === 'auto' ? thinking : 'auto';
+    const inferredProvider = [
+      ['ANTHROPIC_API_KEY', 'anthropic'],
+      ['OPENROUTER_API_KEY', 'openrouter'],
+      ['OPENAI_API_KEY', 'openai'],
+      ['GEMINI_API_KEY', 'google'],
+      ['GOOGLE_API_KEY', 'google'],
+      ['DEEPSEEK_API_KEY', 'deepseek'],
+      ['GROQ_API_KEY', 'groq'],
+      ['MISTRAL_API_KEY', 'mistral'],
+      ['XAI_API_KEY', 'xai'],
+      ['TOGETHER_API_KEY', 'together'],
+      ['FIREWORKS_API_KEY', 'fireworks'],
+      ['CEREBRAS_API_KEY', 'cerebras'],
+    ].find(([key]) => Boolean(process.env[key!]?.trim()))?.[1];
+    const providerId = process.env.AGENT_TERMO_PROVIDER ?? inferredProvider ?? 'nvidia';
+    const saved = listSavedProviders().find((item) => item.id === providerId);
+    const definition = getProviderDefinition(providerId) ?? getProviderDefinition('custom')!;
+    const isNim = providerId === 'nvidia';
+    const providerEnvKey = process.env[providerId.toUpperCase().replace(/[^A-Z0-9]/g, '_') + '_API_KEY']
+      ?? (providerId === 'google' ? process.env.GEMINI_API_KEY : undefined);
+    const apiKey = process.env.AGENT_TERMO_API_KEY ?? saved?.apiKey ?? providerEnvKey ?? (isNim ? process.env.NIM_API_KEY : '') ?? '';
+    const baseUrl = process.env.AGENT_TERMO_BASE_URL ?? saved?.baseUrl ?? (isNim ? process.env.NIM_BASE_URL : undefined) ?? definition.baseUrl;
+    const model = process.env.AGENT_TERMO_MODEL ?? saved?.model ?? (isNim ? process.env.NIM_MODEL : undefined) ?? definition.suggestedModels[0] ?? '';
+    this.provider = { ...definition, apiKey, baseUrl, model };
+    this.model = model;
+    const thinking = process.env.NIM_THINKING;
+    this.thinkingCapacity = thinking === 'off' || thinking === 'low' || thinking === 'medium' || thinking === 'high' || thinking === 'auto' ? thinking : 'auto';
     const timeout = parseInt(process.env.LLM_TIMEOUT ?? '120000', 10);
+    this.client = this.createOpenAIClient(timeout);
+  }
 
-    this.client = new OpenAI({
-      apiKey,
-      baseURL: baseUrl,
+  private createOpenAIClient(timeout = parseInt(process.env.LLM_TIMEOUT ?? '120000', 10)): OpenAI {
+    return new OpenAI({
+      apiKey: this.provider.apiKey,
+      baseURL: this.provider.baseUrl,
       timeout,
       defaultHeaders: { 'User-Agent': 'agent-termo/1.0' },
     });
+  }
+
+  getProvider(): StoredProviderConfig {
+    return { ...this.provider };
+  }
+
+  setProvider(provider: StoredProviderConfig): void {
+    this.provider = { ...provider };
+    this.model = provider.model;
+    this.client = this.createOpenAIClient();
   }
 
   buildToolDefs(toolSchemas: ToolDef[]): NIMTool[] {
@@ -252,16 +291,28 @@ export class NimClient {
 		return this.model;
 	}
 
+	getProviderName(): string {
+		return this.provider.name;
+	}
+
 	getThinkingCapacity(): ThinkingCapacity {
 		return this.thinkingCapacity;
 	}
 
 	getUsage(): TokenUsage {
-		return { ...this.usage };
+		const current = this.inFlightUsage;
+		return current
+			? {
+				promptTokens: this.usage.promptTokens + current.promptTokens,
+				completionTokens: this.usage.completionTokens + current.completionTokens,
+				totalTokens: this.usage.totalTokens + current.totalTokens,
+			}
+			: { ...this.usage };
 	}
 
 	formatUsage(): string {
-		return `${this.usage.totalTokens.toLocaleString()} tokens`;
+		const usage = this.getUsage();
+		return `${this.inFlightUsage ? '~' : ''}${usage.totalTokens.toLocaleString()} tokens`;
 	}
 
 	private recordUsage(promptTokens: number, completionTokens: number): void {
@@ -272,6 +323,22 @@ export class NimClient {
 
 	private estimatePromptTokens(messages: ConversationMessage[]): number {
 		return estimateContextTokens(messages);
+	}
+
+	private beginRequestUsage(messages: ConversationMessage[]): void {
+		const promptTokens = this.estimatePromptTokens(messages);
+		this.inFlightUsage = { promptTokens, completionTokens: 0, totalTokens: promptTokens };
+	}
+
+	private updateRequestOutputUsage(completionTokens: number): void {
+		if (!this.inFlightUsage) return;
+		this.inFlightUsage.completionTokens = Math.max(0, Math.round(completionTokens));
+		this.inFlightUsage.totalTokens = this.inFlightUsage.promptTokens + this.inFlightUsage.completionTokens;
+	}
+
+	private finishRequestUsage(promptTokens: number, completionTokens: number): void {
+		this.recordUsage(promptTokens, completionTokens);
+		this.inFlightUsage = null;
 	}
 
 	setThinkingCapacity(capacity: ThinkingCapacity): void {
@@ -291,6 +358,7 @@ export class NimClient {
 
 	setModel(model: string): void {
 		this.model = model;
+		this.provider.model = model;
 	}
 
 	cancelCurrentRequest(): void {
@@ -304,20 +372,37 @@ export class NimClient {
 	  async listModels(): Promise<{ models: ModelInfo[]; live: boolean; error?: string }> {
 		const controller = new AbortController();
 		this.activeController = controller;
-	    try {
-	      const page = await this.client.models.list({ timeout: 10_000, signal: controller.signal });
-      const ids = page.data.map((m) => m.id);
-      if (ids.length === 0) throw new Error('empty model list');
-      return { models: mergeModels(ids), live: true };
-    } catch (err) {
-	      return {
-	        models: mergeModels(null),
-	        live: false,
-	        error: err instanceof Error ? err.message : String(err),
-	      };
-	    } finally {
+		try {
+			let ids: string[];
+			if (this.provider.protocol === 'anthropic') {
+				const response = await fetch(`${this.provider.baseUrl.endsWith('/') ? this.provider.baseUrl.slice(0, -1) : this.provider.baseUrl}/v1/models?limit=100`, {
+					headers: { 'x-api-key': this.provider.apiKey, 'anthropic-version': '2023-06-01' },
+					signal: controller.signal,
+				});
+				if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+				const data = await response.json() as { data?: Array<{ id?: string }> };
+				ids = (data.data ?? []).map((item) => item.id ?? '').filter(Boolean);
+			} else {
+				const page = await this.client.models.list({ timeout: 10_000, signal: controller.signal });
+				ids = page.data.map((item) => item.id);
+			}
+			if (ids.length === 0) throw new Error('empty model list');
+			const models = this.provider.id === 'nvidia'
+				? mergeModels(ids)
+				: ids.sort((a, b) => a.localeCompare(b)).map((id): ModelInfo => ({ id }));
+			return { models, live: true };
+		} catch (err) {
+			const fallback = this.provider.id === 'nvidia'
+				? mergeModels(null)
+				: this.provider.suggestedModels.map((id): ModelInfo => ({ id }));
+			return {
+				models: fallback,
+				live: false,
+				error: err instanceof Error ? err.message : String(err),
+			};
+		} finally {
 			if (this.activeController === controller) this.activeController = null;
-	    }
+		}
 	  }
 
   /**
@@ -329,7 +414,7 @@ export class NimClient {
 	 * Stream assistant text while assembling native tool-call deltas. Tool-call
 	 * arguments are parsed only after the provider finishes the complete call.
 	 */
-	async *streamComplete(
+	private async *streamAnthropicComplete(
 		messages: ConversationMessage[],
 		tools?: NIMTool[],
 		onChunk?: (text: string) => void,
@@ -337,6 +422,139 @@ export class NimClient {
 	): AsyncGenerator<{ content: string; toolCalls: ToolCall[] }, void, unknown> {
 		const controller = new AbortController();
 		this.activeController = controller;
+		this.beginRequestUsage(messages);
+		onChunk?.('');
+		let outputCharacters = 0;
+		try {
+			const system = messages.filter((message) => message.role === 'system').map((message) => this.messageContent(message)).join('\\n\\n');
+			const payloadMessages = messages.filter((message) => message.role !== 'system').map((message) => {
+				if (message.role === 'tool') return {
+					role: 'user',
+					content: [{ type: 'tool_result', tool_use_id: message.id, content: message.content }],
+				};
+				if (message.role === 'assistant' && message.toolCalls?.length) {
+					const content: Array<Record<string, unknown>> = [];
+					if (message.content) content.push({ type: 'text', text: message.content });
+					for (const call of message.toolCalls) content.push({
+						type: 'tool_use', id: call.id, name: toWireToolName(call.name), input: call.arguments,
+					});
+					return { role: 'assistant', content };
+				}
+				return { role: message.role as 'user' | 'assistant', content: message.content };
+			});
+			const anthropicTools = tools?.flatMap((tool) => tool.type === 'function' ? [{
+				name: tool.function.name,
+				description: tool.function.description ?? '',
+				input_schema: tool.function.parameters,
+			}] : []);
+			const response = await fetch(`${this.provider.baseUrl.endsWith('/') ? this.provider.baseUrl.slice(0, -1) : this.provider.baseUrl}/v1/messages`, {
+				method: 'POST',
+				headers: {
+					'content-type': 'application/json',
+					'x-api-key': this.provider.apiKey,
+					'anthropic-version': '2023-06-01',
+				},
+				body: JSON.stringify({
+					model: this.model,
+					max_tokens: resolveContextBudget(this.getModel()).maxOutputTokens,
+					...(system ? { system } : {}),
+					messages: payloadMessages,
+					...(anthropicTools?.length ? { tools: anthropicTools } : {}),
+					stream: true,
+				}),
+				signal: controller.signal,
+			});
+			if (!response.ok) throw new Error(`Anthropic API HTTP ${response.status}: ${await response.text()}`);
+			if (!response.body) throw new Error('Anthropic API returned an empty stream.');
+			const reader = response.body.getReader();
+			const decoder = new TextDecoder();
+			let buffer = '';
+			let content = '';
+			let inputTokens = 0;
+			let outputTokens = 0;
+			const calls = new Map<number, { id: string; name: string; arguments: string }>();
+			const processEvent = (raw: string): void => {
+				const dataLine = raw.split('\\n').find((line) => line.startsWith('data:'));
+				if (!dataLine) return;
+				const data = JSON.parse(dataLine.slice(5).trim()) as {
+					type?: string; index?: number; error?: { message?: string };
+					message?: { usage?: { input_tokens?: number } };
+					content_block?: { type?: string; id?: string; name?: string };
+					delta?: { type?: string; text?: string; partial_json?: string };
+					usage?: { output_tokens?: number };
+				};
+				if (data.type === 'error') throw new Error(data.error?.message ?? 'Anthropic API stream error.');
+				if (data.type === 'message_start') inputTokens = data.message?.usage?.input_tokens ?? 0;
+				if (data.type === 'content_block_start' && data.content_block?.type === 'tool_use') {
+					calls.set(data.index ?? 0, { id: data.content_block.id ?? crypto.randomUUID(), name: data.content_block.name ?? '', arguments: '' });
+				}
+				if (data.type === 'content_block_delta' && data.delta?.type === 'text_delta') {
+					const text = data.delta.text ?? '';
+					content += text;
+					outputCharacters += text.length;
+					this.updateRequestOutputUsage(Math.ceil(outputCharacters / 4));
+					onChunk?.(text);
+				}
+				if (data.type === 'content_block_delta' && data.delta?.type === 'input_json_delta') {
+					const index = data.index ?? 0;
+					const call = calls.get(index);
+					if (call) {
+						const partialJson = data.delta.partial_json ?? '';
+						call.arguments += partialJson;
+						outputCharacters += partialJson.length;
+						this.updateRequestOutputUsage(Math.ceil(outputCharacters / 4));
+						let validJson = false;
+						try { JSON.parse(call.arguments); validJson = true; } catch { /* more fragments are arriving */ }
+						onToolCallDelta?.({ index, name: call.name, arguments: call.arguments, validJson });
+					}
+				}
+				if (data.type === 'message_delta') outputTokens = data.usage?.output_tokens ?? outputTokens;
+			};
+			while (true) {
+				const { value, done } = await reader.read();
+				if (done) break;
+				buffer += decoder.decode(value, { stream: true });
+				let boundary = buffer.indexOf('\\n\\n');
+				while (boundary >= 0) {
+					const event = buffer.slice(0, boundary);
+					buffer = buffer.slice(boundary + 2);
+					if (event.trim()) processEvent(event);
+					boundary = buffer.indexOf('\\n\\n');
+				}
+			}
+			buffer += decoder.decode();
+			if (buffer.trim()) processEvent(buffer);
+			const toolCalls: ToolCall[] = [...calls.values()].map((call) => {
+				let args: Record<string, unknown> = {};
+				try {
+					const parsed = JSON.parse(call.arguments || '{}') as unknown;
+					args = parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : {};
+				} catch { args = { _raw: call.arguments }; }
+				return { id: call.id, name: fromWireToolName(call.name), arguments: args };
+			});
+			this.finishRequestUsage(inputTokens || this.estimatePromptTokens(messages), outputTokens || Math.ceil(outputCharacters / 4));
+			yield { content, toolCalls };
+		} finally {
+			this.inFlightUsage = null;
+			if (this.activeController === controller) this.activeController = null;
+		}
+	}
+
+	async *streamComplete(
+		messages: ConversationMessage[],
+		tools?: NIMTool[],
+		onChunk?: (text: string) => void,
+		onToolCallDelta?: (delta: { index: number; name: string; arguments: string; validJson: boolean }) => void,
+	): AsyncGenerator<{ content: string; toolCalls: ToolCall[] }, void, unknown> {
+		if (this.provider.protocol === 'anthropic') {
+			yield* this.streamAnthropicComplete(messages, tools, onChunk, onToolCallDelta);
+			return;
+		}
+		const controller = new AbortController();
+		this.activeController = controller;
+		this.beginRequestUsage(messages);
+		onChunk?.('');
+		let outputCharacters = 0;
 		try {
 			const stream = await this.client.chat.completions.create({
 				model: this.model,
@@ -409,6 +627,8 @@ export class NimClient {
 				const rawContent = delta.content ?? '';
 				if (rawContent) {
 					rawChunks.push(rawContent);
+					outputCharacters += rawContent.length;
+					this.updateRequestOutputUsage(Math.ceil(outputCharacters / 4));
 					emitTextChunk(rawContent);
 				}
 				if (delta.tool_calls) {
@@ -417,7 +637,10 @@ export class NimClient {
 						toolCalls.add(toolCall);
 						const current = toolCallSnapshots.get(index) ?? { name: '', arguments: '' };
 						current.name += toolCall.function?.name ?? '';
-						current.arguments += toolCall.function?.arguments ?? '';
+						const argumentDelta = toolCall.function?.arguments ?? '';
+						current.arguments += argumentDelta;
+						outputCharacters += argumentDelta.length;
+						this.updateRequestOutputUsage(Math.ceil(outputCharacters / 4));
 						toolCallSnapshots.set(index, current);
 						let validJson = false;
 						try {
@@ -431,7 +654,7 @@ export class NimClient {
 
 			if (!insideMarkupCall) emitVisible(pendingText);
 			const content = rawChunks.join('');
-			this.recordUsage(this.estimatePromptTokens(messages), Math.ceil(content.length / 4));
+			this.finishRequestUsage(this.estimatePromptTokens(messages), Math.ceil(outputCharacters / 4));
 			const parsedToolCalls = toolCalls.toToolCalls();
 			let visibleContent = content;
 			if (parsedToolCalls.length === 0) {
@@ -443,6 +666,7 @@ export class NimClient {
 			}
 			yield { content: visibleContent, toolCalls: parsedToolCalls };
 		} finally {
+			this.inFlightUsage = null;
 			if (this.activeController === controller) this.activeController = null;
 		}
 	}
@@ -454,6 +678,11 @@ export class NimClient {
 		messages: ConversationMessage[],
 		tools?: NIMTool[],
 	): Promise<{ content: string; toolCalls: ToolCall[] }> {
+		if (this.provider.protocol === 'anthropic') {
+			let result = { content: '', toolCalls: [] as ToolCall[] };
+			for await (const chunk of this.streamAnthropicComplete(messages, tools)) result = chunk;
+			return result;
+		}
 		const controller = new AbortController();
 		this.activeController = controller;
 		const response = await this.client.chat.completions.create({

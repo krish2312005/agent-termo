@@ -42,7 +42,8 @@ export const COMMANDS: CommandInfo[] = [
   { name: "/remember", description: "save a durable project fact to memory" },
   { name: "/recall", description: "search earlier saved sessions" },
   { name: "/timeline", description: "view project timeline (docs/TIMELINE.md)" },
-  { name: "/model", description: "switch NVIDIA NIM model (or /model <id>)" },
+  { name: "/model", description: "switch the active provider model (or /model <id>)" },
+  { name: "/providers", description: "add, switch, and configure model API providers" },
   { name: "/thinking", description: "select NVIDIA reasoning capacity" },
   { name: "/permissions", description: "ask, files, or auto; terminal approvals can be remembered with A" },
   { name: "/agents", description: "list all agents" },
@@ -233,6 +234,22 @@ export function printSubAgents(selectedId?: string): void {
 }
 
 export function printToolCall(toolName: string, args: Record<string, unknown>): void {
+  if (toolName === "bash:execute" && typeof args.command === "string") {
+    print("● " + toolName, "tool");
+    print("  command:", "dim");
+    const width = Math.max(20, terminalWidth() - 8);
+    for (const line of args.command.split(/\r?\n/)) {
+      let remaining = line;
+      if (!remaining) print("    ", "dim");
+      while (remaining.length > width) {
+        print("    " + remaining.slice(0, width), "dim");
+        remaining = remaining.slice(width);
+      }
+      print("    " + remaining, "dim");
+    }
+    return;
+  }
+
   const summary = Object.entries(args).map(([key, value]) => key + "=" + clipText(String(typeof value === "string" ? value : JSON.stringify(value) ?? "").replace(/\s+/g, " "), 40)).join(", ");
   print("● " + toolName + "(" + clipText(summary, terminalWidth() - toolName.length - 6) + ")", "tool");
 }

@@ -19,6 +19,7 @@ interface PickerState {
 }
 export interface InputController {
   question: (prompt?: string) => Promise<string>;
+  questionSecret: (prompt?: string) => Promise<string | null>;
   close: () => void;
   showPrompt: () => void;
 }
@@ -36,6 +37,9 @@ const [terminal, setTerminal] = createSignal<{ command: string; lines: string[];
 const [terminalVisible, setTerminalVisible] = createSignal(false);
 const [picker, setPicker] = createSignal<PickerState | null>(null);
 const [completionSelected, setCompletionSelected] = createSignal(0);
+const [secretMode, setSecretMode] = createSignal(false);
+const [secretDraft, setSecretDraft] = createSignal("");
+let secretResolver: ((value: string | null) => void) | null = null;
 let nextId = 1;
 let renderer: CliRenderer | null = null;
 let textarea: TextareaRenderable | undefined;
@@ -108,7 +112,7 @@ function filteredPicker(query: string, items: PickItem[], allowCustom = false): 
     return words.every((word) => haystack.includes(word));
   });
   const typed = query.trim();
-  if (allowCustom && typed.includes("/") && !items.some((item) => item.value === typed)) {
+  if (allowCustom && typed && !items.some((item) => item.value === typed)) {
     filtered.push({ value: typed, label: typed, hint: "use as typed" });
   }
   return filtered;
@@ -226,6 +230,31 @@ function App() {
               ? "enter"
               : event.name;
     const key: Key = { name, text: sequence || (event.name === "space" ? " " : undefined) };
+    if (secretMode()) {
+      if (name === "enter") {
+        const resolve = secretResolver;
+        secretResolver = null;
+        setSecretMode(false);
+        const value = secretDraft();
+        setSecretDraft("");
+        setInputActive(false);
+        resolve?.(value);
+      } else if (name === "escape" || name === "ctrl+c") {
+        const resolve = secretResolver;
+        secretResolver = null;
+        setSecretMode(false);
+        setSecretDraft("");
+        setInputActive(false);
+        resolve?.(null);
+      } else if (name === "backspace") {
+        setSecretDraft((value) => [...value].slice(0, -1).join(""));
+      } else if (name === "text" || name === "paste" || name === "space") {
+        setSecretDraft((value) => value + (key.text ?? (name === "space" ? " " : "")));
+      }
+      event.preventDefault();
+      return;
+    }
+
     const currentPicker = picker();
 
     if (currentPicker) {
@@ -360,7 +389,7 @@ function App() {
       </scrollbox>
       <Show when={terminalVisible() && terminal()} fallback={<box height={0} />}>
         <box height={8} border borderStyle="single" borderColor="#6D625A" paddingX={1} flexDirection="column">
-          <text fg="#D99168">Terminal · {terminal()!.command} · {terminal()!.exitCode === null ? "running" : "exit " + terminal()!.exitCode}</text>
+          <text fg="#D99168">Terminal · {terminal()!.exitCode === null ? "running" : "exit " + terminal()!.exitCode}</text>
           <scrollbox flexGrow={1} minHeight={0} stickyScroll stickyStart="bottom">
             <text fg="#C9C1BA">{terminal()!.lines.slice(-5).join("\n")}</text>
           </scrollbox>
@@ -378,7 +407,7 @@ function App() {
           </box>
         )}
       </Show>
-      <Show when={inputActive() && completionItems().length > 0 && !currentPicker()} fallback={<box height={0} />}>
+      <Show when={inputActive() && completionItems().length > 0 && !currentPicker() && !secretMode()} fallback={<box height={0} />}>
         <box paddingX={2} flexDirection="column" flexShrink={0}>
           <For each={visibleCompletionItems()}>
             {(item) => <text fg={item.selected ? "#F0B38D" : "#8EAAA8"}>{item.selected ? "› " : "  "}{item.label}{item.hint ? "  " + item.hint : ""}</text>}
@@ -387,27 +416,33 @@ function App() {
       </Show>
       <box border borderStyle="single" borderColor={inputActive() ? "#D99168" : "#6D625A"} paddingX={1} flexDirection="row" alignItems="flex-start" flexShrink={0}>
         <text width={2} fg="#D99168">❯ </text>
-        <textarea
-          ref={(element) => { textarea = element; }}
-          flexGrow={1}
-          flexBasis={0}
-          minWidth={0}
-          height={promptInputHeight(
-            draft(),
-            textarea?.width || (process.stdout.columns ?? 80) - 8,
-            Math.max(3, Math.min(8, (process.stdout.rows ?? 24) - 11)),
-          )}
-          focused={inputActive() && !currentPicker()}
-          placeholder="Ask anything… or type / for commands"
-          onContentChange={() => {
-            const value = textarea?.plainText ?? "";
-            if (value !== draft()) setCompletionHiddenFor("");
-            setDraft(value);
-            setCompletionSelected(0);
-          }}
-          onSubmit={submitInput}
-          keyBindings={promptInputKeyBindings(legacyAppleTerminal)}
-        />
+        <Show when={secretMode()} fallback={
+          <textarea
+            ref={(element) => { textarea = element; }}
+            flexGrow={1}
+            flexBasis={0}
+            minWidth={0}
+            height={promptInputHeight(
+              draft(),
+              textarea?.width || (process.stdout.columns ?? 80) - 8,
+              Math.max(3, Math.min(8, (process.stdout.rows ?? 24) - 11)),
+            )}
+            focused={inputActive() && !currentPicker()}
+            placeholder="Ask anything… or type / for commands"
+            onContentChange={() => {
+              const value = textarea?.plainText ?? "";
+              if (value !== draft()) setCompletionHiddenFor("");
+              setDraft(value);
+              setCompletionSelected(0);
+            }}
+            onSubmit={submitInput}
+            keyBindings={promptInputKeyBindings(legacyAppleTerminal)}
+          />
+        }>
+          <box flexGrow={1} flexBasis={0} minWidth={0}>
+            <text fg="#D0C9C2">{ "•".repeat(secretDraft().length) }</text>
+          </box>
+        </Show>
       </box>
       <box height={1} flexDirection="row" justifyContent="space-between">
         <text fg="#8D857D">{screen().thinking} · {screen().permissionMode} · {screen().usage}</text>
@@ -600,6 +635,8 @@ export function createInput(): InputController {
         });
       }
       if (inputResolver) throw new Error("An input request is already active.");
+      setSecretMode(false);
+      setSecretDraft("");
       setDraft(nextInput);
       setCompletionHiddenFor("");
       historyIndex = -1;
@@ -610,9 +647,65 @@ export function createInput(): InputController {
       textarea?.focus();
       return new Promise((resolve) => { inputResolver = resolve; });
     },
+    questionSecret(prompt = ""): Promise<string | null> {
+      if (!renderer) {
+        const stdin = process.stdin;
+        if (!stdin.isTTY || typeof stdin.setRawMode !== "function") {
+          throw new Error("Masked API-key entry requires a TTY. Set the provider API key in an environment variable instead.");
+        }
+        return new Promise((resolve) => {
+          const wasRaw = stdin.isRaw;
+          let value = "";
+          const finish = (result: string | null) => {
+            stdin.off("data", onData);
+            stdin.setRawMode(wasRaw);
+            process.stdout.write("\\n");
+            resolve(result);
+          };
+          const onData = (chunk: Buffer | string) => {
+            for (const character of chunk.toString("utf8")) {
+              if (character === "\\r" || character === "\\n") {
+                finish(value);
+                return;
+              }
+              if (character === "\\u0003" || character === "\\u001b") {
+                finish(null);
+                return;
+              }
+              if (character === "\\u007f" || character === "\\b") {
+                value = [...value].slice(0, -1).join("");
+              } else if (character === "\\u0015") {
+                value = "";
+              } else if (character >= " ") {
+                value += character;
+              }
+            }
+          };
+          process.stdout.write(prompt);
+          stdin.setRawMode(true);
+          stdin.resume();
+          stdin.on("data", onData);
+        });
+      }
+      if (inputResolver || secretResolver) throw new Error("An input request is already active.");
+      setDraft("");
+      setCompletionHiddenFor("");
+      setSecretDraft("");
+      setSecretMode(true);
+      setInputActive(true);
+      return new Promise((resolve) => {
+        appendLog(prompt, "info");
+        secretResolver = resolve;
+      });
+    },
     close(): void {
       const resolve = inputResolver;
+      const resolveSecret = secretResolver;
       inputResolver = null;
+      secretResolver = null;
+      setSecretMode(false);
+      setSecretDraft("");
+      resolveSecret?.(null);
       setInputActive(false);
       setDraft("");
       setCompletionHiddenFor("");
