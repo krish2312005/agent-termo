@@ -61,11 +61,6 @@ async function promptForApiKey(): Promise<string> {
         }
 
         if (char === '\r' || char === '\n') {
-          if (!apiKey.trim()) {
-            output.write('\nAn API key is required. Enter your API key: ');
-            continue;
-          }
-
           restoreTerminal();
           resolve(apiKey.trim());
           return;
@@ -102,11 +97,15 @@ async function startAgent(
 		process.env.AGENT_TERMO_AUTO_APPROVE = '1';
 	}
 
-  if (!process.env.NIM_API_KEY?.trim()) {
+  if (!process.env.NIM_API_KEY?.trim() && !process.env.AGENT_TERMO_API_KEY?.trim() && !process.env.OPENAI_API_KEY?.trim()) {
     const apiKey = await promptForApiKey();
-    saveNimApiKey(apiKey);
-    process.env.NIM_API_KEY = apiKey;
-    console.log('API key saved. Agent-Termo will remember it for future sessions.');
+    if (apiKey) {
+      saveNimApiKey(apiKey);
+      process.env.NIM_API_KEY = apiKey;
+      console.log('NVIDIA NIM API key saved. Agent-Termo will remember it for future sessions.');
+    } else {
+      console.log('No API key entered. Start Agent-Termo and run /providers to configure OpenAI, Claude, OpenRouter, and other providers.');
+    }
   }
 
   console.log(`Starting Agent-Termo in: ${project}`);
@@ -115,7 +114,7 @@ async function startAgent(
 
 program
   .name('agent-termo')
-  .description('Terminal AI coding agent with Nvidia NIM APIs')
+  .description('Terminal AI coding agent with multiple model API providers')
 	.version(pkg.version)
   .argument('[project]', 'Project directory to operate in', process.cwd())
   .option('-k, --api-key <key>', 'Nvidia NIM API key')
@@ -142,7 +141,7 @@ program
 
     console.log(`\n✓ Initialized Agent-Termo in ${resolve(dir)}`);
 		console.log(`  Created: docs/MEMORY.md, docs/TIMELINE.md, .agent-termo/ (agents: ${agentFolder.copiedAgents}, commands: ${agentFolder.copiedCommands})`);
-    console.log('  Agent-Termo will ask for your NVIDIA NIM API key the first time you launch it.');
+    console.log('  Configure an API provider on first launch with /providers.');
   });
 
 
