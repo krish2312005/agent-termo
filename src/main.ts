@@ -1056,7 +1056,7 @@ async function handleModelCommand(arg: string, nimClient: NimClient, projectRoot
 	void logToTimeline(projectRoot, 'Model switched to ' + selected);
 
 	try {
-		saveNimModel(selected);
+		if (nimClient.getProvider().id === 'nvidia') saveNimModel(selected);
 		saveProviderConfig(nimClient.getProvider());
 		printSuccess('Model set to ' + selected + ' (saved as your default)');
 	} catch {
@@ -1298,7 +1298,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 	let activePlan: TaskPlan | undefined = session.taskPlan;
 	const sessionStartedAt = Date.now();
 
-	if (session.model && session.providerId === nimClient.getProvider().id) nimClient.setModel(session.model);
+	if (session.model && (session.providerId === nimClient.getProvider().id || (!session.providerId && nimClient.getProvider().id === 'nvidia'))) nimClient.setModel(session.model);
 	if (session.thinkingCapacity) nimClient.setThinkingCapacity(session.thinkingCapacity as ThinkingCapacity);
 	currentGoal = session.currentGoal ?? '';
 	if (session.activeAgentName) {
