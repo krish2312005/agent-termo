@@ -18,6 +18,7 @@ export interface SessionTaskState {
   reason: string;
   lastActions: string[];
   completedOperations: string[];
+  failedToolCalls?: string[];
   checkpointId?: string;
 }
 
