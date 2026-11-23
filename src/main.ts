@@ -943,10 +943,12 @@ export async function runToolLoop(
 		} else {
 			for (const tc of toolCalls) {
 				if (Date.now() - runStartedAt > 20 * 60 * 1000) {
-					executions.push({
+					const execution = {
 						toolResult: { name: tc.name, success: false, error: 'Not executed: the 20-minute task safety budget was reached. Resume the task to continue safely.' },
 						applied: false,
-					});
+					};
+					executions.push(execution);
+					recordToolCallOutcome(tc, execution);
 					continue;
 				}
 				const blocked = blockedResult(tc);
