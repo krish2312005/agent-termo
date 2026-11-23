@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it } from 'vitest';
-import { readTerminalSession, startTerminalSession, stopTerminalSession, stopAllTerminalSessions } from '../../src/runtime/terminal-sessions.js';
+import { readTerminalSession, waitForTerminalSession, startTerminalSession, stopTerminalSession, stopAllTerminalSessions } from '../../src/runtime/terminal-sessions.js';
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -75,6 +75,27 @@ describe('background terminal sessions', () => {
     for (const session of sessions) {
       expect(readTerminalSession(session.id)?.status).toBe('stopped');
     }
+  });
+
+  it('waits for delayed output events without sleeping or polling', async () => {
+    const session = await startTerminalSession(
+      `node -e "console.log('SERVER_STARTED'); setTimeout(() => console.error('SIMULATED_DELAYED_ERROR'), 150); setInterval(() => {}, 1000)"`,
+      process.cwd(),
+    );
+    try {
+      expect(session.output).toContain('SERVER_STARTED');
+      const waited = await waitForTerminalSession(session.id, session.nextCursor, 2_000);
+      expect(waited?.output).toContain('SIMULATED_DELAYED_ERROR');
+      expect(waited?.output).toContain('[stderr]');
+      expect(waited?.status).toBe('running');
+      expect(waited?.nextCursor).toBeGreaterThan(session.nextCursor);
+    } finally {
+      await stopTerminalSession(session.id);
+    }
+  });
+
+  it('returns immediately for an unknown session', async () => {
+    await expect(waitForTerminalSession('missing-session', 0, 100)).resolves.toBeUndefined();
   });
 
   it('returns only output after the supplied cursor', async () => {
