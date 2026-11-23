@@ -72,3 +72,6 @@ jobs:
 
       - name: Test terminal process lifecycle
         run: bunx vitest run tests/unit/terminal-sessions.test.ts
+
+      - name: Test Windows file glob path normalization
+        run: bunx vitest run tests/integration/basic.test.ts -t "finds TypeScript files"
