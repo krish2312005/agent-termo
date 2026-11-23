@@ -209,6 +209,8 @@ export async function stopTerminalSession(id: string): Promise<TerminalSessionSn
     session.stopping = true;
     const stopped = await terminateProcessTree(session.child);
     if (!stopped) return snapshot(session);
+    // The child can reach its closed state just before the close listener runs.
+    if (session.status === 'running') await new Promise<void>((resolve) => session.child.once('close', () => resolve()));
   }
   return snapshot(session);
 }

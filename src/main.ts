@@ -263,9 +263,9 @@ async function completeWithContextRecovery(
 		return await completeWithRetry(nimClient, messages, tools, onChunk);
 	} catch (error) {
 		if (!isContextWindowError(error)) throw error;
-		const before = estimateContextTokens(messages, tools);
+		const before = estimateContextTokens(messages, tools, model);
 		prepare(true);
-		if (estimateContextTokens(messages, tools) >= before) throw error;
+		if (estimateContextTokens(messages, tools, model) >= before) throw error;
 		printInfo('The provider rejected the context size. Retrying once with a more aggressive compacted history.');
 		return await completeWithRetry(nimClient, messages, tools, onChunk);
 	}
@@ -2097,7 +2097,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					}
 					if (cmd === '/context') {
 						const tools = nimClient.buildToolDefs([...TOOL_DEFINITIONS, ...getMcpToolDefinitions()]);
-						const estimated = estimateContextTokens(conversation, tools);
+						const estimated = estimateContextTokens(conversation, tools, nimClient.getModel());
 						const budget = resolveContextBudget(nimClient.getModel());
 						printInfo('Estimated input: ~' + estimated.toLocaleString() + ' tokens');
 						printInfo('Input budget: ' + budget.inputBudgetTokens.toLocaleString() + ' / ' + budget.contextWindowTokens.toLocaleString());
