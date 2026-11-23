@@ -920,6 +920,18 @@ export async function runToolLoop(
 				applied: false,
 			};
 		};
+		const recordToolCallOutcome = (tc: ToolCall, execution: (typeof executions)[number]): void => {
+			const toolResult = execution.toolResult;
+			if (execution.applied || shouldClearFailedToolCalls(tc.name, toolResult.success)) {
+				failedToolCalls.clear();
+				taskState.failedToolCalls.clear();
+			}
+			if (!toolResult.success) {
+				const signature = toolCallSignature(tc);
+				failedToolCalls.add(signature);
+				taskState.failedToolCalls.add(signature);
+			}
+		};
 		if (allDelegations) {
 			executions.push(...await Promise.all(toolCalls.map(async (tc) =>
 				blockedResult(tc) ?? {
@@ -927,6 +939,7 @@ export async function runToolLoop(
 					applied: false,
 				},
 			)));
+			for (const [index, tc] of toolCalls.entries()) recordToolCallOutcome(tc, executions[index]!);
 		} else {
 			for (const tc of toolCalls) {
 				if (Date.now() - runStartedAt > 20 * 60 * 1000) {
@@ -941,21 +954,24 @@ export async function runToolLoop(
 					executions.push(blocked);
 					continue;
 				}
+				let execution: (typeof executions)[number];
 				if (tc.name === 'plan:update') {
-							let result: { success: boolean; output?: string; error?: string };
-							try {
-								if (!taskPlan) throw new Error('No execution plan is active.');
-								const summary = typeof tc.arguments.summary === 'string' ? tc.arguments.summary : '';
-								result = { success: true, output: updatePlanStep(taskPlan, Number(tc.arguments.step), tc.arguments.status as 'in_progress' | 'completed', summary) };
-							} catch (error) {
-								result = { success: false, error: error instanceof Error ? error.message : String(error) };
-							}
-							executions.push({ toolResult: result, applied: false });
-						} else {
-							executions.push(tc.name === 'agent:delegate'
-								? { toolResult: await runDelegatedAgent(projectRoot, tc, nimClient, input, permissionMode, allowedCommands, taskState, getCheckpointId, parentContextExcerpt(conversation)), applied: false }
-								: await executeToolWithReview(tc.name, tc.arguments, projectRoot, input, permissionMode, allowedCommands, undefined, getCheckpointId));
-						}
+					let result: { success: boolean; output?: string; error?: string };
+					try {
+						if (!taskPlan) throw new Error('No execution plan is active.');
+						const summary = typeof tc.arguments.summary === 'string' ? tc.arguments.summary : '';
+						result = { success: true, output: updatePlanStep(taskPlan, Number(tc.arguments.step), tc.arguments.status as 'in_progress' | 'completed', summary) };
+					} catch (error) {
+						result = { success: false, error: error instanceof Error ? error.message : String(error) };
+					}
+					execution = { toolResult: result, applied: false };
+				} else {
+					execution = tc.name === 'agent:delegate'
+						? { toolResult: await runDelegatedAgent(projectRoot, tc, nimClient, input, permissionMode, allowedCommands, taskState, getCheckpointId, parentContextExcerpt(conversation)), applied: false }
+						: await executeToolWithReview(tc.name, tc.arguments, projectRoot, input, permissionMode, allowedCommands, undefined, getCheckpointId);
+				}
+				executions.push(execution);
+				recordToolCallOutcome(tc, execution);
 					}
 				}
 
@@ -963,15 +979,6 @@ export async function runToolLoop(
 						const execution = executions[index]!;
 
 		const toolResult = execution.toolResult;
-		if (execution.applied || shouldClearFailedToolCalls(tc.name, toolResult.success)) {
-			failedToolCalls.clear();
-			taskState.failedToolCalls.clear();
-		}
-		if (!toolResult.success) {
-			const signature = toolCallSignature(tc);
-			failedToolCalls.add(signature);
-			taskState.failedToolCalls.add(signature);
-		}
 						if (execution.applied) ranChecks.length = 0;
 				if (execution.applied && execution.change) changedFiles.set(execution.change.path, execution.change.proposedContent);
 					if (tc.name === 'bash:execute') {
