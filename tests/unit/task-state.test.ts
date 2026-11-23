@@ -16,16 +16,12 @@ describe('task resumability', () => {
 		expect(state.reason).toBe('');
 	});
 
-	it('does not interrupt a task at the old 40-iteration threshold', () => {
-		expect(getToolLoopStopReason(41, 60_000)).toBeUndefined();
-	});
-
-	it('pauses a task at the larger iteration safety limit', () => {
-		expect(getToolLoopStopReason(121, 60_000)).toContain('120 model-turn');
+	it('does not impose a model-turn limit', () => {
+		expect(getToolLoopStopReason(60_000)).toBeUndefined();
 	});
 
 	it('pauses a task at the wall-clock safety limit', () => {
-		expect(getToolLoopStopReason(10, 20 * 60 * 1000 + 1)).toContain('20-minute');
+		expect(getToolLoopStopReason(20 * 60 * 1000 + 1)).toContain('20-minute');
 	});
 
 	it('treats a bare "Connection error." as transient', () => {
