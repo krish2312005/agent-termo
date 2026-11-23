@@ -12,7 +12,7 @@ This document tracks the project's memory and context for all agents to ensure c
 ## Current Phase
 
 - **Phase:** Implemented; typed runtime event stream (first vertical slice) landed on `local-branch`
-- **Status:** Live runtime is `src/main.ts` (`runRepl` + `runToolLoop`). The agent loop now publishes a typed `AgentEvent` stream consumed only for observability (usage + context status); the TUI shows a context meter and a compact bordered header. Prior reliability fixes (context auto-compaction, tool-loop retry gate, loop symptom) remain in place.
+- **Status:** Live runtime is `src/main.ts` (`runRepl` + `runToolLoop`). The agent loop now publishes a typed `AgentEvent` stream consumed only for observability (usage + context status); the TUI shows a context meter and a compact bordered header. Prior reliability fixes (context auto-compaction, tool-loop retry gate, loop symptom) remain in place. A degenerate raw-control-token guard now rejects malformed model output, and the user's Nemotron model is registered at a 262K context window.
 
 ## Technology Decisions (current, verified against `package.json`)
 
@@ -101,6 +101,17 @@ Verification: `bun run typecheck` clean; `bun run test` = **215 passed / 2 skipp
 - **Contract doc:** `docs/architecture/target-architecture.md` (runtime event contract, hub boundary, publication/status mapping, context meter).
 - **Verification (this slice):** `bun run typecheck` exit 0; `bun run test` = **228 passed / 2 skipped** (33 files passed, 1 skipped); `bun run build` clean (`dist/cli.js`, 228,702 bytes); `bun dist/cli.js --version` -> `2.0.6`.
 - **Unverified locally:** interactive TUI/REPL rendering and input handling, live provider calls (need an API key), and non-Windows behavior.
+
+## Degenerate model output guard + 262K context (2026-11-23 fix)
+
+- **Symptom:** the model emitted raw chat-template control tokens as plain text (`<|open|>argument ...<|close|>message<|sep|>` followed by many repeated `<|close|>message<|sep|>` lines). `parseToolCallsFromText` only parses `<tool_call>` markup and JSON, so no tool calls ran and the runaway repetition never usefully ended — the "stuck tool loop".
+- **Guard:** exported pure `isDegenerateModelOutput(text)` in `src/llm/client.ts` — true only when `text` matches `/<\|(?:open|close|sep)\|>/` AND either a non-empty line repeats consecutively >= 6 times, or `<|close|>message<|sep|>` occurs >= 6 times. False for normal prose and for legitimate `<tool_call>...</tool_call>` markup.
+- **Enforcement:** `streamComplete` checks the guard after each content chunk, aborts the active controller, and throws exported `MalformedModelOutputError` (`retryable = false`) before yielding; `complete()` checks after assembling `content`. The `<|open|>...` payloads are never parsed or executed — they carry no tool name and are classified as malformed.
+- **Surfacing:** `isTransientError` (and `isPartialStreamFailure`) short-circuit on `retryable === false`, so `src/main.ts` does not retry; the task is paused as interrupted/resumable with an actionable message ("switch models (e.g. /model) or use a tool-capable model"). No error-handling restructuring.
+- **Context window:** `NVIDIA_NIM_MODEL_LIMITS['nvidia/nemotron-3.5-super-vl-120b-a12b']` = `contextWindowTokens: 262_144`, `source: 'user-reported: 262K context window'`. `resolveContextBudget` now reserves from 262K instead of the 32,768 fallback; `maxOutputTokens` intentionally not invented.
+- **Tests:** `tests/unit/models.test.ts` (limit + `resolveContextBudget` contextWindowTokens, `inputBudgetTokens > 200_000`) and `tests/unit/malformed-output.test.ts` (5 vs 6 repeated-line threshold, real `streamComplete`/`complete()` rejection via a fake transport with no yielded content, legitimate markup false).
+- **Verification:** `bun run typecheck` exit 0; `bun run test` = **242 passed / 2 skipped** (34 files passed, 1 skipped); `bun run build` clean (`dist/cli.js`).
+- **Unverified locally:** live provider behavior with the actual Nemotron model (needs the model/endpoint); the guard only rejects the observed repetition pattern.
 
 ## NIM API Validation Results (historical, 2026-07-04)
 

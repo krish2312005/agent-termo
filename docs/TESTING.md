@@ -18,6 +18,12 @@ Vitest configuration lives in `vitest.config.ts`. Tests live in `tests/unit/` an
   input-budget resolution, non-premature compaction, verbatim preservation of the
   objective/current goal/most-recent tool result/failed-call diagnostics, and
   deterministic results for identical inputs.
+- **Malformed model output** (`tests/unit/malformed-output.test.ts`): degenerate
+  raw control-token detection (positive sample, normal prose and valid `<tool_call>`
+  markup negatives), non-retryable `MalformedModelOutputError` classification, and
+  the streaming/non-streaming guard throwing without yielding content (fake
+  transport, no network). `tests/unit/models.test.ts` asserts the nemotron
+  `nvidia/nemotron-3.5-super-vl-120b-a12b` 262K context window and input budget.
 - **Tool-call retry budget** (`tests/unit/retry-budget.test.ts`): one genuine retry
   before pausing, signature-scoped counting, and clearing only after a successful
   side-effecting corrective action.

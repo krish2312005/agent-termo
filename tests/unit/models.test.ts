@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { CURATED_MODELS, getProviderModelLimits, isChatModel, mergeModels } from '../../src/llm/models.js';
+import { resolveContextBudget } from '../../src/runtime/context.js';
 
 describe('NVIDIA NIM model limits', () => {
   it('uses provider-published limits for known models and no guessed limits for unknown models', () => {
@@ -18,6 +19,16 @@ describe('NVIDIA NIM model limits', () => {
       contextWindowTokens: 131_072,
       maxOutputTokens: 4_096,
     });
+  });
+
+  it('reserves a 262K context window for nemotron-3.5-super-vl-120b-a12b', () => {
+    const model = 'nvidia/nemotron-3.5-super-vl-120b-a12b';
+
+    expect(getProviderModelLimits(model)?.contextWindowTokens).toBe(262_144);
+
+    const budget = resolveContextBudget(model, {});
+    expect(budget.contextWindowTokens).toBe(262_144);
+    expect(budget.inputBudgetTokens).toBeGreaterThan(200_000);
   });
 });
 
