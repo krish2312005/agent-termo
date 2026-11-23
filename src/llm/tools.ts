@@ -226,6 +226,21 @@ export const TOOL_DEFINITIONS: ToolDef[] = [
       required: ['session_id'],
     },
   },
+  {
+    name: 'browser:verify',
+    description: 'Run a real headless Chromium browser check against the running application using Playwright installed in the project. Captures console errors, uncaught page errors, failed network requests, HTTP 4xx/5xx responses, and can exercise a short sequence of user actions/assertions. Install playwright and Chromium in the project first if missing. Always inspect failures and rerun after fixes.',
+    parameters: {
+      type: 'object',
+      properties: {
+        base_url: { type: 'string', description: 'HTTP or HTTPS URL of the running frontend, for example http://localhost:3000' },
+        actions: { type: 'string', description: 'Optional JSON array of actions: click/fill/select/check/uncheck/press/wait_for with selector; expect_text with selector and text; expect_url with url substring; goto with url. Maximum 30 actions.' },
+        timeout_ms: { type: 'number', description: 'Overall verification budget in milliseconds, 60000 by default and capped at 120000.' },
+        viewport: { type: 'string', description: 'Viewport preset: desktop (1440x900), tablet (768x1024), or mobile (390x844). Run each preset for responsive work.' },
+        screenshot: { type: 'boolean', description: 'Save a full-page screenshot under .agent-termo/browser-artifacts (default true).' },
+      },
+      required: ['base_url'],
+    },
+  },
   // ── Git ────────────────────────────────────────────────────────────────────
   {
     name: 'git:status',

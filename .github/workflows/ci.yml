@@ -38,7 +38,7 @@ jobs:
       # in the experimental core prototype and existing TUI files. Lint the
       # changed runtime modules while that baseline debt is addressed.
       - name: Lint changed runtime
-        run: bunx eslint src/main.ts src/runtime/verify.ts src/runtime/checks.ts
+        run: bunx eslint src/main.ts src/runtime/verify.ts src/runtime/checks.ts src/runtime/browser-verification.ts
 
       - name: Test
         run: bun run test

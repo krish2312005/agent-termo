@@ -79,3 +79,13 @@ its invariants. Unused parallel modules are not a completed migration.
 - The active shell executor now starts common development-server commands as retained background terminal sessions. Their output is captured with bounded buffering, can be read incrementally by cursor, and can be stopped explicitly.
 - The main tool loop no longer pauses at 40 turns. It has a larger 120-turn / 20-minute safety budget; delegated agents have a 48-turn / 10-minute budget. These are guardrails, not claims that every large task will complete within one run.
 - The system prompt now requires end-to-end full-stack tracing and real frontend/backend runtime-log inspection. This improves execution discipline but cannot replace missing browser automation or project-specific integration tests.
+
+
+### Phase 7 — browser verification (implemented in this branch)
+
+- Added a first-party `browser:verify` tool backed by the project's installed Playwright package and Chromium.
+- Supports a bounded sequence of user actions and assertions (navigation, fill, click, select, checkbox, keyboard, visible-element and text/URL assertions).
+- Captures browser console errors, uncaught page errors, failed network requests, and HTTP 4xx/5xx responses; returns a failing tool result with diagnostics so the agent can repair and rerun.
+- Saves full-page screenshots to `.agent-termo/browser-artifacts` and always closes the browser after a run.
+- The tool does not silently install dependencies: if Playwright or Chromium is missing, the agent receives exact setup guidance. Browser automation is not claimed until the tool actually runs.
+- Each run is limited to 30 actions and 120 seconds; project-specific credentials are never fabricated.

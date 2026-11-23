@@ -13,7 +13,7 @@ function parseAgentMeta(content: string): { description: string; tools: string[]
   const toolsStr = toolsMatch?.[1] ?? '';
   const tools = toolsStr
     ? toolsStr.split(',').map((t) => t.trim().replace(/^["']|["']$/g, ''))
-    : ['file:read', 'file:write', 'file:edit', 'file:delete', 'file:glob', 'grep', 'bash:execute', 'bash:start', 'bash:read', 'bash:stop', 'git:status', 'git:commit', 'git:push', 'git:log'];
+    : ['file:read', 'file:write', 'file:edit', 'file:delete', 'file:glob', 'grep', 'bash:execute', 'bash:start', 'bash:read', 'bash:stop', 'browser:verify', 'git:status', 'git:commit', 'git:push', 'git:log'];
   return { description: descMatch?.[1]?.trim() ?? '', tools };
 }
 
@@ -76,6 +76,7 @@ Available functions:
 - bash:start(command) → start a persistent process and return a session ID
 - bash:read(session_id, cursor?) → read new live stdout/stderr and process status
 - bash:stop(session_id) → stop a persistent process
+- browser:verify(base_url, actions?) → launch Chromium with Playwright, exercise browser flows, and report console/page/network/HTTP errors
 - git:status() / git:commit(message) / git:push() → version control
 - agent:delegate(agent, task, context?) → spawn a specialist sub-agent and receive its result
 - skill:read(name, path?) → load a relevant skill's SKILL.md or one of its supporting reference files
@@ -89,6 +90,16 @@ MEMORY RULES:
 WORKFLOW CONTINUITY:
 - When the user says "continue", resume the interrupted task from the last completed step using the conversation history. Never restart the task from the beginning or redo work that is already done.
 - If a step failed, verify the current state of the files (file:read) and continue from there.
+
+BROWSER VERIFICATION — REQUIRED FOR WEB UI WORK:
+- Detect the app's actual frontend URL from its start command output; do not guess the port. Start backend and frontend processes and inspect both terminal sessions until they are ready.
+- Check whether the project already has Playwright. If it does not, add `playwright` as a project dev dependency using the detected package manager, then install Chromium with that package manager's Playwright CLI (for example `bunx playwright install chromium`). Do not add a second browser framework when an existing one already works.
+- Call browser:verify against the running frontend after each meaningful UI integration milestone and after final fixes. Include actions for the main user journeys: navigation, form submission, validation, success/error states, and authenticated flows only when test credentials are actually available. Never invent credentials or bypass real authentication.
+- Use stable accessible selectors (role/name/label) where possible. Assert visible outcomes and URL changes, not merely that clicks did not throw.
+- Treat console errors, uncaught page errors, failed network requests, HTTP 4xx/5xx responses, and failed user-flow assertions as findings. Correlate them with frontend and backend terminal logs, fix root causes, then rerun the same browser flow.
+- Exercise responsive layouts at mobile, tablet, and desktop viewport sizes when the task changes layout. If a required viewport or flow cannot be checked with the available tool, state that limitation.
+- Browser verification is bounded to at most 30 actions and 120 seconds per run. Keep tests focused; do not run an endless exploratory browser loop. Stop any backend/frontend processes you started after checks unless the user asked to leave them running.
+- A screenshot is saved under .agent-termo/browser-artifacts for visual inspection; use file:read for text files only, not screenshots. Do not claim a screenshot was visually inspected unless an image-capable tool actually inspected it.
 
 FULL-STACK IMPLEMENTATION WORKFLOW — MANDATORY FOR APPLICATIONS AND WEBSITES:
 - Start by mapping the real project: inspect the root and workspace package manifests, lockfiles, app entry points, routes, API handlers, database schema/migrations, environment examples, and existing tests. Do not assume a framework, folder layout, API route, or database.
@@ -136,6 +147,7 @@ export function filterAgentTools(agent: Agent, available: ToolDef[], allowDelega
     effectiveAllowed.add('bash:start');
     effectiveAllowed.add('bash:read');
     effectiveAllowed.add('bash:stop');
+    effectiveAllowed.add('browser:verify');
   }
   return available.filter((tool) => effectiveAllowed.has(tool.name) && (allowDelegation || tool.name !== 'agent:delegate'));
 }

@@ -17,6 +17,7 @@ import type { ToolResult, ProposedFileChange } from '../types/index.js';
 import { readSkillFile } from '../runtime/skills.js';
 import { readTerminalSession, startTerminalSession, stopTerminalSession } from '../runtime/terminal-sessions.js';
 import { appendToMemory } from '../memory/index.js';
+import { runBrowserVerification } from '../runtime/browser-verification.js';
 
 const MAX_GLOB_RESULTS = 500;
 const MAX_GREP_MATCHES = 300;
@@ -100,6 +101,7 @@ const TOOL_MAP: Record<string, (...args: any[]) => Promise<ToolResult>> = {
 	'bash:start': toolBashStart,
 	'bash:read': toolBashRead,
 	'bash:stop': toolBashStop,
+	'browser:verify': toolBrowserVerify,
 	'git:status': toolGitStatus,
 	'git:commit': toolGitCommit,
 	'git:push': toolGitPush,
@@ -740,6 +742,18 @@ async function toolBashStop(args: Record<string, unknown>): Promise<ToolResult> 
   const session = stopTerminalSession(id);
   if (!session) return { id: '', name: 'bash:stop', success: false, error: 'Unknown terminal session: ' + id, durationMs: 0 };
   return { id: '', name: 'bash:stop', success: true, output: `Stop requested for terminal session ${id}. Current status: ${session.status}.`, command: session.command, cwd: session.cwd, durationMs: 0 };
+}
+
+async function toolBrowserVerify(args: Record<string, unknown>, projectRoot: string): Promise<ToolResult> {
+  const result = await runBrowserVerification(args, projectRoot);
+  return {
+    id: '',
+    name: 'browser:verify',
+    success: result.success,
+    output: result.output,
+    ...(result.error ? { error: result.error } : {}),
+    durationMs: 0,
+  };
 }
 
 // ── Git Tools ────────────────────────────────────────────────────────────────
