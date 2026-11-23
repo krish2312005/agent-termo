@@ -3409,3 +3409,5 @@ Completed tool-assisted request
 
 ### Notes
 - (none)| 2026-11-23 00:57 PST | main-agent | fix verify false positive on Todo errors | [20261123-005707-main-agent-fix-verify-false-positive-on-todo-errors.md](changes/20261123-005707-main-agent-fix-verify-false-positive-on-todo-errors.md) |
+| 2026-11-23 00:57 PST | git-manager | commit verify fix change log and timeline row | [20261123-005759-git-manager-commit-verify-fix-change-log-and-timeline-row.md](changes/20261123-005759-git-manager-commit-verify-fix-change-log-and-timeline-row.md) |
+| 2026-11-23 00:58 PST | main-agent | fix log.sh trailing newline before append | [20261123-005828-main-agent-fix-log-sh-trailing-newline-before-append.md](changes/20261123-005828-main-agent-fix-log-sh-trailing-newline-before-append.md) |

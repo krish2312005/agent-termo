@@ -30,6 +30,8 @@ if [ -t 0 ]; then body="(no details given)"; else body="$(cat)"; fi
 if [ ! -f docs/TIMELINE.md ]; then
   printf '# Timeline\n\n| When | Agent | Change | Details |\n|---|---|---|---|\n' > docs/TIMELINE.md
 fi
+# Guarantee a trailing newline so the new row never glues onto the previous line.
+if [ -n "$(tail -c 1 docs/TIMELINE.md)" ]; then printf '\n' >> docs/TIMELINE.md; fi
 printf '| %s | %s | %s | [%s](changes/%s) |\n' "$when" "$agent" "${title//|//}" "$name" "$name" >> docs/TIMELINE.md
 
 echo "logged: docs/changes/$name"
