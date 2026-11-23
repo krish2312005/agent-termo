@@ -31,6 +31,11 @@ interface TerminalSession extends TerminalSessionSnapshot {
 }
 
 const sessions = new Map<string, TerminalSession>();
+const outputWaiters = new Map<string, Set<() => void>>();
+
+function signalSessionChanged(session: TerminalSession): void {
+  for (const notify of [...(outputWaiters.get(session.id) ?? [])]) notify();
+}
 
 const TERMINATION_GRACE_MS = 900;
 const TERMINATION_TIMEOUT_MS = 3_000;
@@ -142,6 +147,7 @@ function appendOutput(session: TerminalSession, stream: 'stdout' | 'stderr', chu
     session.output = session.output.slice(removed);
     session.outputBase += removed;
   }
+  signalSessionChanged(session);
   hooks.onOutput?.(value);
 }
 
@@ -181,6 +187,7 @@ export async function startTerminalSession(
     session.exitCode = exitCode;
     hooks.onEnd?.(exitCode);
     signalFirstEvent?.();
+    signalSessionChanged(session);
   };
 
   child.stdout?.setEncoding('utf8');
@@ -200,6 +207,43 @@ export async function startTerminalSession(
 export function readTerminalSession(id: string, cursor = 0): TerminalSessionSnapshot | undefined {
   const session = sessions.get(id);
   return session ? snapshot(session, cursor) : undefined;
+}
+
+/**
+ * Wait for the next output/exit event instead of sleeping and repeatedly polling.
+ * Resolves immediately when unread output already exists or the process has ended.
+ */
+export async function waitForTerminalSession(
+  id: string,
+  cursor = 0,
+  timeoutMs = 10_000,
+): Promise<TerminalSessionSnapshot | undefined> {
+  const session = sessions.get(id);
+  if (!session) return undefined;
+  const initial = snapshot(session, cursor);
+  if (initial.output || session.status !== 'running' || timeoutMs <= 0) return initial;
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const waiters = outputWaiters.get(id) ?? new Set<() => void>();
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      waiters.delete(finish);
+      if (waiters.size === 0) outputWaiters.delete(id);
+      resolve(snapshot(session, cursor));
+    };
+
+    waiters.add(finish);
+    outputWaiters.set(id, waiters);
+    timer = setTimeout(finish, timeoutMs);
+
+    // Close the race between the initial snapshot and listener registration.
+    const latest = snapshot(session, cursor);
+    if (latest.output || session.status !== 'running') finish();
+  });
 }
 
 export async function stopTerminalSession(id: string): Promise<TerminalSessionSnapshot | undefined> {
