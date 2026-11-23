@@ -39,6 +39,18 @@ describe('background terminal sessions', () => {
     expect(stopped?.status).toBe('stopped');
   });
 
+  it('stops every running background session and reports the final status', async () => {
+    const sessions = await Promise.all([
+      startTerminalSession(`node -e "setInterval(() => {}, 1000)"`, process.cwd()),
+      startTerminalSession(`node -e "setInterval(() => {}, 1000)"`, process.cwd()),
+    ]);
+    const result = await stopAllTerminalSessions();
+    expect(result).toEqual({ stopped: 2, failed: [] });
+    for (const session of sessions) {
+      expect(readTerminalSession(session.id)?.status).toBe('stopped');
+    }
+  });
+
   it('returns only output after the supplied cursor', async () => {
     const session = await startTerminalSession(
       `node -e "console.log('FIRST'); setTimeout(() => console.log('SECOND'), 100)"`,
