@@ -93,6 +93,47 @@ export function fromWireToolName(name: string): string {
 	return WIRE_TO_CANONICAL[key] ?? name;
 }
 
+const RAW_CONTROL_TOKEN = /<\|(?:open|close|sep)\|>/;
+const REPEATED_CLOSING_MESSAGE = /<\|close\|>message<\|sep\|>/g;
+const DEGENERATE_REPEAT_THRESHOLD = 6;
+
+/** Non-retryable failure for models that echo raw chat-template tokens as text. */
+export class MalformedModelOutputError extends Error {
+	readonly retryable = false;
+
+	constructor(message: string) {
+		super(message);
+		this.name = 'MalformedModelOutputError';
+	}
+}
+
+export const MALFORMED_MODEL_OUTPUT_MESSAGE =
+	'The model emitted raw chat-template tokens instead of a valid tool call and began repeating. ' +
+	'This usually means the model does not support tool calling through this endpoint. ' +
+	'Switch models (e.g. /model) or use a tool-capable model.';
+
+/**
+ * Detect raw chat-template control tokens echoed as plain text with runaway
+ * repetition. Native tool-call markup (`<tool_call>`) does not match the
+ * control-token pattern, so legitimate markup is never treated as degenerate.
+ */
+export function isDegenerateModelOutput(text: string): boolean {
+	if (!text || !RAW_CONTROL_TOKEN.test(text)) return false;
+
+	let previous = '';
+	let run = 0;
+	for (const line of text.split(/\r?\n/)) {
+		if (line && line === previous) run += 1;
+		else {
+			previous = line;
+			run = line ? 1 : 0;
+		}
+		if (run >= DEGENERATE_REPEAT_THRESHOLD) return true;
+	}
+
+	return (text.match(REPEATED_CLOSING_MESSAGE)?.length ?? 0) >= DEGENERATE_REPEAT_THRESHOLD;
+}
+
 function parseMarkupToolCalls(text: string): ToolCall[] {
 	const calls: ToolCall[] = [];
 	const pattern = /<tool_call>\s*<function=([^>]+)>\s*([\s\S]*?)\s*<\/function>\s*<\/tool_call>/gi;
@@ -711,6 +752,10 @@ export class NimClient {
 					outputCharacters += rawContent.length;
 					this.updateRequestOutputUsage(Math.ceil(outputCharacters / 4));
 					const accumulated = rawChunks.join('');
+					if (isDegenerateModelOutput(accumulated)) {
+						controller.abort();
+						throw new MalformedModelOutputError(MALFORMED_MODEL_OUTPUT_MESSAGE);
+					}
 					if (deferredJsonText !== undefined) {
 						deferredJsonText += rawContent;
 					} else if (!emittedVisibleText && /^\s*[\[{]/.test(accumulated)) {
@@ -816,6 +861,11 @@ export class NimClient {
 	        /\[ Reasoning[^\]]*\][^[]*\[\/ Reasoning\][^\n]*/gi,
         '',
       ).trim() ?? '';
+
+		if (isDegenerateModelOutput(content)) {
+			if (this.activeController === controller) this.activeController = null;
+			throw new MalformedModelOutputError(MALFORMED_MODEL_OUTPUT_MESSAGE);
+		}
 
 		const toolCalls: ToolCall[] = (msg?.tool_calls ?? []).flatMap((tc) => {
 			if (tc.type !== 'function') return [];
