@@ -54,9 +54,17 @@ export function resolveContextBudget(
   env: NodeJS.ProcessEnv = process.env,
 ): ContextBudget {
   const providerLimits = getProviderModelLimits(model);
+  const configuredContextWindow = positiveInteger(
+    env.AGENT_TERMO_CONTEXT_WINDOW,
+    providerLimits?.contextWindowTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS,
+  );
+  // An override may lower a documented limit, but must never make a known
+  // model appear to support more context than its provider actually allows.
   const contextWindowTokens = Math.max(
     4_096,
-    positiveInteger(env.AGENT_TERMO_CONTEXT_WINDOW, providerLimits?.contextWindowTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS),
+    providerLimits
+      ? Math.min(configuredContextWindow, providerLimits.contextWindowTokens)
+      : configuredContextWindow,
   );
   const configuredOutputTokens = positiveInteger(
     env.AGENT_TERMO_OUTPUT_RESERVE_TOKENS,
