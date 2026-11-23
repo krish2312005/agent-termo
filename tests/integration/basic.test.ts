@@ -183,7 +183,7 @@ describe('executeTool', () => {
 					{ id: 'call_3', name: 'file_read', arguments: { path: 'server/index.ts' } },
 				],
 			});
-			const repeated = Array.from({ length: 30 }, () => batch).join('\\n');
+			const repeated = Array.from({ length: 30 }, () => batch).join('\n');
 			const calls = parseToolCallsFromText(repeated);
 
 			expect(calls).toHaveLength(3);
