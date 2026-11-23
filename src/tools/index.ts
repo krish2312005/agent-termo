@@ -15,7 +15,7 @@ import { fromWireToolName } from '../llm/client.js';
 import { computeDiff } from '../diff/index.js';
 import type { ToolResult, ProposedFileChange } from '../types/index.js';
 import { readSkillFile } from '../runtime/skills.js';
-import { readTerminalSession, startTerminalSession, stopTerminalSession } from '../runtime/terminal-sessions.js';
+import { readTerminalSession, startTerminalSession, stopTerminalSession, stopAllTerminalSessions, terminateProcessTree, type TerminalStopSummary } from '../runtime/terminal-sessions.js';
 import { appendToMemory } from '../memory/index.js';
 import { runBrowserVerification } from '../runtime/browser-verification.js';
 
@@ -128,30 +128,23 @@ export function setTerminalHooks(hooks: TerminalHooks): void {
 /** The currently running bash child process, so a stuck agent terminal can be killed. */
 let activeBashChild: ChildProcess | null = null;
 
-/** Kill a shell and the commands it started (npm/node grandchildren on Windows). */
-export function killProcessTree(child: ChildProcess): void {
-	if (process.platform === 'win32' && child.pid) {
-		try {
-			spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true });
-			return;
-		} catch {
-			// Fall through to the direct kill below.
+/** Stop the foreground command and all persistent background terminal sessions. */
+export async function killRunningTerminal(): Promise<TerminalStopSummary> {
+	const result: TerminalStopSummary = { stopped: 0, failed: [] };
+	const active = activeBashChild;
+	if (active) {
+		const stopped = await terminateProcessTree(active);
+		if (stopped) {
+			if (activeBashChild === active) activeBashChild = null;
+			result.stopped++;
+		} else {
+			result.failed.push('foreground terminal');
 		}
 	}
-	try {
-		child.kill('SIGKILL');
-	} catch {
-		// best effort
-	}
-}
-
-/** Kill the currently running agent terminal command, if any. Returns true when something was killed. */
-export function killRunningTerminal(): boolean {
-	if (!activeBashChild) return false;
-	killProcessTree(activeBashChild);
-	activeBashChild = null;
-	terminalHooks.onEnd?.(null);
-	return true;
+	const background = await stopAllTerminalSessions();
+	result.stopped += background.stopped;
+	result.failed.push(...background.failed.map((id) => 'background session ' + id));
+	return result;
 }
 
 // ── Public API ──────────────────────────────────────────────────────────────
@@ -610,6 +603,7 @@ async function toolBash(args: Record<string, unknown>, projectRoot: string): Pro
 			let stdout = '';
 			let stderr = '';
 			let timer: ReturnType<typeof setTimeout> | null = null;
+			let timedOut = false;
 			const finish = (success: boolean, exitCode: number | null, error?: string): void => {
 				if (settled) return;
 				settled = true;
@@ -643,6 +637,7 @@ async function toolBash(args: Record<string, unknown>, projectRoot: string): Pro
 		const child = spawn(command, {
 			cwd: fullCwd,
 			shell: resolveShell(),
+			detached: process.platform !== 'win32',
 			windowsHide: true,
 			env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' },
 		});
@@ -665,12 +660,14 @@ async function toolBash(args: Record<string, unknown>, projectRoot: string): Pro
 			child.stdout?.on('data', capture('stdout'));
 			child.stderr?.on('data', capture('stderr'));
 		child.on('error', (err) => finish(false, null, err.message));
-		child.on('close', (code) => finish(code === 0, code));
+		child.on('close', (code) => finish(!timedOut && code === 0, code, timedOut ? `Command timed out after ${timeoutMs}ms` : undefined));
 
 		timer = setTimeout(() => {
+			timedOut = true;
 			terminalHooks.onOutput?.(`\n[agent-termo] timed out after ${timeoutMs}ms`);
-			killProcessTree(child);
-			finish(false, null, `Command timed out after ${timeoutMs}ms`);
+			void terminateProcessTree(child).then((stopped) => {
+				if (!stopped) finish(false, null, `Command timed out after ${timeoutMs}ms; the process could not be confirmed stopped.`);
+			});
 		}, timeoutMs);
 	});
 }
@@ -739,9 +736,12 @@ async function toolBashRead(args: Record<string, unknown>): Promise<ToolResult> 
 async function toolBashStop(args: Record<string, unknown>): Promise<ToolResult> {
   const id = String(args.session_id ?? '').trim();
   if (!id) return { id: '', name: 'bash:stop', success: false, error: 'session_id is required', durationMs: 0 };
-  const session = stopTerminalSession(id);
+  const session = await stopTerminalSession(id);
   if (!session) return { id: '', name: 'bash:stop', success: false, error: 'Unknown terminal session: ' + id, durationMs: 0 };
-  return { id: '', name: 'bash:stop', success: true, output: `Stop requested for terminal session ${id}. Current status: ${session.status}.`, command: session.command, cwd: session.cwd, durationMs: 0 };
+  if (session.status === 'running') {
+    return { id: '', name: 'bash:stop', success: false, error: `Terminal session ${id} is still running; process termination could not be confirmed.`, command: session.command, cwd: session.cwd, durationMs: 0 };
+  }
+  return { id: '', name: 'bash:stop', success: true, output: session.status === 'stopped' ? `Stopped terminal session ${id}.` : `Terminal session ${id} is already ${session.status}.`, command: session.command, cwd: session.cwd, exitCode: session.exitCode, durationMs: 0 };
 }
 
 async function toolBrowserVerify(args: Record<string, unknown>, projectRoot: string): Promise<ToolResult> {

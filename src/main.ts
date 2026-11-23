@@ -1548,7 +1548,10 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 		persistSession();
 		input.close();
 		// Match OpenCode: restore the terminal and finish owned services before exiting.
-		void Promise.allSettled([teardownScreen(), shutdownMcpServers()]).then(() => {
+		void (async () => {
+			const terminals = await killRunningTerminal();
+			for (const failure of terminals.failed) printError('Could not confirm termination of ' + failure + '.');
+			await Promise.allSettled([teardownScreen(), shutdownMcpServers()]);
 			process.stdout.write('\n');
 			console.log(
 				'Session complete. ' +
@@ -1556,9 +1559,10 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				' minutes.',
 			);
 			process.exit(0);
-		});
+		})();
 	};
 	process.on('SIGINT', cleanup);
+	process.on('SIGTERM', cleanup);
 		const mcpStatuses = await initializeMcpServers(projectRoot);
 	for (const status of mcpStatuses) {
 		if (status.connected) printSuccess('MCP server connected: ' + status.name + ' (' + status.tools + ' tools)');
@@ -2071,11 +2075,10 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						displayedInput = true;
 						const sub = cmd.slice('/terminal'.length).trim().toLowerCase();
 						if (sub === 'kill' || sub === 'stop') {
-							if (killRunningTerminal()) {
-								printInfo('Agent terminal command killed.');
-							} else {
-								printInfo('No terminal command is running.');
-							}
+							const result = await killRunningTerminal();
+							if (result.stopped > 0) printInfo(`Stopped ${result.stopped} agent terminal process(es).`);
+							for (const failure of result.failed) printError('Could not confirm termination of ' + failure + '.');
+							if (result.stopped === 0 && result.failed.length === 0) printInfo('No agent terminal process is running.');
 						} else if (sub === 'list' || sub === 'status' || sub === '') {
 							const { terminalPanelVisible, terminalPanelState } = await import('./ui/screen.js');
 							const visible = terminalPanelVisible();
