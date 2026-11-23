@@ -157,8 +157,8 @@ describe('context budgeting and compaction', () => {
   it('compacts before exceeding the configured input budget', () => {
     const conversation: ConversationMessage[] = [message('system', 'system'.repeat(100))];
     for (let index = 0; index < 12; index++) {
-      conversation.push(message('user', 'request ' + index + ' ' + 'x'.repeat(2_000)));
-      conversation.push(message('assistant', 'result ' + index + ' ' + 'y'.repeat(1_000)));
+      conversation.push(message('user', 'request ' + index + ' ' + 'x'.repeat(4_000)));
+      conversation.push(message('assistant', 'result ' + index + ' ' + 'y'.repeat(2_000)));
     }
     const previousWindow = process.env.AGENT_TERMO_CONTEXT_WINDOW;
     const previousOutput = process.env.AGENT_TERMO_OUTPUT_RESERVE_TOKENS;
