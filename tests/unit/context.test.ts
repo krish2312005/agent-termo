@@ -95,7 +95,7 @@ describe('context budgeting and compaction', () => {
     });
   });
 
-  it('lets an explicit context-window override take precedence over provider metadata', () => {
+  it('allows a lower context override but never exceeds a documented model limit', () => {
     expect(resolveContextBudget('stepfun-ai/step-3.7-flash', {
       AGENT_TERMO_CONTEXT_WINDOW: '65536',
       AGENT_TERMO_OUTPUT_RESERVE_TOKENS: '4096',
@@ -106,6 +106,9 @@ describe('context budgeting and compaction', () => {
       safetyMarginTokens: 1_024,
       inputBudgetTokens: 60_416,
     });
+    expect(resolveContextBudget('stepfun-ai/step-3.7-flash', {
+      AGENT_TERMO_CONTEXT_WINDOW: '9999999',
+    }).contextWindowTokens).toBe(262_144);
   });
 
   it('summarizes tool results and preserves recent complete tool exchanges', () => {
