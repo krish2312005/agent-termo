@@ -264,4 +264,131 @@ describe('context budgeting and compaction', () => {
     expect(conversation[2]?.content.length).toBeLessThan(10_000);
     expect(conversation[4]?.content).toBe('latest result');
   });
+
+  it('does not compact when the estimate is under the reserved input budget (regression: premature 0.85 trigger)', () => {
+    const conversation: ConversationMessage[] = [message('system', 'System prompt')];
+    for (let index = 0; index < 14; index++) {
+      conversation.push(message('user', 'request ' + index + ' ' + 'x'.repeat(3_800)));
+      conversation.push(message('assistant', 'result ' + index + ' ' + 'y'.repeat(1_900)));
+    }
+    const model = 'no-premature-compaction-test';
+    const previousWindow = process.env.AGENT_TERMO_CONTEXT_WINDOW;
+    const previousOutput = process.env.AGENT_TERMO_OUTPUT_RESERVE_TOKENS;
+    const previousSafety = process.env.AGENT_TERMO_CONTEXT_SAFETY_MARGIN;
+    process.env.AGENT_TERMO_CONTEXT_WINDOW = '32768';
+    process.env.AGENT_TERMO_OUTPUT_RESERVE_TOKENS = '8192';
+    process.env.AGENT_TERMO_CONTEXT_SAFETY_MARGIN = '2048';
+    try {
+      const budget = resolveContextBudget(model);
+      const before = estimateContextTokens(conversation, undefined, model);
+      // These sizes sit above the old 0.85-of-budget trigger but below the
+      // reserved input budget, so the old code compacted here and the fix must not.
+      expect(before).toBeGreaterThan(budget.inputBudgetTokens * 0.85);
+      expect(before).toBeLessThanOrEqual(budget.inputBudgetTokens);
+
+      const snapshot = structuredClone(conversation);
+      const result = prepareConversationForRequest(conversation, model);
+      expect(result.compacted).toBe(false);
+      expect(result.archivedMessages).toHaveLength(0);
+      expect(result.estimatedAfterTokens).toBe(result.estimatedBeforeTokens);
+      expect(conversation).toEqual(snapshot);
+    } finally {
+      if (previousWindow === undefined) delete process.env.AGENT_TERMO_CONTEXT_WINDOW;
+      else process.env.AGENT_TERMO_CONTEXT_WINDOW = previousWindow;
+      if (previousOutput === undefined) delete process.env.AGENT_TERMO_OUTPUT_RESERVE_TOKENS;
+      else process.env.AGENT_TERMO_OUTPUT_RESERVE_TOKENS = previousOutput;
+      if (previousSafety === undefined) delete process.env.AGENT_TERMO_CONTEXT_SAFETY_MARGIN;
+      else process.env.AGENT_TERMO_CONTEXT_SAFETY_MARGIN = previousSafety;
+    }
+  });
+
+  it('compaction keeps the objective, current goal, and failed-call diagnostics verbatim (regression: protection markers)', () => {
+    const originalObjective = 'Build the payment service and preserve idempotency.';
+    const currentGoal = 'Current goal: fix the failing deployment.';
+    const failedToolContent = [
+      'Tool: bash:execute',
+      'Status: failure',
+      'Command: node build.js',
+      'Exit code: 1',
+      'Error:',
+      'Module not found: cannot resolve ./missing-module',
+    ].join('\n');
+    const olderToolContent = 'Older tool output that should be archived.';
+
+    const conversation: ConversationMessage[] = [
+      message('system', 'Base system prompt'),
+      message('user', originalObjective),
+      message('assistant', 'older turn A '.repeat(600)),
+      message('tool', olderToolContent),
+      message('user', 'Add retry handling.'),
+      message('assistant', 'older turn B '.repeat(600)),
+      message('user', currentGoal),
+      message('assistant', '', {
+        toolCalls: [{ id: 'call-fail', name: 'bash:execute', arguments: { command: 'node build.js' } }],
+      }),
+      message('tool', failedToolContent, { id: 'call-fail' }),
+    ];
+
+    const previousWindow = process.env.AGENT_TERMO_CONTEXT_WINDOW;
+    const previousOutput = process.env.AGENT_TERMO_OUTPUT_RESERVE_TOKENS;
+    process.env.AGENT_TERMO_CONTEXT_WINDOW = '4096';
+    process.env.AGENT_TERMO_OUTPUT_RESERVE_TOKENS = '1024';
+    try {
+      const result = prepareConversationForRequest(conversation, 'compaction-verbatim-test');
+      expect(result.compacted).toBe(true);
+      expect(result.archivedMessages.length).toBeGreaterThan(0);
+
+      // The protected messages survive as verbatim messages, not only as summary prose.
+      expect(conversation.some((item) => item.role === 'user' && item.content === originalObjective)).toBe(true);
+      expect(conversation.some((item) => item.role === 'user' && item.content === currentGoal)).toBe(true);
+
+      const toolMessages = conversation.filter((item) => item.role === 'tool');
+      expect(toolMessages.at(-1)?.content).toBe(failedToolContent);
+      expect(toolMessages.at(-1)?.content).toContain('Status: failure');
+      expect(toolMessages.at(-1)?.content).toContain('Module not found: cannot resolve ./missing-module');
+
+      // Older unprotected content is archived; the failed diagnostic is not.
+      expect(result.archivedMessages.some((item) => item.role === 'tool' && item.content === olderToolContent)).toBe(true);
+      expect(result.archivedMessages.some((item) => item.content === failedToolContent)).toBe(false);
+    } finally {
+      if (previousWindow === undefined) delete process.env.AGENT_TERMO_CONTEXT_WINDOW;
+      else process.env.AGENT_TERMO_CONTEXT_WINDOW = previousWindow;
+      if (previousOutput === undefined) delete process.env.AGENT_TERMO_OUTPUT_RESERVE_TOKENS;
+      else process.env.AGENT_TERMO_OUTPUT_RESERVE_TOKENS = previousOutput;
+    }
+  });
+
+  it('produces identical results for two identical copies of the same input (regression: deterministic compaction)', () => {
+    const source: ConversationMessage[] = [
+      message('system', 'Base system prompt'),
+      message('user', 'Original objective: build the payment service.'),
+    ];
+    for (let index = 0; index < 8; index++) {
+      source.push(message('user', 'request ' + index + ' ' + 'x'.repeat(2_500)));
+      source.push(message('assistant', 'result ' + index + ' ' + 'y'.repeat(2_000)));
+    }
+    source.push(message('user', 'Current goal: add tests.'));
+    const first = structuredClone(source);
+    const second = structuredClone(source);
+
+    const previousWindow = process.env.AGENT_TERMO_CONTEXT_WINDOW;
+    const previousOutput = process.env.AGENT_TERMO_OUTPUT_RESERVE_TOKENS;
+    process.env.AGENT_TERMO_CONTEXT_WINDOW = '8192';
+    process.env.AGENT_TERMO_OUTPUT_RESERVE_TOKENS = '1024';
+    try {
+      const resultA = prepareConversationForRequest(first, 'determinism-test');
+      const resultB = prepareConversationForRequest(second, 'determinism-test');
+      expect(resultA.compacted).toBe(true);
+      expect(resultA.archivedMessages.length).toBeGreaterThan(0);
+      expect(resultA.estimatedBeforeTokens).toBe(resultB.estimatedBeforeTokens);
+      expect(resultA.estimatedAfterTokens).toBe(resultB.estimatedAfterTokens);
+      expect(resultA.compacted).toBe(resultB.compacted);
+      expect(resultA.archivedMessages).toEqual(resultB.archivedMessages);
+    } finally {
+      if (previousWindow === undefined) delete process.env.AGENT_TERMO_CONTEXT_WINDOW;
+      else process.env.AGENT_TERMO_CONTEXT_WINDOW = previousWindow;
+      if (previousOutput === undefined) delete process.env.AGENT_TERMO_OUTPUT_RESERVE_TOKENS;
+      else process.env.AGENT_TERMO_OUTPUT_RESERVE_TOKENS = previousOutput;
+    }
+  });
 });

@@ -219,4 +219,71 @@ describe('agent tool-loop orchestration', () => {
 			rmSync(projectRoot, { recursive: true, force: true });
 		}
 	});
+
+	it('lets a previously failed call retry after a successful corrective write, then completes', async () => {
+		const projectRoot = mkdtempSync(join(tmpdir(), 'agent-termo-loop-retry-'));
+		const filePath = 'target.txt';
+		const absolutePath = join(projectRoot, filePath);
+		const content = 'hello world';
+
+		const responses: Array<{ content: string; toolCalls: ToolCall[] }> = [
+			{ content: '', toolCalls: [{ id: 'write-1', name: 'file:write', arguments: { path: filePath, content } }] },
+			{ content: '', toolCalls: [{ id: 'read-2', name: 'file:read', arguments: { path: filePath } }] },
+			{ content: 'Done: the file was created and re-read.', toolCalls: [] },
+		];
+		let providerCalls = 0;
+		const fakeClient = {
+			buildToolDefs: () => [],
+			async *streamComplete() {
+				providerCalls++;
+				const response = responses.shift();
+				if (!response) throw new Error('Unexpected extra provider request');
+				yield response;
+			},
+			complete: async () => ({ content: '', toolCalls: [] }),
+			formatUsage: () => '0 tokens',
+		} as unknown as NimClient;
+
+		const conversation: ConversationMessage[] = [
+			{ id: 'system', role: 'system', content: 'You are a coding agent.', timestamp: new Date() },
+			{ id: 'user', role: 'user', content: 'Create target.txt and read it back.', timestamp: new Date() },
+		];
+		const checkpoint = createCheckpoint(projectRoot, 'retry-budget regression');
+		const taskState = { goal: 'Create target.txt and read it back.', status: 'running' as const, reason: '', lastActions: [] as string[] };
+		const initialCall: ToolCall = { id: 'read-1', name: 'file:read', arguments: { path: filePath } };
+
+		try {
+			const finalText = await runToolLoop(
+				conversation,
+				projectRoot,
+				[initialCall],
+				{ close() {}, showPrompt() {} },
+				fakeClient,
+				'auto',
+				new Set(),
+				taskState,
+				() => checkpoint.id,
+				() => undefined,
+			);
+
+			expect(finalText).toContain('Done');
+			expect(readFileSync(absolutePath, 'utf8')).toBe(content);
+
+			const toolResults = conversation.filter((message) => message.role === 'tool');
+			// The first read failed because the file did not exist yet.
+			expect(toolResults[0]?.content).toContain('Cannot read');
+			expect(toolResults[0]?.content).toContain('Status: failure');
+			// The corrective write succeeded and was applied.
+			expect(toolResults[1]?.content).toContain('Status: success');
+			expect(toolResults[1]?.content).toContain('(applied)');
+			// The identical read ran again (not blocked) and now succeeded.
+			expect(toolResults[2]?.id).toBe('read-2');
+			expect(toolResults[2]?.content).toContain('Status: success');
+			expect(toolResults[2]?.content).toContain(content);
+			expect(toolResults[2]?.content).not.toContain('already failed and was requested again unchanged');
+			expect(providerCalls).toBe(3);
+		} finally {
+			rmSync(projectRoot, { recursive: true, force: true });
+		}
+	});
 });
