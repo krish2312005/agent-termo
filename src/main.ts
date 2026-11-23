@@ -4,10 +4,15 @@
 
 import { NimClient, parseToolCallsFromText, type ThinkingCapacity } from './llm/client.js';
 import { buildPlanContext, formatTaskPlanMarkdown, parseTaskPlan, PLAN_PROGRESS_TOOL, updatePlanStep, writeTaskPlanFile, type TaskPlan } from './runtime/plans.js';
+import { getToolLoopStopReason } from './runtime/run-budget.js';
+export { getToolLoopStopReason } from './runtime/run-budget.js';
 import { activeManualCheckpointIds, createCheckpoint, findCheckpoint, latestRedoableCheckpoint, latestUndoableCheckpoint, listCheckpoints, recordCheckpointAfter, recordCheckpointBefore, redoCheckpoint, undoCheckpoint } from './runtime/checkpoints.js';
 import { TOOL_DEFINITIONS } from './llm/tools.js';
 import { executeTool, applyFileChange, setTerminalHooks, killRunningTerminal } from './tools/index.js';
 import { appendToMemory, loadMemory, loadMemorySync, loadTimeline, loadTimelineSync, loadSessionLogContext, logToTimeline, logAgentTermoTimeline, appendToSessionLog, appendToTimeline } from './memory/index.js';
+import { createApprovalQueue } from './runtime/approval-queue.js';
+
+const withApprovalPrompt = createApprovalQueue();
 import { buildSystemPrompt, filterAgentTools, resolveDelegation } from './agents/index.js';
 import { resolveProjectRoot, saveNimModel, saveNimThinking, savePermissionMode, listSavedProviders, activateProvider, saveProviderConfig } from './utils/config.js';
 import { BUILTIN_PROVIDERS, type ProviderDefinition, type StoredProviderConfig } from './llm/providers.js';
@@ -181,6 +186,43 @@ export function shouldRunDelegationsInParallel(toolCalls: ToolCall[]): boolean {
 	return toolCalls.length > 1 && toolCalls.every((toolCall) => toolCall.name === 'agent:delegate');
 }
 
+function normalizeToolArguments(value: unknown): unknown {
+	if (Array.isArray(value)) return value.map(normalizeToolArguments);
+	if (value && typeof value === 'object') {
+		return Object.fromEntries(
+			Object.entries(value as Record<string, unknown>)
+				.sort(([left], [right]) => left.localeCompare(right))
+				.map(([key, item]) => [key, normalizeToolArguments(item)]),
+		);
+	}
+	return value;
+}
+
+/** Stable across model responses that reorder JSON object keys. */
+export function toolCallSignature(toolCall: Pick<ToolCall, 'name' | 'arguments'>): string {
+	return toolCall.name + ':' + JSON.stringify(normalizeToolArguments(toolCall.arguments));
+}
+
+/**
+ * A failed call is blocked once per run so the model can see the diagnostic
+ * and correct its approach. Repeating it again in the same run pauses safely.
+ */
+export function shouldPauseForRepeatedFailedToolCall(
+	signature: string,
+	failedToolCalls: Set<string>,
+): boolean {
+	return failedToolCalls.has(signature);
+}
+
+// A successful operation that can change the workspace or process environment
+// makes a previously failed call worth retrying (for example, installing a
+// missing dependency before retrying browser:verify).
+const READ_ONLY_TOOL_CALLS = new Set(['file:read', 'file:glob', 'grep', 'git:status', 'git:log']);
+
+export function shouldClearFailedToolCalls(toolName: string, success: boolean): boolean {
+	return success && !READ_ONLY_TOOL_CALLS.has(toolName);
+}
+
 class RequestCancelledError extends Error {
 	constructor() {
 		super('Request cancelled');
@@ -239,7 +281,7 @@ async function completeWithContextRecovery(
 	onCompacted?: (messages: ConversationMessage[]) => void,
 ): Promise<Awaited<ReturnType<NimClient['complete']>>> {
 	const model = typeof nimClient.getModel === 'function' ? nimClient.getModel() : 'unknown-model';
-	const prepare = (aggressive = false): void => {
+	const prepare = (aggressive = false) => {
 		const result = prepareConversationForRequest(messages, model, tools, { aggressive });
 		if (result.archivedMessages.length > 0) {
 			try {
@@ -252,7 +294,8 @@ async function completeWithContextRecovery(
 			printInfo('Context compacted: ~' + result.estimatedAfterTokens.toLocaleString() +
 				' input tokens (budget ' + result.budget.inputBudgetTokens.toLocaleString() + ').');
 		}
-		if (result.warning) printInfo(result.warning);
+		if (result.warning) throw new Error(result.warning);
+		return result;
 	};
 
 	prepare();
@@ -260,9 +303,11 @@ async function completeWithContextRecovery(
 		return await completeWithRetry(nimClient, messages, tools, onChunk);
 	} catch (error) {
 		if (!isContextWindowError(error)) throw error;
-		const before = estimateContextTokens(messages, tools);
-		prepare(true);
-		if (estimateContextTokens(messages, tools) >= before) throw error;
+		const before = estimateContextTokens(messages, tools, model);
+		const recovered = prepare(true);
+		if (recovered.warning || estimateContextTokens(messages, tools, model) >= before) {
+			throw new Error(recovered.warning ?? providerError(error));
+		}
 		printInfo('The provider rejected the context size. Retrying once with a more aggressive compacted history.');
 		return await completeWithRetry(nimClient, messages, tools, onChunk);
 	}
@@ -311,11 +356,12 @@ interface TaskState {
 	reason: string;
 	lastActions: string[];
 	completedOperations?: Set<string>;
+	failedToolCalls: Set<string>;
 	checkpointId?: string;
 }
 
 function newTaskState(): TaskState {
-	return { goal: '', status: 'idle', reason: '', lastActions: [], completedOperations: new Set() };
+	return { goal: '', status: 'idle', reason: '', lastActions: [], completedOperations: new Set(), failedToolCalls: new Set() };
 }
 
 function recordTaskAction(state: TaskState, action: string): void {
@@ -396,6 +442,10 @@ function buildContinueMessage(state: TaskState): string {
 	if (state.lastActions.length > 0) {
 		lines.push('', 'Last completed actions (oldest first):');
 		for (const action of state.lastActions) lines.push('- ' + action);
+	}
+	if (state.failedToolCalls.size > 0) {
+		lines.push('', 'Previously failed tool calls (diagnostics are in the conversation history). Do not blindly repeat them: inspect the cause and verify or change prerequisites first. After a successful corrective action, retrying the same call is allowed:');
+		for (const signature of [...state.failedToolCalls].slice(-8)) lines.push('- ' + signature.slice(0, 500));
 	}
 	lines.push(
 		'',
@@ -507,11 +557,16 @@ async function executeToolWithReview(
 	const approvalKey = commandApprovalKey(toolName, args);
 	const hasPersistentApproval = !toolName.startsWith('mcp_') && allowedCommands.has(approvalKey);
 	if (permissionMode !== 'auto' && isCommandApprovalRequired(toolName) && !hasPersistentApproval) {
-		input.close();
-		onWaiting?.(true);
-		const decision = await promptCommandApproval(typeof args.command === 'string' ? args.command : approvalKey);
-		onWaiting?.(false);
-		input.showPrompt();
+		const decision = await withApprovalPrompt(async () => {
+			input.close();
+			onWaiting?.(true);
+			try {
+				return await promptCommandApproval(typeof args.command === 'string' ? args.command : approvalKey);
+			} finally {
+				onWaiting?.(false);
+				input.showPrompt();
+			}
+		});
 		if (decision === 'reject') return { toolResult: { success: false, error: 'Command rejected by user' }, applied: false };
 		if (decision === 'always' && !toolName.startsWith('mcp_')) {
 			allowedCommands.add(approvalKey);
@@ -538,18 +593,18 @@ async function executeToolWithReview(
 			} else printError(applyResult.error ?? 'Failed to auto-apply change');
 			return { toolResult: applyResult, change: proposedChange, applied: applyResult.success };
 		}
-			// Pause REPL input to prevent stale listeners from interfering with promptAcceptReject
-		input.close();
-
-		// Show terminal diff viewer
+			// Only one delegated worker may own the shared interactive approval prompt at a time.
 		printToolResult(toolName, { success: toolResult.success, output: toolResult.output, error: toolResult.error }, { needsApproval: true, proposedChange });
-
+		const decision = await withApprovalPrompt(async () => {
+			input.close();
 			onWaiting?.(true);
-			const decision = await promptAcceptReject('Accept this change?');
-			onWaiting?.(false);
-
-		// Restore input for next REPL iteration
-		input.showPrompt();
+			try {
+				return await promptAcceptReject('Accept this change?');
+			} finally {
+				onWaiting?.(false);
+				input.showPrompt();
+			}
+		});
 
 		if (decision === 'accept') {
 			startSpinner('Writing to disk');
@@ -576,7 +631,7 @@ async function executeToolWithReview(
 	return { toolResult, applied: false };
 }
 
-const DELEGATED_TOOL_BUDGET = 24;
+const DELEGATED_TIME_BUDGET_MS = 10 * 60 * 1000;
 
 /** One-line summary of a tool call's arguments for the sub-agent monitor. */
 function describeArgs(args: Record<string, unknown>): string {
@@ -622,7 +677,7 @@ async function runDelegatedAgent(
 		return { id: toolCall.id, name: toolCall.name, success: false, error, durationMs: Date.now() - started };
 	}
 
-	const subId = spawnSubAgent(toolCall.id, agent.name, task, DELEGATED_TOOL_BUDGET);
+	const subId = spawnSubAgent(toolCall.id, agent.name, task, 0);
 	printInfo('Delegating to ' + agent.name + '…');
 	// Each parallel worker gets its own client/controller so cancelling one request
 	// or updating its usage cannot interrupt a sibling worker.
@@ -657,7 +712,7 @@ async function runDelegatedAgent(
 	const ranChecks: RanCheck[] = [];
 
 	try {
-		for (let iteration = 0; iteration < DELEGATED_TOOL_BUDGET; iteration++) {
+		for (let iteration = 0; Date.now() - started < DELEGATED_TIME_BUDGET_MS; iteration++) {
 			setSubAgentActivity(subId, 'waiting for the model', iteration + 1);
 			let result: { content: string; toolCalls: ToolCall[] };
 			try {
@@ -728,12 +783,12 @@ async function runDelegatedAgent(
 			}
 		}
 
-		// A delegated agent must return a final report. Reaching the iteration limit
+		// A delegated agent must return a final report. Reaching the time budget
 		// after tool calls is not completion: the parent must see the failure and recover.
 		const output = finalText.trim();
 		if (!output) {
 			const detail =
-				`Sub-agent ${agent.name} exhausted its ${DELEGATED_TOOL_BUDGET}-iteration budget without a final report.` +
+				`Sub-agent ${agent.name} reached its 10-minute time budget without a final report.` +
 				(lastNarration ? ` Last progress: ${lastNarration.replace(/\s+/g, ' ').slice(0, 500)}` : '');
 			finishSubAgent(subId, 'failed', detail);
 			logAgentTermoTimeline(`Sub-agent ${agent.name} exhausted its budget before completing: ${task.slice(0, 120)}`, projectRoot);
@@ -787,11 +842,15 @@ export async function runToolLoop(
 	agentToolDefinitions?: ToolDef[],
 	onMessagesCompacted?: (messages: ConversationMessage[]) => void,
 ): Promise<string> {
-	const MAX_TOOL_ITERATIONS = 40;
 	let toolCalls = initialToolCalls;
 	let finalText = '';
-	let iterations = 0;
+	const runStartedAt = Date.now();
+	// Failure suppression is scoped to this execution run, not the whole task.
+	// A later "continue" may follow a user/environment change and must be able
+	// to retry the same call. Persisted failures are retained for diagnostics only.
 	const failedToolCalls = new Set<string>();
+	// Older callers and saved task states may not include this field.
+	taskState.failedToolCalls ??= new Set<string>();
 	// Same evidence gate as delegated runs (runtime/verify.ts): track what this
 	// turn actually wrote and ran, independent of direct file:write/file:edit
 	// tool calls made without going through agent:delegate at all.
@@ -800,11 +859,30 @@ export async function runToolLoop(
 
 	// Continue looping while the LLM keeps issuing tool calls
 	while (toolCalls.length > 0) {
-		iterations++;
-		if (iterations > MAX_TOOL_ITERATIONS) {
+		const budgetStopReason = getToolLoopStopReason(Date.now() - runStartedAt);
+		if (budgetStopReason) {
+			// Preserve pending model intent as a complete assistant/tool exchange.
+			// The calls have not run, so record explicit failures instead of replaying
+			// potentially side-effecting tools automatically after a resume.
+			conversation.push({
+				id: crypto.randomUUID(),
+				role: 'assistant',
+				content: finalText || '',
+				toolCalls,
+				timestamp: new Date(),
+			});
+			for (const toolCall of toolCalls) {
+				conversation.push({
+					id: toolCall.id,
+					role: 'tool',
+					content: 'Not executed: ' + budgetStopReason + ' The pending request was preserved for review. Resume with "continue" and decide whether the action should be retried.',
+					timestamp: new Date(),
+				});
+			}
 			taskState.status = 'interrupted';
-			taskState.reason = `Tool loop stopped after ${MAX_TOOL_ITERATIONS} iterations without reaching a final response.`;
+			taskState.reason = budgetStopReason + ' Progress is preserved; type "continue" to resume.';
 			printError(taskState.reason);
+			printInfo('The task was safely paused instead of running indefinitely.');
 			onConversationChanged();
 			return '';
 		}
@@ -829,38 +907,73 @@ export async function runToolLoop(
 						const allDelegations = shouldRunDelegationsInParallel(toolCalls);
 		const executions: Array<{ toolResult: { success: boolean; output?: string; error?: string; name?: string }; applied: boolean; change?: ProposedFileChange }> = [];
 		let repeatedFailure = false;
+		const blockedResult = (tc: ToolCall) => {
+			const signature = toolCallSignature(tc);
+			if (!shouldPauseForRepeatedFailedToolCall(signature, failedToolCalls)) return undefined;
+			repeatedFailure = true;
+			return {
+				toolResult: {
+					name: tc.name,
+					success: false,
+					error: 'This exact tool call already failed and was requested again unchanged. It was not executed again. The task is paused so the failure can be corrected before continuing.',
+				},
+				applied: false,
+			};
+		};
+		const recordToolCallOutcome = (tc: ToolCall, execution: (typeof executions)[number]): void => {
+			const toolResult = execution.toolResult;
+			if (execution.applied || shouldClearFailedToolCalls(tc.name, toolResult.success)) {
+				failedToolCalls.clear();
+				taskState.failedToolCalls.clear();
+			}
+			if (!toolResult.success) {
+				const signature = toolCallSignature(tc);
+				failedToolCalls.add(signature);
+				taskState.failedToolCalls.add(signature);
+			}
+		};
 		if (allDelegations) {
-						executions.push(...await Promise.all(toolCalls.map((tc) => runDelegatedAgent(projectRoot, tc, nimClient, input, permissionMode, allowedCommands, taskState, getCheckpointId, parentContextExcerpt(conversation)).then((toolResult) => ({ toolResult, applied: false })) )));
+			executions.push(...await Promise.all(toolCalls.map(async (tc) =>
+				blockedResult(tc) ?? {
+					toolResult: await runDelegatedAgent(projectRoot, tc, nimClient, input, permissionMode, allowedCommands, taskState, getCheckpointId, parentContextExcerpt(conversation)),
+					applied: false,
+				},
+			)));
+			for (const [index, tc] of toolCalls.entries()) recordToolCallOutcome(tc, executions[index]!);
 		} else {
 			for (const tc of toolCalls) {
-				const signature = tc.name + ':' + JSON.stringify(tc.arguments);
-				if (failedToolCalls.has(signature)) {
-					repeatedFailure = true;
-					executions.push({
-						toolResult: {
-							name: tc.name,
-							success: false,
-							error: 'The identical tool call already failed in this turn and was not executed again. Inspect the previous diagnostic, change the source or command, then retry with a different call.',
-						},
+				if (Date.now() - runStartedAt > 20 * 60 * 1000) {
+					const execution = {
+						toolResult: { name: tc.name, success: false, error: 'Not executed: the 20-minute task safety budget was reached. Resume the task to continue safely.' },
 						applied: false,
-					});
+					};
+					executions.push(execution);
+					recordToolCallOutcome(tc, execution);
 					continue;
 				}
+				const blocked = blockedResult(tc);
+				if (blocked) {
+					executions.push(blocked);
+					continue;
+				}
+				let execution: (typeof executions)[number];
 				if (tc.name === 'plan:update') {
-							let result: { success: boolean; output?: string; error?: string };
-							try {
-								if (!taskPlan) throw new Error('No execution plan is active.');
-								const summary = typeof tc.arguments.summary === 'string' ? tc.arguments.summary : '';
-								result = { success: true, output: updatePlanStep(taskPlan, Number(tc.arguments.step), tc.arguments.status as 'in_progress' | 'completed', summary) };
-							} catch (error) {
-								result = { success: false, error: error instanceof Error ? error.message : String(error) };
-							}
-							executions.push({ toolResult: result, applied: false });
-						} else {
-							executions.push(tc.name === 'agent:delegate'
-								? { toolResult: await runDelegatedAgent(projectRoot, tc, nimClient, input, permissionMode, allowedCommands, taskState, getCheckpointId, parentContextExcerpt(conversation)), applied: false }
-								: await executeToolWithReview(tc.name, tc.arguments, projectRoot, input, permissionMode, allowedCommands, undefined, getCheckpointId));
-						}
+					let result: { success: boolean; output?: string; error?: string };
+					try {
+						if (!taskPlan) throw new Error('No execution plan is active.');
+						const summary = typeof tc.arguments.summary === 'string' ? tc.arguments.summary : '';
+						result = { success: true, output: updatePlanStep(taskPlan, Number(tc.arguments.step), tc.arguments.status as 'in_progress' | 'completed', summary) };
+					} catch (error) {
+						result = { success: false, error: error instanceof Error ? error.message : String(error) };
+					}
+					execution = { toolResult: result, applied: false };
+				} else {
+					execution = tc.name === 'agent:delegate'
+						? { toolResult: await runDelegatedAgent(projectRoot, tc, nimClient, input, permissionMode, allowedCommands, taskState, getCheckpointId, parentContextExcerpt(conversation)), applied: false }
+						: await executeToolWithReview(tc.name, tc.arguments, projectRoot, input, permissionMode, allowedCommands, undefined, getCheckpointId);
+				}
+				executions.push(execution);
+				recordToolCallOutcome(tc, execution);
 					}
 				}
 
@@ -868,8 +981,6 @@ export async function runToolLoop(
 						const execution = executions[index]!;
 
 		const toolResult = execution.toolResult;
-		if (execution.applied) failedToolCalls.clear();
-		if (!toolResult.success) failedToolCalls.add(tc.name + ':' + JSON.stringify(tc.arguments));
 						if (execution.applied) ranChecks.length = 0;
 				if (execution.applied && execution.change) changedFiles.set(execution.change.path, execution.change.proposedContent);
 					if (tc.name === 'bash:execute') {
@@ -1315,6 +1426,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 			reason: session.taskState.status === 'running' ? 'Agent-Termo restarted before the task finished.' : session.taskState.reason,
 			lastActions: [...session.taskState.lastActions],
 			completedOperations: new Set(session.taskState.completedOperations),
+			failedToolCalls: new Set(session.taskState.failedToolCalls ?? []),
 			checkpointId: session.taskState.checkpointId,
 		};
 	}
@@ -1367,6 +1479,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 			reason: taskState.reason,
 			lastActions: [...taskState.lastActions],
 			completedOperations: [...(taskState.completedOperations ?? [])],
+			failedToolCalls: [...taskState.failedToolCalls],
 			checkpointId: taskState.checkpointId,
 		};
 		session.taskPlan = activePlan;
@@ -1414,6 +1527,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 			reason: selected.taskState.status === 'running' ? 'Agent-Termo restarted before the task finished.' : selected.taskState.reason,
 			lastActions: [...selected.taskState.lastActions],
 			completedOperations: new Set(selected.taskState.completedOperations),
+			failedToolCalls: new Set(selected.taskState.failedToolCalls ?? []),
 			checkpointId: selected.taskState.checkpointId,
 		} : newTaskState();
 		if (activePlan?.status === 'approved' && taskState.status === 'interrupted') activePlan.status = 'in_progress';
@@ -1524,7 +1638,10 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 		persistSession();
 		input.close();
 		// Match OpenCode: restore the terminal and finish owned services before exiting.
-		void Promise.allSettled([teardownScreen(), shutdownMcpServers()]).then(() => {
+		void (async () => {
+			const terminals = await killRunningTerminal();
+			for (const failure of terminals.failed) printError('Could not confirm termination of ' + failure + '.');
+			await Promise.allSettled([teardownScreen(), shutdownMcpServers()]);
 			process.stdout.write('\n');
 			console.log(
 				'Session complete. ' +
@@ -1532,9 +1649,10 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				' minutes.',
 			);
 			process.exit(0);
-		});
+		})();
 	};
 	process.on('SIGINT', cleanup);
+	process.on('SIGTERM', cleanup);
 		const mcpStatuses = await initializeMcpServers(projectRoot);
 	for (const status of mcpStatuses) {
 		if (status.connected) printSuccess('MCP server connected: ' + status.name + ' (' + status.tools + ' tools)');
@@ -2047,11 +2165,10 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						displayedInput = true;
 						const sub = cmd.slice('/terminal'.length).trim().toLowerCase();
 						if (sub === 'kill' || sub === 'stop') {
-							if (killRunningTerminal()) {
-								printInfo('Agent terminal command killed.');
-							} else {
-								printInfo('No terminal command is running.');
-							}
+							const result = await killRunningTerminal();
+							if (result.stopped > 0) printInfo(`Stopped ${result.stopped} agent terminal process(es).`);
+							for (const failure of result.failed) printError('Could not confirm termination of ' + failure + '.');
+							if (result.stopped === 0 && result.failed.length === 0) printInfo('No agent terminal process is running.');
 						} else if (sub === 'list' || sub === 'status' || sub === '') {
 							const { terminalPanelVisible, terminalPanelState } = await import('./ui/screen.js');
 							const visible = terminalPanelVisible();
@@ -2070,7 +2187,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					}
 					if (cmd === '/context') {
 						const tools = nimClient.buildToolDefs([...TOOL_DEFINITIONS, ...getMcpToolDefinitions()]);
-						const estimated = estimateContextTokens(conversation, tools);
+						const estimated = estimateContextTokens(conversation, tools, nimClient.getModel());
 						const budget = resolveContextBudget(nimClient.getModel());
 						printInfo('Estimated input: ~' + estimated.toLocaleString() + ' tokens');
 						printInfo('Input budget: ' + budget.inputBudgetTokens.toLocaleString() + ' / ' + budget.contextWindowTokens.toLocaleString());
@@ -2308,6 +2425,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					taskState.reason = '';
 					taskState.lastActions = [];
 					taskState.completedOperations = new Set();
+					taskState.failedToolCalls = new Set();
 					taskState.checkpointId = undefined;
 					taskState.status = 'running';
 			}

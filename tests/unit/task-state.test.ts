@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { finishTaskState, isTransientError, shouldRunDelegationsInParallel, withTransientRetries } from '../../src/main.js';
+import { finishTaskState, getToolLoopStopReason, isTransientError, shouldClearFailedToolCalls, shouldPauseForRepeatedFailedToolCall, shouldRunDelegationsInParallel, withTransientRetries } from '../../src/main.js';
 
 describe('task resumability', () => {
 	it('keeps an interrupted task resumable instead of marking it idle', () => {
@@ -16,6 +16,14 @@ describe('task resumability', () => {
 		expect(state.reason).toBe('');
 	});
 
+	it('does not impose a model-turn limit', () => {
+		expect(getToolLoopStopReason(60_000)).toBeUndefined();
+	});
+
+	it('pauses a task at the wall-clock safety limit', () => {
+		expect(getToolLoopStopReason(20 * 60 * 1000 + 1)).toContain('20-minute');
+	});
+
 	it('treats a bare "Connection error." as transient', () => {
 		expect(isTransientError(new Error('Connection error.'))).toBe(true);
 		expect(isTransientError(new Error('401 invalid api key'))).toBe(false);
@@ -29,6 +37,20 @@ describe('task resumability', () => {
 			throw partial;
 		}, [0, 0])).rejects.toBe(partial);
 		expect(attempts).toBe(1);
+	});
+
+	it('pauses immediately when the model repeats an unchanged failed call', () => {
+		const failed = new Set(['browser:verify:{}']);
+		expect(shouldPauseForRepeatedFailedToolCall('browser:verify:{}', new Set())).toBe(false);
+		expect(shouldPauseForRepeatedFailedToolCall('browser:verify:{}', failed)).toBe(true);
+	});
+
+	it('clears failed-call suppression after a successful corrective operation, but not a read', () => {
+		expect(shouldClearFailedToolCalls('bash:execute', true)).toBe(true);
+		expect(shouldClearFailedToolCalls('file:write', true)).toBe(true);
+		expect(shouldClearFailedToolCalls('file:read', true)).toBe(false);
+		expect(shouldClearFailedToolCalls('git:status', true)).toBe(false);
+		expect(shouldClearFailedToolCalls('bash:execute', false)).toBe(false);
 	});
 
 	it('detects independent delegation calls as a parallel fan-out', () => {

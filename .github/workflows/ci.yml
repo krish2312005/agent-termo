@@ -31,6 +31,12 @@ jobs:
       - name: Install dependencies
         run: bun install
 
+      - name: Install Chromium for browser integration tests
+        run: |
+          npm install --prefix "$RUNNER_TEMP/agent-termo-playwright" --no-save --no-package-lock playwright
+          "$RUNNER_TEMP/agent-termo-playwright/node_modules/.bin/playwright" install --with-deps chromium
+          ln -s "$RUNNER_TEMP/agent-termo-playwright/node_modules/playwright" node_modules/playwright
+
       - name: Typecheck
         run: bun run typecheck
 
@@ -38,7 +44,7 @@ jobs:
       # in the experimental core prototype and existing TUI files. Lint the
       # changed runtime modules while that baseline debt is addressed.
       - name: Lint changed runtime
-        run: bunx eslint src/main.ts src/runtime/verify.ts src/runtime/checks.ts
+        run: bunx eslint src/main.ts src/runtime/verify.ts src/runtime/checks.ts src/runtime/browser-verification.ts
 
       - name: Test
         run: bun run test
@@ -48,3 +54,24 @@ jobs:
 
       - name: Source CLI smoke test
         run: bun run cli --help
+
+  terminal-windows:
+    name: Windows terminal process lifecycle
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Test terminal process lifecycle
+        run: bunx vitest run tests/unit/terminal-sessions.test.ts
+
+      - name: Test Windows file glob path normalization
+        run: bunx vitest run tests/integration/basic.test.ts -t "finds TypeScript files"

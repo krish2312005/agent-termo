@@ -7,7 +7,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { executeTool, applyFileChange, invalidateToolCache } from '../../src/tools/index.js';
-import { fromWireToolName, parseToolCallsFromText } from '../../src/llm/client.js';
+import { fromWireToolName, toWireToolName, parseToolCallsFromText } from '../../src/llm/client.js';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -36,6 +36,14 @@ describe('executeTool', () => {
 		const proposedDeletion = JSON.parse(deletion.output ?? '').proposedChange;
 		expect((await applyFileChange(proposedDeletion, PROJECT_ROOT)).success).toBe(true);
 		expect(existsSync(lifecycleAbsolutePath)).toBe(false);
+	});
+
+	it('file:write explains required arguments when the model sends an empty call', async () => {
+		const result = await executeTool('file:write', {}, PROJECT_ROOT);
+		expect(result.success).toBe(false);
+		expect(result.error).toContain('path is required');
+		expect(result.error).toContain('"path" and "content"');
+		expect(result.error).toContain('empty arguments');
 	});
 
 	it('file:write with empty content creates an empty file instead of a deletion', async () => {
@@ -104,10 +112,19 @@ describe('executeTool', () => {
 
 	it('accepts common model tool names and Claude-style argument names', async () => {
 		expect(fromWireToolName('skill_read')).toBe('skill:read');
+		expect(toWireToolName('browser:verify')).toBe('browser_verify');
+		expect(fromWireToolName('browser_verify')).toBe('browser:verify');
+		expect(fromWireToolName('bash_start')).toBe('bash:start');
+		expect(fromWireToolName('bash_read')).toBe('bash:read');
+		expect(fromWireToolName('bash_stop')).toBe('bash:stop');
 		const path = '.test-alias-tool.txt';
 		const absolutePath = resolve(PROJECT_ROOT, path);
 		rmSync(absolutePath, { force: true });
 		try {
+			const browserAlias = await executeTool('browser_verify', { base_url: 'file:///not-allowed' }, PROJECT_ROOT);
+			expect(browserAlias.success).toBe(false);
+			expect(browserAlias.error).toContain('base_url must be a valid http:// or https:// URL');
+
 			const write = await executeTool('write_file', { file_path: path, file_text: 'alias works\n' }, PROJECT_ROOT);
 			expect(write.success).toBe(true);
 			const change = JSON.parse(write.output ?? '').proposedChange;
@@ -156,6 +173,26 @@ describe('executeTool', () => {
 
 		const bare = parseToolCallsFromText('[{"name":"Read","arguments":{"file_path":"a.txt"}}]');
 			expect(bare[0]?.name).toBe('file:read');
+		});
+
+		it('parses repeated adjacent JSON tool-call payloads only once per call id', () => {
+			const batch = JSON.stringify({
+				tool_calls: [
+					{ id: 'call_1', name: 'file_read', arguments: { path: 'server/db/database.ts' } },
+					{ id: 'call_2', name: 'file_read', arguments: { path: 'server/routes/users.ts' } },
+					{ id: 'call_3', name: 'file_read', arguments: { path: 'server/index.ts' } },
+				],
+			});
+			const repeated = Array.from({ length: 30 }, () => batch).join('\n');
+			const calls = parseToolCallsFromText(repeated);
+
+			expect(calls).toHaveLength(3);
+			expect(calls.map((call) => call.id)).toEqual(['call_1', 'call_2', 'call_3']);
+			expect(calls.map((call) => call.arguments.path)).toEqual([
+				'server/db/database.ts',
+				'server/routes/users.ts',
+				'server/index.ts',
+			]);
 		});
 
 		it('parses XML-style tool calls without exposing markup', () => {

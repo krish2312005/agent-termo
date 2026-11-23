@@ -1,8 +1,19 @@
-import { createCliRenderer, RGBA, SyntaxStyle, type CliRenderer, type TextareaRenderable } from "@opentui/core";
+import {
+  createCliRenderer,
+  createClipboard,
+  createHostClipboard,
+  createRendererClipboardAdapter,
+  RGBA,
+  SyntaxStyle,
+  type CliRenderer,
+  type ClipboardService,
+  type TextareaRenderable,
+} from "@opentui/core";
 import { render, useKeyboard, useRenderer } from "@opentui/solid";
 import { For, Show, createSignal, onCleanup, type Accessor } from "solid-js";
 import { createInterface } from "node:readline";
 import packageJson from "../../package.json" with { type: "json" };
+import { copySelectedText } from "./selection-copy.js";
 
 export type UiKind = "user" | "assistant" | "tool" | "info" | "success" | "error" | "dim" | "markdown" | "diff-add" | "diff-remove" | "diff-context";
 export interface UiEntry { id: number; kind: UiKind; content: string; streaming?: boolean; }
@@ -42,6 +53,7 @@ const [secretDraft, setSecretDraft] = createSignal("");
 let secretResolver: ((value: string | null) => void) | null = null;
 let nextId = 1;
 let renderer: CliRenderer | null = null;
+let clipboard: ClipboardService | null = null;
 let textarea: TextareaRenderable | undefined;
 let inputResolver: ((value: string) => void) | null = null;
 let pickerResolver: ((value: string | null) => void) | null = null;
@@ -102,6 +114,19 @@ function dispatchKey(key: Key): void {
   if (keyInterceptor && keyInterceptor(key)) return;
   for (const handler of [...keyHandlers]) {
     try { handler(key); } catch { /* A failed UI shortcut must not break terminal input. */ }
+  }
+}
+
+async function copySelection(text: string): Promise<void> {
+  const currentRenderer = renderer;
+  if (!currentRenderer) return;
+  const copied = await copySelectedText(
+    text,
+    clipboard,
+    (value) => currentRenderer.copyToClipboardOSC52(value),
+  );
+  if (renderer === currentRenderer) {
+    setStatus(copied ? "Copied selection to clipboard" : "Clipboard copy unavailable");
   }
 }
 
@@ -337,7 +362,13 @@ function App() {
       event.preventDefault();
       return;
     }
-    if (name === "ctrl+c" && inputActive()) {
+    if ((name === "ctrl+c" || name === "meta+c") && inputActive()) {
+      const selectedText = activeRenderer.getSelection()?.getSelectedText() ?? "";
+      if (selectedText) {
+        void copySelection(selectedText);
+        event.preventDefault();
+        return;
+      }
       const currentText = textarea?.plainText ?? draft();
       if (currentText) {
         textarea?.setText("");
@@ -359,8 +390,21 @@ function App() {
     "diff-add": "#B7E4C7", "diff-remove": "#F0B4AE", "diff-context": "#BDB6AE",
   };
 
+  const handleSelectionMouseUp = () => {
+    const selectedText = activeRenderer.getSelection()?.getSelectedText() ?? "";
+    if (selectedText) void copySelection(selectedText);
+  };
+
   return (
-    <box width="100%" height="100%" flexDirection="column" backgroundColor="#11100F" paddingX={1} gap={0}>
+    <box
+      width="100%"
+      height="100%"
+      flexDirection="column"
+      backgroundColor="#11100F"
+      paddingX={1}
+      gap={0}
+      onMouseUp={handleSelectionMouseUp}
+    >
       <box height={2} flexDirection="row" justifyContent="space-between" alignItems="center">
         <box flexDirection="row" alignItems="center" gap={1}>
           <text fg="#D99168">✻ Agent-Termo</text>
@@ -447,8 +491,8 @@ function App() {
       <box height={1} flexDirection="row" justifyContent="space-between">
         <text fg="#8D857D">{screen().thinking} · {screen().permissionMode} · {screen().usage}</text>
         <text fg="#8D857D">{status() || (legacyAppleTerminal
-          ? "Return send · Shift+Return newline · Tab complete · Ctrl+C quit"
-          : "Enter send · Shift+Enter newline · Tab complete · Ctrl+C quit")}</text>
+          ? "Return send · Shift+Return newline · Tab complete · Select text to copy · Ctrl+C quit"
+          : "Enter send · Shift+Enter newline · Tab complete · Select text to copy · Ctrl+C quit")}</text>
       </box>
     </box>
   );
@@ -480,6 +524,15 @@ export async function initScreen(info: { model: string; project: string; thinkin
     openConsoleOnError: false,
   });
   try {
+    try {
+      clipboard = createClipboard({
+        host: createHostClipboard(),
+        terminal: createRendererClipboardAdapter(renderer),
+      });
+    } catch {
+      // Keep the TUI usable; copySelection falls back to direct OSC 52.
+      clipboard = null;
+    }
     // Agent-Termo's REPL waits on its own input controller. Keep the renderer
     // active until that REPL exits; OpenCode can remain demand-driven because
     // its TUI lifecycle is owned by its Effect scope and renderer destroy latch.
@@ -492,6 +545,9 @@ export async function initScreen(info: { model: string; project: string; thinkin
   } catch (error) {
     const current = renderer;
     renderer = null;
+    const currentClipboard = clipboard;
+    clipboard = null;
+    if (currentClipboard) await currentClipboard.dispose().catch(() => {});
     if (current) {
       current.destroy();
       await current.closed.catch(() => {});
@@ -504,6 +560,9 @@ export async function teardownScreen(): Promise<void> {
   const current = renderer;
   if (!current) return;
   renderer = null;
+  const currentClipboard = clipboard;
+  clipboard = null;
+  if (currentClipboard) await currentClipboard.dispose().catch(() => {});
   if (!current.isDestroyed) current.destroy();
   await current.closed.catch(() => {});
 }

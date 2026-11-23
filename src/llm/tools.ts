@@ -62,7 +62,7 @@ export const TOOL_DEFINITIONS: ToolDef[] = [
   },
   {
     name: 'file:write',
-    description: 'Write or overwrite a complete file. Use this to create new files or replace existing ones entirely.',
+    description: 'Write or overwrite a complete file. Requires BOTH path and content as arguments; never call with empty or missing arguments. Use this to create new files or replace existing ones entirely.',
     parameters: {
       type: 'object',
       properties: {
@@ -167,7 +167,7 @@ export const TOOL_DEFINITIONS: ToolDef[] = [
   // ── Bash ───────────────────────────────────────────────────────────────────
   {
     name: 'bash:execute',
-    description: 'Execute a shell command and return its stdout/stderr output. Destructive commands (rm, dd) require user confirmation.',
+    description: 'Execute a short-lived shell command and return its stdout/stderr and exit code. Long-running development servers are started in the background automatically; use bash:start for other persistent processes, then use bash:read with wait_ms to wait for log events (do not sleep before polling) and bash:stop to stop them.',
     parameters: {
       type: 'object',
       properties: {
@@ -184,8 +184,62 @@ export const TOOL_DEFINITIONS: ToolDef[] = [
           description: 'Timeout in milliseconds (default 300000)',
           default: 300000,
         },
+        background: {
+          type: 'boolean',
+          description: 'Start the command as a persistent background process and return a session ID instead of waiting for it to exit.',
+          default: false,
+        },
       },
       required: ['command'],
+    },
+  },
+  {
+    name: 'bash:start',
+    description: 'Start a persistent background process such as a worker, API server, frontend dev server, or database service. Returns a session_id, startup output, and next_cursor. Use bash:read with that cursor and wait_ms to receive subsequent stdout/stderr as soon as an event arrives; do not use sleep followed by polling. Use bash:stop to stop it.',
+    parameters: {
+      type: 'object',
+      properties: {
+        command: { type: 'string', description: 'Shell command to start' },
+        cwd: { type: 'string', description: 'Working directory (defaults to project root)' },
+      },
+      required: ['command'],
+    },
+  },
+  {
+    name: 'bash:read',
+    description: 'Wait for the next background terminal output/exit event and return new stdout/stderr immediately (or return after wait_ms expires). Pass the session_id and exact next_cursor returned by bash:start or the previous read. Default wait_ms is 10000; maximum is 30000. This is event-driven waiting, not polling.',
+    parameters: {
+      type: 'object',
+      properties: {
+        session_id: { type: 'string', description: 'Background terminal session ID' },
+        cursor: { type: 'number', description: 'Exact next_cursor returned by bash:start or the previous read (defaults to 0)' },
+        wait_ms: { type: 'number', description: 'Maximum time to wait for the next output event in milliseconds (default 10000, maximum 30000; 0 returns immediately).' },
+      },
+      required: ['session_id'],
+    },
+  },
+  {
+    name: 'bash:stop',
+    description: 'Stop a background terminal session started with bash:start.',
+    parameters: {
+      type: 'object',
+      properties: { session_id: { type: 'string', description: 'Background terminal session ID' } },
+      required: ['session_id'],
+    },
+  },
+  {
+    name: 'browser:verify',
+    description: 'Run a real headless Chromium browser check against the running application using Playwright installed in the project. This tool is registered as browser:verify (wire name browser_verify). Captures console errors, uncaught page errors, failed network requests, HTTP 4xx/5xx responses, and can exercise user actions/assertions. If Playwright or Chromium is missing, install them in the project and retry.',
+    parameters: {
+      type: 'object',
+      properties: {
+        base_url: { type: 'string', description: 'HTTP or HTTPS URL of the running frontend, for example http://localhost:3000' },
+        actions: { type: 'string', description: 'Optional JSON array of actions: click/fill/select/check/uncheck/press/wait_for with selector; expect_text with selector and text; expect_url with url substring; goto with url. Maximum 30 actions.' },
+        timeout_ms: { type: 'number', description: 'Overall verification budget in milliseconds, 60000 by default and capped at 120000.' },
+        viewport: { type: 'string', description: 'Viewport preset: desktop (1440x900), tablet (768x1024), or mobile (390x844). Run each preset for responsive work.' },
+        screenshot: { type: 'boolean', description: 'Save a full-page screenshot under .agent-termo/browser-artifacts (default true).' },
+      },
+      required: ['base_url'],
     },
   },
   // ── Git ────────────────────────────────────────────────────────────────────

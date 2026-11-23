@@ -8,13 +8,16 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { glob as globPromise } from 'glob';
 import { simpleGit } from 'simple-git';
 import { statSync, existsSync, mkdirSync } from 'node:fs';
+import { isPathWithinWorkspace } from '../runtime/workspace.js';
 import { getConfig } from '../utils/config.js';
 import { resolveShell } from '../utils/shell.js';
 import { fromWireToolName } from '../llm/client.js';
 import { computeDiff } from '../diff/index.js';
 import type { ToolResult, ProposedFileChange } from '../types/index.js';
 import { readSkillFile } from '../runtime/skills.js';
+import { waitForTerminalSession, startTerminalSession, stopTerminalSession, stopAllTerminalSessions, terminateProcessTree, type TerminalStopSummary } from '../runtime/terminal-sessions.js';
 import { appendToMemory } from '../memory/index.js';
+import { runBrowserVerification } from '../runtime/browser-verification.js';
 
 const MAX_GLOB_RESULTS = 500;
 const MAX_GREP_MATCHES = 300;
@@ -95,6 +98,10 @@ const TOOL_MAP: Record<string, (...args: any[]) => Promise<ToolResult>> = {
 	'file:glob': toolFileGlob,
 	'grep': toolGrep,
 	'bash:execute': toolBash,
+	'bash:start': toolBashStart,
+	'bash:read': toolBashRead,
+	'bash:stop': toolBashStop,
+	'browser:verify': toolBrowserVerify,
 	'git:status': toolGitStatus,
 	'git:commit': toolGitCommit,
 	'git:push': toolGitPush,
@@ -121,30 +128,28 @@ export function setTerminalHooks(hooks: TerminalHooks): void {
 /** The currently running bash child process, so a stuck agent terminal can be killed. */
 let activeBashChild: ChildProcess | null = null;
 
-/** Kill a shell and the commands it started (npm/node grandchildren on Windows). */
+/** Backward-compatible synchronous trigger used by the experimental core tool registry. */
 export function killProcessTree(child: ChildProcess): void {
-	if (process.platform === 'win32' && child.pid) {
-		try {
-			spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true });
-			return;
-		} catch {
-			// Fall through to the direct kill below.
-		}
-	}
-	try {
-		child.kill('SIGKILL');
-	} catch {
-		// best effort
-	}
+	void terminateProcessTree(child);
 }
 
-/** Kill the currently running agent terminal command, if any. Returns true when something was killed. */
-export function killRunningTerminal(): boolean {
-	if (!activeBashChild) return false;
-	killProcessTree(activeBashChild);
-	activeBashChild = null;
-	terminalHooks.onEnd?.(null);
-	return true;
+/** Stop the foreground command and all persistent background terminal sessions. */
+export async function killRunningTerminal(): Promise<TerminalStopSummary> {
+	const result: TerminalStopSummary = { stopped: 0, failed: [] };
+	const active = activeBashChild;
+	if (active) {
+		const stopped = await terminateProcessTree(active);
+		if (stopped) {
+			if (activeBashChild === active) activeBashChild = null;
+			result.stopped++;
+		} else {
+			result.failed.push('foreground terminal');
+		}
+	}
+	const background = await stopAllTerminalSessions();
+	result.stopped += background.stopped;
+	result.failed.push(...background.failed.map((id) => 'background session ' + id));
+	return result;
 }
 
 // ── Public API ──────────────────────────────────────────────────────────────
@@ -202,13 +207,7 @@ function toProjectPath(path: string, projectRoot: string): string {
 }
 
 function withinProject(path: string, projectRoot: string): boolean {
-	try {
-		const resolved = toProjectPath(path, projectRoot);
-		const rel = relative(projectRoot, resolved);
-		return !rel.startsWith('..') && !isAbsolute(rel);
-	} catch {
-		return false;
-	}
+	return isPathWithinWorkspace(path, projectRoot);
 }
 
 // ── Propose a file change (returns ProposedFileChange without writing) ───────
@@ -269,19 +268,28 @@ export async function applyFileChange(change: ProposedFileChange, projectRoot: s
 	}
 
 	try {
-		if (change.isDeletion) {
-			if (existsSync(fullPath)) {
-					await unlinkAsync(fullPath);
+		const currentExists = existsSync(fullPath);
+		if (change.isNewFile && currentExists) {
+			return { id: '', name: 'file:write', success: false, error: 'File changed after its preview: ' + change.path + ' already exists. Re-read it and prepare a new change.', durationMs: Date.now() - start };
+		}
+		if (!change.isNewFile && !currentExists) {
+			return { id: '', name: 'file:write', success: false, error: 'File changed after its preview: ' + change.path + ' no longer exists. Re-read it and prepare a new change.', durationMs: Date.now() - start };
+		}
+		if (!change.isNewFile) {
+			const currentContent = await readFileAsync(fullPath, 'utf-8');
+			if (currentContent !== change.originalContent) {
+				return { id: '', name: 'file:write', success: false, error: 'File changed after its preview: ' + change.path + ' was modified independently. Re-read it and prepare a new change.', durationMs: Date.now() - start };
 			}
+		}
+		if (change.isDeletion) {
+			await unlinkAsync(fullPath);
 		} else {
 			const dir = resolve(fullPath, '..');
-			if (!existsSync(dir)) {
-				mkdirSync(dir, { recursive: true });
-			}
-				await writeFileAsync(fullPath, change.proposedContent, 'utf-8');
-			}
-			invalidateToolCache(projectRoot);
-			return {
+			if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+			await writeFileAsync(fullPath, change.proposedContent, 'utf-8');
+		}
+		invalidateToolCache(projectRoot);
+		return {
 			id: '',
 			name: 'file:write',
 			success: true,
@@ -298,7 +306,6 @@ export async function applyFileChange(change: ProposedFileChange, projectRoot: s
 		};
 	}
 }
-
 // ── File Tools ──────────────────────────────────────────────────────────────
 
 async function toolFileRead(args: Record<string, unknown>, projectRoot: string): Promise<ToolResult> {
@@ -338,7 +345,7 @@ async function toolFileRead(args: Record<string, unknown>, projectRoot: string):
 async function toolFileWrite(args: Record<string, unknown>, projectRoot: string): Promise<ToolResult> {
 	const path = String(args.path ?? '');
 	const content = args.content;
-	if (!path) return { id: '', name: 'file:write', success: false, error: 'path is required', durationMs: 0 };
+	if (!path) return { id: '', name: 'file:write', success: false, error: 'path is required. file:write needs both "path" and "content"; pass a JSON object such as {"path":"tests/example.test.ts","content":"..."} instead of empty arguments.', durationMs: 0 };
 	if (typeof content !== 'string') {
 		return { id: '', name: 'file:write', success: false, error: 'content must be a string (use "" for an empty file)', durationMs: 0 };
 	}
@@ -459,7 +466,7 @@ async function toolFileGlob(args: Record<string, unknown>, projectRoot: string):
 			dot: true,
 			ignore: ['**/node_modules/**', '**/.git/**'],
 		});
-		const shown = files.slice(0, MAX_GLOB_RESULTS);
+		const shown = files.slice(0, MAX_GLOB_RESULTS).map((file) => file.replace(/\\/g, '/'));
 		const suffix = files.length > shown.length ? `\n(${files.length - shown.length} more files not shown; narrow the pattern)` : '';
 		const output = shown.length > 0 ? shown.join('\n') + suffix : '(no files matched)';
 		globCache.set(cacheKey, output);
@@ -551,6 +558,12 @@ async function toolGrep(args: Record<string, unknown>, projectRoot: string): Pro
 
 // ── Bash ─────────────────────────────────────────────────────────────────────
 
+const LONG_RUNNING_SERVER_COMMAND = /(?:^|[;&|]\s*)(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:dev|start|serve|preview)\b|(?:vite|next|nuxt|astro)\s+(?:dev|start|preview)\b|python(?:3)?\s+-m\s+http\.server\b)/i;
+
+export function isLongRunningServerCommand(command: string): boolean {
+	return LONG_RUNNING_SERVER_COMMAND.test(command);
+}
+
 const DANGEROUS_PATTERNS = [
 	/rm\s+-rf\s+['"]?\//i,
 	/dd\s+if=/i,
@@ -584,6 +597,10 @@ async function toolBash(args: Record<string, unknown>, projectRoot: string): Pro
 		}
 	}
 
+	if (args.background === true || isLongRunningServerCommand(command)) {
+		return startBackgroundCommand(command, fullCwd);
+	}
+
 	// Stream the command live (like Claude Code / opencode): output is piped
 	// to the terminal panel hooks while it runs, and captured for the model.
 		return await new Promise<ToolResult>((resolve) => {
@@ -591,6 +608,7 @@ async function toolBash(args: Record<string, unknown>, projectRoot: string): Pro
 			let stdout = '';
 			let stderr = '';
 			let timer: ReturnType<typeof setTimeout> | null = null;
+			let timedOut = false;
 			const finish = (success: boolean, exitCode: number | null, error?: string): void => {
 				if (settled) return;
 				settled = true;
@@ -624,6 +642,7 @@ async function toolBash(args: Record<string, unknown>, projectRoot: string): Pro
 		const child = spawn(command, {
 			cwd: fullCwd,
 			shell: resolveShell(),
+			detached: process.platform !== 'win32',
 			windowsHide: true,
 			env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' },
 		});
@@ -646,14 +665,106 @@ async function toolBash(args: Record<string, unknown>, projectRoot: string): Pro
 			child.stdout?.on('data', capture('stdout'));
 			child.stderr?.on('data', capture('stderr'));
 		child.on('error', (err) => finish(false, null, err.message));
-		child.on('close', (code) => finish(code === 0, code));
+		child.on('close', (code) => finish(!timedOut && code === 0, code, timedOut ? `Command timed out after ${timeoutMs}ms` : undefined));
 
 		timer = setTimeout(() => {
+			timedOut = true;
 			terminalHooks.onOutput?.(`\n[agent-termo] timed out after ${timeoutMs}ms`);
-			killProcessTree(child);
-			finish(false, null, `Command timed out after ${timeoutMs}ms`);
+			void terminateProcessTree(child).then((stopped) => {
+				if (!stopped) finish(false, null, `Command timed out after ${timeoutMs}ms; the process could not be confirmed stopped.`);
+			});
 		}, timeoutMs);
 	});
+}
+
+
+async function startBackgroundCommand(command: string, cwd: string): Promise<ToolResult> {
+  try {
+    const session = await startTerminalSession(command, cwd, terminalHooks);
+    const details = [
+      `Terminal session: ${session.id}`,
+      `Command: ${session.command}`,
+      `Working directory: ${session.cwd}`,
+      `Status: ${session.status}`,
+      session.exitCode !== null ? `Exit code: ${session.exitCode}` : '',
+      session.output ? `Initial output:\n${session.output}` : 'No output yet; wait for the first output event with bash:read.',
+      `Next cursor: ${session.nextCursor}`,
+      `Use bash:read with session_id="${session.id}", cursor=${session.nextCursor}, and wait_ms to receive the next stdout/stderr event; use bash:stop to stop it.`,
+    ].filter(Boolean).join('\n');
+    return {
+      id: '', name: 'bash:start', success: session.status !== 'failed',
+      output: details, command, cwd, exitCode: session.exitCode,
+      durationMs: session.elapsedMs,
+      ...(session.status === 'failed' ? { error: 'The process exited or failed during startup. Inspect its captured output.' } : {}),
+    };
+  } catch (error) {
+    return { id: '', name: 'bash:start', success: false, error: error instanceof Error ? error.message : String(error), command, cwd, durationMs: 0 };
+  }
+}
+
+async function toolBashStart(args: Record<string, unknown>, projectRoot: string): Promise<ToolResult> {
+  if (typeof args.command !== 'string' || !args.command.trim()) {
+    return { id: '', name: 'bash:start', success: false, error: 'command must be a non-empty string', durationMs: 0 };
+  }
+  const command = args.command;
+  const cwd = args.cwd ? String(args.cwd) : projectRoot;
+  const fullCwd = toProjectPath(cwd, projectRoot);
+  if (!withinProject(fullCwd, projectRoot)) {
+    return { id: '', name: 'bash:start', success: false, error: 'Access denied: shell cwd must be inside the project root', durationMs: 0 };
+  }
+  if (/\/tmp(?:\/|\s|$)|\/var\/tmp(?:\/|\s|$)|\$TMPDIR|%TEMP%|\bmktemp\b/i.test(command)) {
+    return { id: '', name: 'bash:start', success: false, error: 'Project files must be created in the active project directory, not an OS temporary directory', durationMs: 0 };
+  }
+  for (const pattern of DANGEROUS_PATTERNS) {
+    if (pattern.test(command)) return { id: '', name: 'bash:start', success: false, error: 'Dangerous command blocked: ' + command.slice(0, 50), durationMs: 0 };
+  }
+  return startBackgroundCommand(command, fullCwd);
+}
+
+async function toolBashRead(args: Record<string, unknown>): Promise<ToolResult> {
+  const id = String(args.session_id ?? '').trim();
+  if (!id) return { id: '', name: 'bash:read', success: false, error: 'session_id is required', durationMs: 0 };
+  const waitMs = Number(args.wait_ms ?? 10_000);
+  if (!Number.isInteger(waitMs) || waitMs < 0 || waitMs > 30_000) {
+    return { id: '', name: 'bash:read', success: false, error: 'wait_ms must be an integer from 0 to 30000.', durationMs: 0 };
+  }
+  const startedAt = Date.now();
+  const session = await waitForTerminalSession(id, Number(args.cursor ?? 0), waitMs);
+  if (!session) return { id: '', name: 'bash:read', success: false, error: 'Unknown terminal session: ' + id, durationMs: Date.now() - startedAt };
+  const output = [
+    `Terminal session: ${session.id}`,
+    `Command: ${session.command}`,
+    `Status: ${session.status}`,
+    session.exitCode !== null ? `Exit code: ${session.exitCode}` : '',
+    `Elapsed: ${Math.round(session.elapsedMs / 1000)}s`,
+    session.truncated ? '[Earlier output was truncated; showing retained output from the oldest available point.]' : '',
+    session.output || '(no new output before the wait timed out)',
+    `Next cursor: ${session.nextCursor}`,
+  ].filter(Boolean).join('\n');
+  return { id: '', name: 'bash:read', success: true, output, command: session.command, cwd: session.cwd, exitCode: session.exitCode, durationMs: Date.now() - startedAt };
+}
+
+async function toolBashStop(args: Record<string, unknown>): Promise<ToolResult> {
+  const id = String(args.session_id ?? '').trim();
+  if (!id) return { id: '', name: 'bash:stop', success: false, error: 'session_id is required', durationMs: 0 };
+  const session = await stopTerminalSession(id);
+  if (!session) return { id: '', name: 'bash:stop', success: false, error: 'Unknown terminal session: ' + id, durationMs: 0 };
+  if (session.status === 'running') {
+    return { id: '', name: 'bash:stop', success: false, error: `Terminal session ${id} is still running; process termination could not be confirmed.`, command: session.command, cwd: session.cwd, durationMs: 0 };
+  }
+  return { id: '', name: 'bash:stop', success: true, output: session.status === 'stopped' ? `Stopped terminal session ${id}.` : `Terminal session ${id} is already ${session.status}.`, command: session.command, cwd: session.cwd, exitCode: session.exitCode, durationMs: 0 };
+}
+
+async function toolBrowserVerify(args: Record<string, unknown>, projectRoot: string): Promise<ToolResult> {
+  const result = await runBrowserVerification(args, projectRoot);
+  return {
+    id: '',
+    name: 'browser:verify',
+    success: result.success,
+    output: result.output,
+    ...(result.error ? { error: result.error } : {}),
+    durationMs: 0,
+  };
 }
 
 // ── Git Tools ────────────────────────────────────────────────────────────────

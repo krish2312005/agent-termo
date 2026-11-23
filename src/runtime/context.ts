@@ -7,6 +7,8 @@ export const DEFAULT_CONTEXT_SAFETY_MARGIN_TOKENS = 2_048;
 const SUMMARY_HEADER = '\n\n## Compacted Conversation Context\n';
 const SUMMARY_LIMIT = 12_000;
 const TOOL_MESSAGE_LIMIT = 10_000;
+const COMPACTION_TRIGGER_RATIO = 0.85;
+const COMPACTION_TARGET_RATIO = 0.78;
 
 export interface ContextBudget {
   contextWindowTokens: number;
@@ -25,6 +27,18 @@ export interface ContextPreparation {
   warning?: string;
 }
 
+const tokenEstimateFactors = new Map<string, number>();
+
+/** Calibrate the estimate against exact prompt-token usage reported by a provider. */
+export function recordContextTokenUsage(model: string, estimatedTokens: number, actualTokens: number): void {
+  if (!model || estimatedTokens <= 0 || actualTokens <= 0) return;
+  const observedRatio = Math.min(2, Math.max(0.5, actualTokens / estimatedTokens));
+  const previous = tokenEstimateFactors.get(model);
+  // estimatedTokens already includes the previous factor, so apply the observed
+  // ratio multiplicatively instead of blending it with an adjusted-scale ratio.
+  tokenEstimateFactors.set(model, previous === undefined ? observedRatio : previous * (0.7 + observedRatio * 0.3));
+}
+
 function positiveInteger(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(value ?? '', 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -40,21 +54,28 @@ export function resolveContextBudget(
   env: NodeJS.ProcessEnv = process.env,
 ): ContextBudget {
   const providerLimits = getProviderModelLimits(model);
+  const configuredContextWindow = positiveInteger(
+    env.AGENT_TERMO_CONTEXT_WINDOW,
+    providerLimits?.contextWindowTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS,
+  );
+  // An override may lower a documented limit, but must never make a known
+  // model appear to support more context than its provider actually allows.
   const contextWindowTokens = Math.max(
     4_096,
-    positiveInteger(env.AGENT_TERMO_CONTEXT_WINDOW, providerLimits?.contextWindowTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS),
+    providerLimits
+      ? Math.min(configuredContextWindow, providerLimits.contextWindowTokens)
+      : configuredContextWindow,
   );
-  const outputReserveTokens = Math.min(
-    contextWindowTokens - 1_024,
-    positiveInteger(
-      env.AGENT_TERMO_OUTPUT_RESERVE_TOKENS,
-      Math.min(DEFAULT_OUTPUT_RESERVE_TOKENS, Math.floor(contextWindowTokens / 4)),
-    ),
+  const configuredOutputTokens = positiveInteger(
+    env.AGENT_TERMO_OUTPUT_RESERVE_TOKENS,
+    Math.min(DEFAULT_OUTPUT_RESERVE_TOKENS, Math.floor(contextWindowTokens / 4)),
   );
+  // Reserve the actual output limit, not a larger value the provider will reject.
   const maxOutputTokens = Math.max(
     1,
-    Math.min(outputReserveTokens, providerLimits?.maxOutputTokens ?? outputReserveTokens),
+    Math.min(contextWindowTokens - 1_024, configuredOutputTokens, providerLimits?.maxOutputTokens ?? configuredOutputTokens),
   );
+  const outputReserveTokens = maxOutputTokens;
   const safetyMarginTokens = Math.min(
     contextWindowTokens - outputReserveTokens - 512,
     positiveInteger(
@@ -71,24 +92,26 @@ export function resolveContextBudget(
   };
 }
 
-/** Approximate serialized prompt size, including tool-call JSON and tool schemas. */
-export function estimateContextTokens(messages: ConversationMessage[], tools?: unknown[]): number {
-  let characters = 0;
+/** Approximate serialized prompt size. Exact provider usage calibrates this per model. */
+export function estimateContextTokens(messages: ConversationMessage[], tools?: unknown[], model?: string): number {
+  let textCharacters = 0;
+  let structuredCharacters = 0;
   let framingTokens = 0;
   for (const message of messages) {
-    characters += message.content.length;
+    textCharacters += message.content.length;
     framingTokens += 8;
     if (message.toolCalls?.length) {
-      characters += JSON.stringify(message.toolCalls).length;
+      structuredCharacters += JSON.stringify(message.toolCalls).length;
       framingTokens += message.toolCalls.length * 8;
     }
   }
   if (tools?.length) {
-    characters += JSON.stringify(tools).length;
+    structuredCharacters += JSON.stringify(tools).length;
     framingTokens += tools.length * 8;
   }
-  // Deliberately conservative heuristic, not a tokenizer. Provider usage is authoritative.
-  return Math.ceil(characters / 3) + framingTokens;
+  // Normal prose is roughly four characters per token; code/JSON is denser.
+  const rawEstimate = Math.ceil(textCharacters / 4) + Math.ceil(structuredCharacters / 3) + framingTokens;
+  return Math.ceil(rawEstimate * (model ? tokenEstimateFactors.get(model) ?? 1 : 1));
 }
 
 function groupTurns(messages: ConversationMessage[]): ConversationMessage[][] {
@@ -148,7 +171,20 @@ function makeCompactionSnapshot(
   const previous = summaryIndex >= 0
     ? system.content.slice(summaryIndex + SUMMARY_HEADER.length)
     : '';
-  const summary = mergeSummary(previous, removed.map(summarizeMessage).join('\n'));
+  const originalObjective = turns.flat().find((message) => message.role === 'user');
+  const priorObjective = previous.match(/## Original objective\n([\s\S]*?)(?=\n\n## |$)/)?.[1];
+  const objective = priorObjective || (originalObjective ? summarizeMessage(originalObjective) : '');
+  const userRequests = removed.filter((message) => message.role === 'user').slice(-4).map(summarizeMessage);
+  const decisions = removed.filter((message) => message.role === 'assistant' && message.content.trim()).slice(-8).map(summarizeMessage);
+  const toolEvidence = removed.filter((message) => message.role === 'tool').slice(-10).map(summarizeMessage);
+  const sections = [
+    objective ? '## Original objective\n' + objective : '',
+    userRequests.length ? '## Earlier user instructions\n' + userRequests.join('\n') : '',
+    decisions.length ? '## Decisions and findings\n' + decisions.join('\n') : '',
+    toolEvidence.length ? '## Completed tool evidence\n' + toolEvidence.join('\n') : '',
+    removed.length ? '## Compacted history\n' + removed.map(summarizeMessage).join('\n') : '',
+  ].filter(Boolean).join('\n\n');
+  const summary = mergeSummary(previous, sections);
   return {
     messages: [{ ...system, content: basePrompt + SUMMARY_HEADER + summary }, ...retained],
     archivedMessages: removed,
@@ -175,14 +211,14 @@ export function compactConversation(
   };
 }
 
-function shortenToolMessages(messages: ConversationMessage[]): ConversationMessage[] {
+function shortenToolMessages(messages: ConversationMessage[], maxLength = TOOL_MESSAGE_LIMIT): ConversationMessage[] {
   const archived: ConversationMessage[] = [];
   for (const message of messages) {
-    if (message.role !== 'tool' || message.content.length <= TOOL_MESSAGE_LIMIT) continue;
+    if (message.role !== 'tool' || message.content.length <= maxLength) continue;
     archived.push({ ...message });
-    message.content = message.content.slice(0, 7_000) +
-      '\n\n[Tool output shortened for context; the full result is saved in the session archive.]\n\n' +
-      message.content.slice(-2_500);
+    const marker = '\n\n[Tool output shortened for context; the full result is saved in the session archive.]\n\n';
+    const sideLength = Math.floor((maxLength - marker.length) / 2);
+    message.content = message.content.slice(0, sideLength) + marker + message.content.slice(-sideLength);
   }
   return archived;
 }
@@ -195,18 +231,14 @@ export function prepareConversationForRequest(
   options: { aggressive?: boolean } = {},
 ): ContextPreparation {
   const budget = resolveContextBudget(model);
-  const estimatedBeforeTokens = estimateContextTokens(conversation, tools);
+  const estimatedBeforeTokens = estimateContextTokens(conversation, tools, model);
+  const trigger = Math.floor(budget.inputBudgetTokens * COMPACTION_TRIGGER_RATIO);
   const target = options.aggressive
-    ? Math.floor(budget.inputBudgetTokens * 0.72)
-    : budget.inputBudgetTokens;
-  if (!options.aggressive && estimatedBeforeTokens <= target) {
-    return {
-      estimatedBeforeTokens,
-      estimatedAfterTokens: estimatedBeforeTokens,
-      budget,
-      compacted: false,
-      archivedMessages: [],
-    };
+    ? Math.floor(budget.inputBudgetTokens * 0.68)
+    : Math.floor(budget.inputBudgetTokens * COMPACTION_TARGET_RATIO);
+
+  if (estimatedBeforeTokens <= (options.aggressive ? target : trigger)) {
+    return { estimatedBeforeTokens, estimatedAfterTokens: estimatedBeforeTokens, budget, compacted: false, archivedMessages: [] };
   }
 
   const turns = groupTurns(conversation.slice(1));
@@ -215,26 +247,31 @@ export function prepareConversationForRequest(
     const candidate = makeCompactionSnapshot(conversation, keep);
     if (!candidate) continue;
     snapshot = candidate;
-    if (estimateContextTokens(candidate.messages, tools) <= target) break;
+    if (estimateContextTokens(candidate.messages, tools, model) <= target) break;
   }
 
   const working = snapshot?.messages ?? conversation.map((message) => ({ ...message }));
   const archivedMessages = snapshot ? [...snapshot.archivedMessages] : [];
-  archivedMessages.push(...shortenToolMessages(working));
-  const estimatedAfterTokens = estimateContextTokens(working, tools);
+  const beforeToolShortening = estimateContextTokens(working, tools, model);
+  archivedMessages.push(...shortenToolMessages(
+    working,
+    beforeToolShortening > target ? Math.max(2_000, Math.floor(TOOL_MESSAGE_LIMIT * 0.6)) : TOOL_MESSAGE_LIMIT,
+  ));
+  const estimatedAfterTokens = estimateContextTokens(working, tools, model);
   const compacted = Boolean(snapshot || archivedMessages.length);
   if (compacted) conversation.splice(0, conversation.length, ...working);
 
-  return {
-    estimatedBeforeTokens,
-    estimatedAfterTokens,
-    budget,
-    compacted,
-    archivedMessages,
-    warning: estimatedAfterTokens > target
-      ? 'The newest request or system instructions exceed the configured input budget. Reduce attached context or raise AGENT_TERMO_CONTEXT_WINDOW.'
-      : undefined,
-  };
+  const warning = estimatedAfterTokens > budget.inputBudgetTokens
+    ? 'Unable to fit this request into the selected model input budget after automatic compaction. ' +
+      'Model: ' + model + '. Estimated input: ' + estimatedAfterTokens.toLocaleString() +
+      ' tokens; available input budget: ' + budget.inputBudgetTokens.toLocaleString() +
+      ' tokens (context window ' + budget.contextWindowTokens.toLocaleString() +
+      ', output reserve ' + budget.outputReserveTokens.toLocaleString() +
+      ', safety margin ' + budget.safetyMarginTokens.toLocaleString() +
+      '). The newest request/system instructions are too large to send safely. Shorten attached context or select a model with a larger documented context window.'
+    : undefined;
+
+  return { estimatedBeforeTokens, estimatedAfterTokens, budget, compacted, archivedMessages, warning };
 }
 
 export function isContextWindowError(error: unknown): boolean {
