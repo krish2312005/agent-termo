@@ -345,7 +345,7 @@ async function toolFileRead(args: Record<string, unknown>, projectRoot: string):
 async function toolFileWrite(args: Record<string, unknown>, projectRoot: string): Promise<ToolResult> {
 	const path = String(args.path ?? '');
 	const content = args.content;
-	if (!path) return { id: '', name: 'file:write', success: false, error: 'path is required', durationMs: 0 };
+	if (!path) return { id: '', name: 'file:write', success: false, error: 'path is required. file:write needs both "path" and "content"; pass a JSON object such as {"path":"tests/example.test.ts","content":"..."} instead of empty arguments.', durationMs: 0 };
 	if (typeof content !== 'string') {
 		return { id: '', name: 'file:write', success: false, error: 'content must be a string (use "" for an empty file)', durationMs: 0 };
 	}
