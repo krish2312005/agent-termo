@@ -746,14 +746,13 @@ export class NimClient {
 			this.finishRequestUsage(responsePromptTokens || this.estimatePromptTokens(messages, tools), responseCompletionTokens || Math.ceil(outputCharacters / 4), responsePromptTokens > 0);
 			const parsedToolCalls = toolCalls.toToolCalls();
 			let visibleContent = content;
-			if (parsedToolCalls.length === 0 && deferredJsonText !== undefined) {
-				emitVisible(deferredJsonText);
-			}
 			if (parsedToolCalls.length === 0) {
 				const textCalls = parseToolCallsFromText(content);
 				if (textCalls.length > 0) {
 					parsedToolCalls.push(...textCalls);
 					visibleContent = content.includes('<tool_call>') ? removeToolCallMarkup(content) : '';
+				} else if (deferredJsonText !== undefined) {
+					emitVisible(deferredJsonText);
 				}
 			}
 			yield { content: visibleContent, toolCalls: parsedToolCalls };
