@@ -39,11 +39,10 @@ describe('task resumability', () => {
 		expect(attempts).toBe(1);
 	});
 
-	it('suppresses an identical failed call only after it repeats within the same run', () => {
+	it('pauses immediately when the model repeats an unchanged failed call', () => {
 		const failed = new Set(['browser:verify:{}']);
-		const blocked = new Set<string>();
-		expect(shouldPauseForRepeatedFailedToolCall('browser:verify:{}', failed, blocked)).toBe(false);
-		expect(shouldPauseForRepeatedFailedToolCall('browser:verify:{}', failed, blocked)).toBe(true);
+		expect(shouldPauseForRepeatedFailedToolCall('browser:verify:{}', new Set())).toBe(false);
+		expect(shouldPauseForRepeatedFailedToolCall('browser:verify:{}', failed)).toBe(true);
 	});
 
 	it('clears failed-call suppression after a successful corrective operation, but not a read', () => {
