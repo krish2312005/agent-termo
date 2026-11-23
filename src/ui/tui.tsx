@@ -14,6 +14,7 @@ import { For, Show, createSignal, onCleanup, type Accessor } from "solid-js";
 import { createInterface } from "node:readline";
 import packageJson from "../../package.json" with { type: "json" };
 import { copySelectedText } from "./selection-copy.js";
+import type { PermissionMode } from "../types/index.js";
 
 export type UiKind = "user" | "assistant" | "tool" | "info" | "success" | "error" | "dim" | "markdown" | "diff-add" | "diff-remove" | "diff-context";
 export interface UiEntry { id: number; kind: UiKind; content: string; streaming?: boolean; }
@@ -61,6 +62,18 @@ let historyIndex = -1;
 let historyDraft = "";
 let nextInput = "";
 let keyInterceptor: ((key: Key) => boolean) | null = null;
+
+export function permissionBarColor(mode: PermissionMode): string {
+  switch (mode) {
+    case "files":
+      return "#D99168"; // orange — file accept
+    case "auto":
+      return "#FF5555"; // red — accept all auto
+    case "ask":
+    default:
+      return "#6D625A"; // default — normal
+  }
+}
 const keyHandlers = new Set<(key: Key) => void>();
 const history: string[] = [];
 
@@ -458,7 +471,7 @@ function App() {
           </For>
         </box>
       </Show>
-      <box border borderStyle="single" borderColor={inputActive() ? "#D99168" : "#6D625A"} paddingX={1} flexDirection="row" alignItems="flex-start" flexShrink={0}>
+      <box border borderStyle="single" borderColor={inputActive() ? permissionBarColor(screen().permissionMode) : "#6D625A"} paddingX={1} flexDirection="row" alignItems="flex-start" flexShrink={0}>
         <text width={2} fg="#D99168">❯ </text>
         <Show when={secretMode()} fallback={
           <textarea

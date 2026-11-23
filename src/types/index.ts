@@ -4,6 +4,9 @@
 
 export type Role = 'system' | 'user' | 'assistant' | 'tool';
 
+/** User permission mode: normal prompt, auto-apply file changes, or approve everything. */
+export type PermissionMode = 'ask' | 'files' | 'auto';
+
 export interface Message {
 	role: Role;
 	content: string;

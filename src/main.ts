@@ -74,7 +74,7 @@ import {
 	printSubAgents,
 	startBackgroundCommandListener,
 } from './ui/index.js';
-import type { ConversationMessage, ToolCall, ToolResult, ToolDef, ProposedFileChange } from './types/index.js';
+import type { ConversationMessage, ToolCall, ToolResult, ToolDef, ProposedFileChange, PermissionMode } from './types/index.js';
 
 function extractMcpServerConfigs(input: string): Record<string, McpServerConfig> | undefined {
 	const keyIndex = input.indexOf('"mcpServers"');
@@ -229,8 +229,6 @@ class RequestCancelledError extends Error {
 		this.name = 'RequestCancelledError';
 	}
 }
-
-type PermissionMode = 'ask' | 'files' | 'auto';
 
 function isRequestCancelled(err: unknown): boolean {
 	return err instanceof RequestCancelledError || (err instanceof Error && /abort|cancel/i.test(err.name + ' ' + err.message));
