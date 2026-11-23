@@ -35,7 +35,7 @@ describe('background terminal sessions', () => {
       process.cwd(),
     );
     const output = readTerminalSession(session.id, 0)?.output ?? '';
-    const match = output.match(/GRANDCHILD_PID=(\\d+)/);
+    const match = output.match(/GRANDCHILD_PID=(\d+)/);
     expect(match).not.toBeNull();
     const childPid = Number(match?.[1]);
     const stopped = await stopTerminalSession(session.id);
