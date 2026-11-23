@@ -177,9 +177,9 @@ describe('context budgeting and compaction', () => {
     }
   });
 
-  it('proactively compacts history before the hard input limit is reached', () => {
+  it('compacts only when the estimated input exceeds the reserved input budget', () => {
     const conversation: ConversationMessage[] = [message('system', 'system prompt')];
-    for (let index = 0; index < 8; index++) {
+    for (let index = 0; index < 10; index++) {
       conversation.push(message('user', 'request ' + index + ' ' + 'x'.repeat(4_000)));
       conversation.push(message('assistant', 'result ' + index + ' ' + 'y'.repeat(2_000)));
     }
@@ -188,14 +188,16 @@ describe('context budgeting and compaction', () => {
     process.env.AGENT_TERMO_CONTEXT_WINDOW = '16384';
     process.env.AGENT_TERMO_OUTPUT_RESERVE_TOKENS = '1024';
     try {
-      const before = estimateContextTokens(conversation, undefined, 'proactive-compaction-test');
-      const budget = resolveContextBudget('proactive-compaction-test');
-      expect(before).toBeLessThan(budget.inputBudgetTokens);
-      expect(before).toBeGreaterThan(Math.floor(budget.inputBudgetTokens * 0.85));
-      const result = prepareConversationForRequest(conversation, 'proactive-compaction-test');
+      const before = estimateContextTokens(conversation, undefined, 'budget-trigger-test');
+      const budget = resolveContextBudget('budget-trigger-test');
+      // The estimated input exceeds the reserved input budget, so compaction
+      // must fire, but it is still under the hard context-window limit.
+      expect(before).toBeGreaterThan(budget.inputBudgetTokens);
+      expect(before).toBeLessThan(budget.contextWindowTokens);
+      const result = prepareConversationForRequest(conversation, 'budget-trigger-test');
       expect(result.compacted).toBe(true);
       expect(result.estimatedAfterTokens).toBeLessThan(result.estimatedBeforeTokens);
-      expect(conversation.at(-2)?.content).toContain('request 7');
+      expect(conversation.at(-2)?.content).toContain('request 9');
     } finally {
       if (previousWindow === undefined) delete process.env.AGENT_TERMO_CONTEXT_WINDOW;
       else process.env.AGENT_TERMO_CONTEXT_WINDOW = previousWindow;
@@ -248,15 +250,18 @@ describe('context budgeting and compaction', () => {
     }
   });
 
-  it('shortens oversized tool messages and returns their complete original for archiving', () => {
+  it('shortens oversized older tool messages but preserves the most recent tool result verbatim', () => {
     const conversation: ConversationMessage[] = [
       message('system', 'System'),
       message('user', 'Read a large file'),
       message('tool', 'x'.repeat(90_000)),
+      message('assistant', 'Now check the latest result'),
+      message('tool', 'latest result'),
     ];
     const result = prepareConversationForRequest(conversation, 'test-model');
     expect(result.compacted).toBe(true);
-    expect(result.archivedMessages[0]?.content).toHaveLength(90_000);
+    expect(result.archivedMessages.some((item) => item.content.length === 90_000)).toBe(true);
     expect(conversation[2]?.content.length).toBeLessThan(10_000);
+    expect(conversation[4]?.content).toBe('latest result');
   });
 });

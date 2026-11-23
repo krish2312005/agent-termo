@@ -39,10 +39,12 @@ describe('task resumability', () => {
 		expect(attempts).toBe(1);
 	});
 
-	it('pauses immediately when the model repeats an unchanged failed call', () => {
-		const failed = new Set(['browser:verify:{}']);
-		expect(shouldPauseForRepeatedFailedToolCall('browser:verify:{}', new Set())).toBe(false);
-		expect(shouldPauseForRepeatedFailedToolCall('browser:verify:{}', failed)).toBe(true);
+	it('pauses only after the retry budget for an unchanged failed call is exhausted', () => {
+		const failures = new Map([['browser:verify:{}', 1]]);
+		const exhausted = new Map([['browser:verify:{}', 2]]);
+		expect(shouldPauseForRepeatedFailedToolCall('browser:verify:{}', new Map())).toBe(false);
+		expect(shouldPauseForRepeatedFailedToolCall('browser:verify:{}', failures)).toBe(false);
+		expect(shouldPauseForRepeatedFailedToolCall('browser:verify:{}', exhausted)).toBe(true);
 	});
 
 	it('clears failed-call suppression after a successful corrective operation, but not a read', () => {

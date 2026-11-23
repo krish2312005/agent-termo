@@ -203,15 +203,19 @@ export function toolCallSignature(toolCall: Pick<ToolCall, 'name' | 'arguments'>
 	return toolCall.name + ':' + JSON.stringify(normalizeToolArguments(toolCall.arguments));
 }
 
+/** Number of identical consecutive failures allowed before a call is blocked. */
+export const MAX_CONSECUTIVE_FAILURES_PER_SIGNATURE = 2;
+
 /**
- * A failed call is blocked once per run so the model can see the diagnostic
- * and correct its approach. Repeating it again in the same run pauses safely.
+ * A failed call gets exactly one genuine retry: after the first failure the
+ * model may inspect the diagnostic and try again unchanged; a second
+ * consecutive failure reaches the budget and the next identical repeat pauses.
  */
 export function shouldPauseForRepeatedFailedToolCall(
 	signature: string,
-	failedToolCalls: Set<string>,
+	failedToolCalls: ReadonlyMap<string, number>,
 ): boolean {
-	return failedToolCalls.has(signature);
+	return (failedToolCalls.get(signature) ?? 0) >= MAX_CONSECUTIVE_FAILURES_PER_SIGNATURE;
 }
 
 // A successful operation that can change the workspace or process environment
@@ -846,7 +850,7 @@ export async function runToolLoop(
 	// Failure suppression is scoped to this execution run, not the whole task.
 	// A later "continue" may follow a user/environment change and must be able
 	// to retry the same call. Persisted failures are retained for diagnostics only.
-	const failedToolCalls = new Set<string>();
+	const failedToolCalls = new Map<string, number>();
 	// Older callers and saved task states may not include this field.
 	taskState.failedToolCalls ??= new Set<string>();
 	// Same evidence gate as delegated runs (runtime/verify.ts): track what this
@@ -926,7 +930,7 @@ export async function runToolLoop(
 			}
 			if (!toolResult.success) {
 				const signature = toolCallSignature(tc);
-				failedToolCalls.add(signature);
+				failedToolCalls.set(signature, (failedToolCalls.get(signature) ?? 0) + 1);
 				taskState.failedToolCalls.add(signature);
 			}
 		};

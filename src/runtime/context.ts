@@ -7,7 +7,6 @@ export const DEFAULT_CONTEXT_SAFETY_MARGIN_TOKENS = 2_048;
 const SUMMARY_HEADER = '\n\n## Compacted Conversation Context\n';
 const SUMMARY_LIMIT = 12_000;
 const TOOL_MESSAGE_LIMIT = 10_000;
-const COMPACTION_TRIGGER_RATIO = 0.85;
 const COMPACTION_TARGET_RATIO = 0.78;
 
 export interface ContextBudget {
@@ -150,6 +149,31 @@ function mergeSummary(previous: string, addition: string): string {
     combined.slice(-recentPart);
 }
 
+/**
+ * Messages that must survive compaction verbatim. They are never summarized
+ * into the system prompt nor head+tail shortened: the system prompt, the
+ * original objective (first user message), the current goal (latest user
+ * message), the most recent tool result, and any tool result that reported a
+ * failed call. The rule is deterministic: it depends only on message roles,
+ * order, and the `Status: failure` marker emitted by formatToolResultForModel.
+ */
+function collectProtectedMessages(conversation: ConversationMessage[]): Set<ConversationMessage> {
+  const protectedMessages = new Set<ConversationMessage>();
+  if (conversation.length === 0) return protectedMessages;
+  if (conversation[0]?.role === 'system') protectedMessages.add(conversation[0]!);
+  const users = conversation.filter((message) => message.role === 'user');
+  if (users.length > 0) {
+    protectedMessages.add(users[0]!);
+    protectedMessages.add(users[users.length - 1]!);
+  }
+  const tools = conversation.filter((message) => message.role === 'tool');
+  if (tools.length > 0) protectedMessages.add(tools[tools.length - 1]!);
+  for (const tool of tools) {
+    if (tool.content.includes('Status: failure')) protectedMessages.add(tool);
+  }
+  return protectedMessages;
+}
+
 interface CompactionSnapshot {
   messages: ConversationMessage[];
   archivedMessages: ConversationMessage[];
@@ -161,11 +185,19 @@ function makeCompactionSnapshot(
 ): CompactionSnapshot | undefined {
   const system = conversation[0];
   if (!system || system.role !== 'system') return undefined;
+  const protectedMessages = collectProtectedMessages(conversation);
   const turns = groupTurns(conversation.slice(1));
   if (turns.length <= keepRecentTurns) return undefined;
 
-  const removed = turns.slice(0, -keepRecentTurns).flat();
+  const removedTurns = turns.slice(0, -keepRecentTurns);
   const retained = turns.slice(-keepRecentTurns).flat();
+  const removed = removedTurns.flat();
+  // Protected messages are kept verbatim in the retained conversation, not
+  // folded into the summary. Only the unprotected remainder is archived.
+  const removedProtected = removed.filter((message) => protectedMessages.has(message));
+  const removedSummarized = removed.filter((message) => !protectedMessages.has(message));
+  if (removedSummarized.length === 0) return undefined;
+
   const summaryIndex = system.content.lastIndexOf(SUMMARY_HEADER);
   const basePrompt = summaryIndex >= 0 ? system.content.slice(0, summaryIndex) : system.content;
   const previous = summaryIndex >= 0
@@ -174,20 +206,20 @@ function makeCompactionSnapshot(
   const originalObjective = turns.flat().find((message) => message.role === 'user');
   const priorObjective = previous.match(/## Original objective\n([\s\S]*?)(?=\n\n## |$)/)?.[1];
   const objective = priorObjective || (originalObjective ? summarizeMessage(originalObjective) : '');
-  const userRequests = removed.filter((message) => message.role === 'user').slice(-4).map(summarizeMessage);
-  const decisions = removed.filter((message) => message.role === 'assistant' && message.content.trim()).slice(-8).map(summarizeMessage);
-  const toolEvidence = removed.filter((message) => message.role === 'tool').slice(-10).map(summarizeMessage);
+  const userRequests = removedSummarized.filter((message) => message.role === 'user').slice(-4).map(summarizeMessage);
+  const decisions = removedSummarized.filter((message) => message.role === 'assistant' && message.content.trim()).slice(-8).map(summarizeMessage);
+  const toolEvidence = removedSummarized.filter((message) => message.role === 'tool').slice(-10).map(summarizeMessage);
   const sections = [
     objective ? '## Original objective\n' + objective : '',
     userRequests.length ? '## Earlier user instructions\n' + userRequests.join('\n') : '',
     decisions.length ? '## Decisions and findings\n' + decisions.join('\n') : '',
     toolEvidence.length ? '## Completed tool evidence\n' + toolEvidence.join('\n') : '',
-    removed.length ? '## Compacted history\n' + removed.map(summarizeMessage).join('\n') : '',
+    removedSummarized.length ? '## Compacted history\n' + removedSummarized.map(summarizeMessage).join('\n') : '',
   ].filter(Boolean).join('\n\n');
   const summary = mergeSummary(previous, sections);
   return {
-    messages: [{ ...system, content: basePrompt + SUMMARY_HEADER + summary }, ...retained],
-    archivedMessages: removed,
+    messages: [{ ...system, content: basePrompt + SUMMARY_HEADER + summary }, ...removedProtected, ...retained],
+    archivedMessages: removedSummarized,
   };
 }
 
@@ -212,9 +244,10 @@ export function compactConversation(
 }
 
 function shortenToolMessages(messages: ConversationMessage[], maxLength = TOOL_MESSAGE_LIMIT): ConversationMessage[] {
+  const protectedMessages = collectProtectedMessages(messages);
   const archived: ConversationMessage[] = [];
   for (const message of messages) {
-    if (message.role !== 'tool' || message.content.length <= maxLength) continue;
+    if (message.role !== 'tool' || protectedMessages.has(message) || message.content.length <= maxLength) continue;
     archived.push({ ...message });
     const marker = '\n\n[Tool output shortened for context; the full result is saved in the session archive.]\n\n';
     const sideLength = Math.floor((maxLength - marker.length) / 2);
@@ -232,7 +265,11 @@ export function prepareConversationForRequest(
 ): ContextPreparation {
   const budget = resolveContextBudget(model);
   const estimatedBeforeTokens = estimateContextTokens(conversation, tools, model);
-  const trigger = Math.floor(budget.inputBudgetTokens * COMPACTION_TRIGGER_RATIO);
+  // The input budget already reserves output and safety-margin headroom, so
+  // compaction must not fire early at a percentage of it. It fires only when
+  // the estimated input would actually exceed that reserved budget; a real
+  // provider context error is handled by the aggressive recovery path.
+  const trigger = budget.inputBudgetTokens;
   const target = options.aggressive
     ? Math.floor(budget.inputBudgetTokens * 0.68)
     : Math.floor(budget.inputBudgetTokens * COMPACTION_TARGET_RATIO);

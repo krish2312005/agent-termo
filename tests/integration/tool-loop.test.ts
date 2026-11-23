@@ -170,7 +170,8 @@ describe('agent tool-loop orchestration', () => {
 			expect(providerCalls).toBe(0);
 			expect(toolResults).toHaveLength(6);
 			expect(toolResults[0]?.content).toContain('path is required');
-			expect(toolResults.slice(1).every((message) =>
+			expect(toolResults[1]?.content).toContain('path is required');
+			expect(toolResults.slice(2).every((message) =>
 				message.content.includes('already failed and was requested again unchanged'),
 			)).toBe(true);
 		} finally {
@@ -212,8 +213,8 @@ describe('agent tool-loop orchestration', () => {
 
 			expect(taskState.status).toBe('interrupted');
 			expect(taskState.reason).toContain('unchanged failed tool call');
-			expect(providerCalls).toBe(1);
-			expect(conversation.filter((message) => message.role === 'tool')).toHaveLength(2);
+			expect(providerCalls).toBe(2);
+			expect(conversation.filter((message) => message.role === 'tool')).toHaveLength(3);
 		} finally {
 			rmSync(projectRoot, { recursive: true, force: true });
 		}
