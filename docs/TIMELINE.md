@@ -3812,3 +3812,5 @@ User request
 ### Notes
 - (none)
 | 2026-11-23 15:46 PST | frontend-expert | providers connected grouping and fast switch | [20261123-154614-frontend-expert-providers-connected-grouping-and-fast-switch.md](changes/20261123-154614-frontend-expert-providers-connected-grouping-and-fast-switch.md) |
+| 2026-11-23 15:48 PST | git-manager | review+commit providers connected grouping and fast switch | [20261123-154821-git-manager-review-commit-providers-connected-grouping-and-fas.md](changes/20261123-154821-git-manager-review-commit-providers-connected-grouping-and-fas.md) |
+| 2026-11-23 15:51 PST | test-agent | provider grouping fast-switch regression tests | [20261123-155127-test-agent-provider-grouping-fast-switch-regression-tests.md](changes/20261123-155127-test-agent-provider-grouping-fast-switch-regression-tests.md) |

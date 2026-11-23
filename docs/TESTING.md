@@ -34,6 +34,21 @@ Vitest configuration lives in `vitest.config.ts`. Tests live in `tests/unit/` an
 - **UI pure helpers** (`tests/unit/context-meter.test.ts`, `tests/unit/secret-paste.test.ts`):
   context-meter formatting plus masked secret-paste application (draft append, UTF-8
   `Uint8Array` decode, empty no-op, 60+ char key preserved intact).
+- **Provider connection grouping and fast switch** (`tests/unit/providers.test.ts`,
+  `tests/unit/picker-groups.test.ts`, `tests/unit/provider-config.test.ts`):
+  `isProviderConnected` rejects empty/whitespace/missing keys; `providerActivationModel`
+  prefers the saved model, then the definition suggestion, then the stored suggestion;
+  and `groupProviders` splits saved and built-in providers into Connected/Not
+  connected, keeps the active marker (including an unsaved env-only current provider),
+  and dedupes ids with the saved entry winning over the built-in. Picker helper tests
+  cover non-selectable group headers, `nextPickerIndex` skipping them in both
+  directions and stopping at the current row, filtering that drops headers for groups
+  with no matches, ungrouped lists staying header-free, and `allowCustom` typed values.
+  Config tests use a temp `AGENT_TERMO_DIR` and fake `sk-test-*` keys to prove a
+  connected provider activates its saved key/model from disk with no prompt or network,
+  a rotated key replaces the old key in the listing and on disk (with `activeProvider`
+  and the `AGENT_TERMO_*` env updated), file/dir permissions stay 0600/0700 off
+  Windows, and a saved provider with an empty key classifies as Not connected.
 - **Tool-loop orchestration** (`tests/integration/tool-loop.test.ts`): real
   tool execution through `runToolLoop`, including failing-call recovery, completion
   gate blocking, duplicate-call suppression, repeated-failure pause, and corrective
@@ -52,4 +67,16 @@ Vitest configuration lives in `vitest.config.ts`. Tests live in `tests/unit/` an
 - Provider/API tests use mocks and do not make real NIM network calls.
 - Interactive TUI input handling (the `usePaste`/`useKeyboard` subscriptions and a real
   terminal paste) is not automated; `secret-paste.test.ts` covers only the extracted
-  pure helper `applySecretPaste`.
+  pure helper `applySecretPaste`. The same applies to the picker key handler: the
+  zero-match-Enter no-op and backspace reset behavior live in `src/ui/tui.tsx` and are
+  not automated, only the `filteredPicker`/`nextPickerIndex` helpers they use.
+- The interactive `/providers` picker and the "Use saved API key" vs "Enter a new API
+  key" flow, plus the "requires a key" enforcement for unconnected providers, live in
+  the unexported `handleProvidersCommand` in `src/main.ts` and are not automated.
+  Tests cover only the extracted grouping/config helpers; a saved empty-key provider is
+  verified as classified Not connected, not the prompt that rejects it.
+- Real terminal rendering of group headers, live provider key replacement/switching
+  against a real API, and bracketed paste in the new-key path require manual
+  verification.
+- Provider config tests use temp `AGENT_TERMO_DIR` directories and fake `sk-test-*`
+  keys; they never read or write the real `~/.agent-termo`.
