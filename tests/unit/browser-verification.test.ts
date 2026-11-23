@@ -54,7 +54,7 @@ describe('browser verification action parsing', () => {
     }
   });
 
-  it.skipIf(!hasInstalledChromium)('runs a real user interaction in desktop, tablet, and mobile Chromium viewports', async () => {
+  it.skipIf(!hasInstalledChromium && process.env.CI !== 'true')('runs a real user interaction in desktop, tablet, and mobile Chromium viewports', async () => {
     const server = createServer((_request, response) => {
       response.writeHead(200, { 'content-type': 'text/html' });
       response.end(`<!doctype html>
