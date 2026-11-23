@@ -11,8 +11,8 @@ This document tracks the project's memory and context for all agents to ensure c
 
 ## Current Phase
 
-- **Phase:** Implemented; production-hardening pass in progress
-- **Status:** Live runtime is `src/main.ts` (`runRepl` + `runToolLoop`). Build flow just fixed three reliability bugs (context auto-compaction, tool-loop retry gate, loop symptom) and added source-backed architecture docs.
+- **Phase:** Implemented; typed runtime event stream (first vertical slice) landed on `local-branch`
+- **Status:** Live runtime is `src/main.ts` (`runRepl` + `runToolLoop`). The agent loop now publishes a typed `AgentEvent` stream consumed only for observability (usage + context status); the TUI shows a context meter and a compact bordered header. Prior reliability fixes (context auto-compaction, tool-loop retry gate, loop symptom) remain in place.
 
 ## Technology Decisions (current, verified against `package.json`)
 
@@ -88,6 +88,19 @@ This document tracks the project's memory and context for all agents to ensure c
 3. **Loop** was a symptom of (1) and (2); bounds are the 20-minute wall-clock budget (`src/runtime/run-budget.ts`) + the retry budget + loop termination when the model stops issuing tool calls.
 
 Verification: `bun run typecheck` clean; `bun run test` = **215 passed / 2 skipped** (31 files passed, 1 skipped); `bun run build` = `dist/cli.js`.
+
+## Runtime event stream + context meter (2026-11-23 slice)
+
+- **Contract** (`src/runtime/events.ts`): flat discriminated union `AgentEvent` — `turn.started`, `tool.started`, `tool.completed`, `usage.updated`, `context.updated`, `turn.completed`; every event carries `sessionId`, `turnId`, and `at: number` (`Date.now()`). No persistence or replay.
+- **Hub:** `AgentEventHub.subscribe(listener)` returns an idempotent unsubscribe; `publish(event)` dispatches synchronously over a snapshot of listeners and wraps each listener call in `try/catch`, so a UI bug can never break the agent loop. No dependencies.
+- **Wiring** (additive, `src/main.ts`): `runToolLoop` takes trailing `sessionId = '', events: AgentEventHub = new AgentEventHub()`; `observeAgentEvents` maps only `usage.updated` -> `setScreenStatus({ usage })` and `context.updated` -> `setScreenStatus({ context: { usedTokens, budgetTokens } })`. Existing `print*`, spinner, and direct `setScreenStatus` calls are unchanged.
+- **Publication:** `turn.started` at loop entry; `tool.started`/`tool.completed` immediately around each executed call in both the parallel-delegation and sequential branches (blocked and budget-skipped calls publish nothing); `usage.updated`/`context.updated` after each successful primary and fallback model response (the fallback estimate omits tool schemas because that request carries none); `turn.completed` at every loop-exit return with `completed | failed | cancelled | paused`. Both `runRepl` call sites pass the real `session.id`.
+- **Context meter:** `formatContextMeter(usedTokens, budgetTokens)` in `src/ui/tui.tsx` (7 cells, `▰`/`▱`, ratio clamped 0–1, percent rounded, non-finite or `budgetTokens <= 0` treated as 100%), re-exported by `src/ui/index.ts`. Screen state gained `context?: { usedTokens; budgetTokens }` (`ScreenContext`/`ScreenState`). The bottom status line prefixes `context <meter>` when present; `/context` prints the same meter.
+- **UI polish:** top header row wrapped in one rounded `#6D625A` bordered box; `printWelcome` is a compact four-line block with no box-drawing characters and no separator lines.
+- **Tests:** `tests/unit/events.test.ts` (delivery with exact payload, unsubscribe stops delivery and is idempotent, throwing listener does not block later listeners) and `tests/unit/context-meter.test.ts` (0%, 50%, >100% clamp, 43% example, fixed 7-cell-plus-percent shape).
+- **Contract doc:** `docs/architecture/target-architecture.md` (runtime event contract, hub boundary, publication/status mapping, context meter).
+- **Verification (this slice):** `bun run typecheck` exit 0; `bun run test` = **228 passed / 2 skipped** (33 files passed, 1 skipped); `bun run build` clean (`dist/cli.js`, 228,702 bytes); `bun dist/cli.js --version` -> `2.0.6`.
+- **Unverified locally:** interactive TUI/REPL rendering and input handling, live provider calls (need an API key), and non-Windows behavior.
 
 ## NIM API Validation Results (historical, 2026-07-04)
 
