@@ -167,7 +167,7 @@ export const TOOL_DEFINITIONS: ToolDef[] = [
   // ── Bash ───────────────────────────────────────────────────────────────────
   {
     name: 'bash:execute',
-    description: 'Execute a short-lived shell command and return its stdout/stderr and exit code. Long-running development servers are started in the background automatically; use bash:start for other persistent processes, then bash:read to inspect live logs and bash:stop to stop them.',
+    description: 'Execute a short-lived shell command and return its stdout/stderr and exit code. Long-running development servers are started in the background automatically; use bash:start for other persistent processes, then use bash:read with wait_ms to wait for log events (do not sleep before polling) and bash:stop to stop them.',
     parameters: {
       type: 'object',
       properties: {
@@ -195,7 +195,7 @@ export const TOOL_DEFINITIONS: ToolDef[] = [
   },
   {
     name: 'bash:start',
-    description: 'Start a persistent background process such as a worker, API server, frontend dev server, or database service. Returns a session_id and startup output. Use bash:read to poll stdout/stderr and bash:stop to stop it.',
+    description: 'Start a persistent background process such as a worker, API server, frontend dev server, or database service. Returns a session_id, startup output, and next_cursor. Use bash:read with that cursor and wait_ms to receive subsequent stdout/stderr as soon as an event arrives; do not use sleep followed by polling. Use bash:stop to stop it.',
     parameters: {
       type: 'object',
       properties: {
@@ -207,12 +207,13 @@ export const TOOL_DEFINITIONS: ToolDef[] = [
   },
   {
     name: 'bash:read',
-    description: 'Read new stdout/stderr from a background terminal session. Pass the session_id returned by bash:start and the previous next_cursor to retrieve only new output.',
+    description: 'Wait for the next background terminal output/exit event and return new stdout/stderr immediately (or return after wait_ms expires). Pass the session_id and exact next_cursor returned by bash:start or the previous read. Default wait_ms is 10000; maximum is 30000. This is event-driven waiting, not polling.',
     parameters: {
       type: 'object',
       properties: {
         session_id: { type: 'string', description: 'Background terminal session ID' },
-        cursor: { type: 'number', description: 'Cursor returned by the previous read (defaults to 0)' },
+        cursor: { type: 'number', description: 'Exact next_cursor returned by bash:start or the previous read (defaults to 0)' },
+        wait_ms: { type: 'number', description: 'Maximum time to wait for the next output event in milliseconds (default 10000, maximum 30000; 0 returns immediately).' },
       },
       required: ['session_id'],
     },
@@ -228,7 +229,7 @@ export const TOOL_DEFINITIONS: ToolDef[] = [
   },
   {
     name: 'browser:verify',
-    description: 'Run a real headless Chromium browser check against the running application using Playwright installed in the project. Captures console errors, uncaught page errors, failed network requests, HTTP 4xx/5xx responses, and can exercise a short sequence of user actions/assertions. Install playwright and Chromium in the project first if missing. Always inspect failures and rerun after fixes.',
+    description: 'Run a real headless Chromium browser check against the running application using Playwright installed in the project. This tool is registered as browser:verify (wire name browser_verify). Captures console errors, uncaught page errors, failed network requests, HTTP 4xx/5xx responses, and can exercise user actions/assertions. If Playwright or Chromium is missing, install them in the project and retry.',
     parameters: {
       type: 'object',
       properties: {
