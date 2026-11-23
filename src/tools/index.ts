@@ -15,7 +15,7 @@ import { fromWireToolName } from '../llm/client.js';
 import { computeDiff } from '../diff/index.js';
 import type { ToolResult, ProposedFileChange } from '../types/index.js';
 import { readSkillFile } from '../runtime/skills.js';
-import { readTerminalSession, startTerminalSession, stopTerminalSession, stopAllTerminalSessions, terminateProcessTree, type TerminalStopSummary } from '../runtime/terminal-sessions.js';
+import { waitForTerminalSession, startTerminalSession, stopTerminalSession, stopAllTerminalSessions, terminateProcessTree, type TerminalStopSummary } from '../runtime/terminal-sessions.js';
 import { appendToMemory } from '../memory/index.js';
 import { runBrowserVerification } from '../runtime/browser-verification.js';
 
@@ -466,7 +466,7 @@ async function toolFileGlob(args: Record<string, unknown>, projectRoot: string):
 			dot: true,
 			ignore: ['**/node_modules/**', '**/.git/**'],
 		});
-		const shown = files.slice(0, MAX_GLOB_RESULTS);
+		const shown = files.slice(0, MAX_GLOB_RESULTS).map((file) => file.replace(/\\/g, '/'));
 		const suffix = files.length > shown.length ? `\n(${files.length - shown.length} more files not shown; narrow the pattern)` : '';
 		const output = shown.length > 0 ? shown.join('\n') + suffix : '(no files matched)';
 		globCache.set(cacheKey, output);
@@ -687,8 +687,9 @@ async function startBackgroundCommand(command: string, cwd: string): Promise<Too
       `Working directory: ${session.cwd}`,
       `Status: ${session.status}`,
       session.exitCode !== null ? `Exit code: ${session.exitCode}` : '',
-      session.output ? `Initial output:\n${session.output}` : 'No output yet; poll the session for startup logs.',
-      `Use bash:read with session_id="${session.id}" to inspect new stdout/stderr, and bash:stop to stop it.`,
+      session.output ? `Initial output:\n${session.output}` : 'No output yet; wait for the first output event with bash:read.',
+      `Next cursor: ${session.nextCursor}`,
+      `Use bash:read with session_id="${session.id}", cursor=${session.nextCursor}, and wait_ms to receive the next stdout/stderr event; use bash:stop to stop it.`,
     ].filter(Boolean).join('\n');
     return {
       id: '', name: 'bash:start', success: session.status !== 'failed',
@@ -723,8 +724,13 @@ async function toolBashStart(args: Record<string, unknown>, projectRoot: string)
 async function toolBashRead(args: Record<string, unknown>): Promise<ToolResult> {
   const id = String(args.session_id ?? '').trim();
   if (!id) return { id: '', name: 'bash:read', success: false, error: 'session_id is required', durationMs: 0 };
-  const session = readTerminalSession(id, Number(args.cursor ?? 0));
-  if (!session) return { id: '', name: 'bash:read', success: false, error: 'Unknown terminal session: ' + id, durationMs: 0 };
+  const waitMs = Number(args.wait_ms ?? 10_000);
+  if (!Number.isInteger(waitMs) || waitMs < 0 || waitMs > 30_000) {
+    return { id: '', name: 'bash:read', success: false, error: 'wait_ms must be an integer from 0 to 30000.', durationMs: 0 };
+  }
+  const startedAt = Date.now();
+  const session = await waitForTerminalSession(id, Number(args.cursor ?? 0), waitMs);
+  if (!session) return { id: '', name: 'bash:read', success: false, error: 'Unknown terminal session: ' + id, durationMs: Date.now() - startedAt };
   const output = [
     `Terminal session: ${session.id}`,
     `Command: ${session.command}`,
@@ -732,10 +738,10 @@ async function toolBashRead(args: Record<string, unknown>): Promise<ToolResult> 
     session.exitCode !== null ? `Exit code: ${session.exitCode}` : '',
     `Elapsed: ${Math.round(session.elapsedMs / 1000)}s`,
     session.truncated ? '[Earlier output was truncated; showing retained output from the oldest available point.]' : '',
-    session.output || '(no new output since the supplied cursor)',
+    session.output || '(no new output before the wait timed out)',
     `Next cursor: ${session.nextCursor}`,
   ].filter(Boolean).join('\n');
-  return { id: '', name: 'bash:read', success: true, output, command: session.command, cwd: session.cwd, exitCode: session.exitCode, durationMs: 0 };
+  return { id: '', name: 'bash:read', success: true, output, command: session.command, cwd: session.cwd, exitCode: session.exitCode, durationMs: Date.now() - startedAt };
 }
 
 async function toolBashStop(args: Record<string, unknown>): Promise<ToolResult> {
