@@ -966,7 +966,6 @@ export async function runToolLoop(
 		if (execution.applied || shouldClearFailedToolCalls(tc.name, toolResult.success)) {
 			failedToolCalls.clear();
 			taskState.failedToolCalls.clear();
-			blockedToolCallsThisRun.clear();
 		}
 		if (!toolResult.success) {
 			const signature = toolCallSignature(tc);
