@@ -340,8 +340,8 @@ export class NimClient {
 		this.inFlightUsage.totalTokens = this.inFlightUsage.promptTokens + this.inFlightUsage.completionTokens;
 	}
 
-	private finishRequestUsage(promptTokens: number, completionTokens: number): void {
-		if (this.inFlightEstimatedPromptTokens > 0 && promptTokens > 0) {
+	private finishRequestUsage(promptTokens: number, completionTokens: number, exactPromptTokens = false): void {
+		if (exactPromptTokens && this.inFlightEstimatedPromptTokens > 0 && promptTokens > 0) {
 			recordContextTokenUsage(this.inFlightModel, this.inFlightEstimatedPromptTokens, promptTokens);
 		}
 		this.recordUsage(promptTokens, completionTokens);
@@ -541,7 +541,7 @@ export class NimClient {
 				} catch { args = { _raw: call.arguments }; }
 				return { id: call.id, name: fromWireToolName(call.name), arguments: args };
 			});
-			this.finishRequestUsage(inputTokens || this.estimatePromptTokens(messages), outputTokens || Math.ceil(outputCharacters / 4));
+			this.finishRequestUsage(inputTokens || this.estimatePromptTokens(messages, tools), outputTokens || Math.ceil(outputCharacters / 4), inputTokens > 0);
 			yield { content, toolCalls };
 		} finally {
 			this.inFlightUsage = null;
@@ -670,7 +670,7 @@ export class NimClient {
 
 			if (!insideMarkupCall) emitVisible(pendingText);
 			const content = rawChunks.join('');
-			this.finishRequestUsage(responsePromptTokens || this.estimatePromptTokens(messages, tools), responseCompletionTokens || Math.ceil(outputCharacters / 4));
+			this.finishRequestUsage(responsePromptTokens || this.estimatePromptTokens(messages, tools), responseCompletionTokens || Math.ceil(outputCharacters / 4), responsePromptTokens > 0);
 			const parsedToolCalls = toolCalls.toToolCalls();
 			let visibleContent = content;
 			if (parsedToolCalls.length === 0) {

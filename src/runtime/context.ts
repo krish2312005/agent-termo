@@ -30,9 +30,11 @@ const tokenEstimateFactors = new Map<string, number>();
 /** Calibrate the estimate against exact prompt-token usage reported by a provider. */
 export function recordContextTokenUsage(model: string, estimatedTokens: number, actualTokens: number): void {
   if (!model || estimatedTokens <= 0 || actualTokens <= 0) return;
-  const observed = Math.min(2, Math.max(0.5, actualTokens / estimatedTokens));
+  const observedRatio = Math.min(2, Math.max(0.5, actualTokens / estimatedTokens));
   const previous = tokenEstimateFactors.get(model);
-  tokenEstimateFactors.set(model, previous === undefined ? observed : previous * 0.7 + observed * 0.3);
+  // estimatedTokens already includes the previous factor, so apply the observed
+  // ratio multiplicatively instead of blending it with an adjusted-scale ratio.
+  tokenEstimateFactors.set(model, previous === undefined ? observedRatio : previous * (0.7 + observedRatio * 0.3));
 }
 
 function positiveInteger(value: string | undefined, fallback: number): number {

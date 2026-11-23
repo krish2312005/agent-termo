@@ -19,6 +19,10 @@ export interface ProviderModelLimits {
  * Unlisted live models use the conservative runtime fallback.
  */
 export const NVIDIA_NIM_MODEL_LIMITS: Record<string, ProviderModelLimits> = {
+  'deepseek-ai/deepseek-r1': {
+    contextWindowTokens: 131_072,
+    source: 'https://catalog.ngc.nvidia.com/orgs/nim/deepseek-ai/models/deepseek-r1/hf-5dde110-nim-fp8',
+  },
   'deepseek-ai/deepseek-v4-pro': {
     contextWindowTokens: 1_000_000,
     maxOutputTokens: 16_384,

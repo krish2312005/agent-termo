@@ -39,6 +39,9 @@ describe('context budgeting and compaction', () => {
     expect(initial).toBe(1_008);
 
     recordContextTokenUsage('calibration-test-model', initial, 1_200);
+    const calibrated = estimateContextTokens(messages, undefined, 'calibration-test-model');
+    expect(calibrated).toBe(1_200);
+    recordContextTokenUsage('calibration-test-model', calibrated, 1_200);
     expect(estimateContextTokens(messages, undefined, 'calibration-test-model')).toBe(1_200);
   });
 
