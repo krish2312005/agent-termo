@@ -6,276 +6,110 @@ This document tracks the project's memory and context for all agents to ensure c
 
 - **Project Name:** Agent-Termo
 - **Goal:** Build a terminal-based AI coding agent tool that replicates the Claude Code experience
-- **LLM Backend:** Nvidia NIM APIs (free tier, OpenAI-compatible)
+- **LLM Backend:** Nvidia NIM APIs (OpenAI-compatible), plus other OpenAI-compatible providers
 - **Purpose:** Enable AI-powered autonomous software development via terminal
 
 ## Current Phase
 
-- **Phase:** Post-Tech Stack Selection (Implementation Ready)
-- **Status:** Tech stack finalized, ready for implementation
-- **Next:** Begin CLI foundation implementation
+- **Phase:** Implemented; production-hardening pass in progress
+- **Status:** Live runtime is `src/main.ts` (`runRepl` + `runToolLoop`). Build flow just fixed three reliability bugs (context auto-compaction, tool-loop retry gate, loop symptom) and added source-backed architecture docs.
 
-## Technology Decisions (FINAL)
+## Technology Decisions (current, verified against `package.json`)
 
 ### Core Stack
 
 | Category | Technology | Version | Status |
 |----------|-----------|---------|--------|
-| **Language** | TypeScript | 5.x | DECIDED |
-| **Runtime** | Node.js | 20.x LTS | DECIDED |
-| **CLI/TUI Framework** | blessed | 0.1.10 | DECIDED |
-| **Color Output** | chalk | 5.x | DECIDED |
-| **Markdown Rendering** | marked | 12.x | DECIDED |
-| **LLM Client** | OpenAI SDK | 4.x | DECIDED |
-| **Validation** | zod | 3.x | DECIDED |
-| **Git Operations** | simple-git | 3.x | DECIDED |
-| **CLI Arguments** | commander | 12.x | DECIDED |
-| **File Operations** | fs-extra | 11.x | DECIDED |
+| **Language** | TypeScript | ^5.4.0 | DECIDED |
+| **Runtime / package manager** | Bun | >=1.3.14 (`packageManager: bun@1.3.14`) | DECIDED |
+| **CLI/TUI** | @opentui/solid (+ solid-js) | 0.9.7 | DECIDED (live UI: `src/ui/tui.tsx`) |
+| **Legacy TUI dep** | blessed | ^0.1.10 | still a dependency, not the live renderer |
+| **Color Output** | chalk | ^5.3.0 | DECIDED |
+| **Markdown Rendering** | marked | ^12.0.0 | DECIDED |
+| **LLM Client** | openai | ^7.57.0 | DECIDED |
+| **Validation** | zod | ^4.6.7 | DECIDED |
+| **Git Operations** | simple-git | ^4.0.2 | DECIDED |
+| **CLI Arguments** | commander | ^12.1.0 | DECIDED |
+| **File Operations** | fs-extra | ^11.2.0 | DECIDED |
+| **MCP** | @modelcontextprotocol/client | ^2.4.0 | DECIDED |
 
 ### Build & Distribution
 
-| Category | Technology | Version | Status |
-|----------|-----------|---------|--------|
-| **TypeScript Runner** | tsx | 4.x | DECIDED |
-| **Bundler** | esbuild | 0.21.x | DECIDED |
-| **Binary Packager** | pkg | 5.x | DECIDED |
-| **Testing** | vitest | 1.x | DECIDED |
-| **Linting** | eslint + typescript-eslint | 9.x, 8.x | DECIDED |
+| Category | Technology | Status |
+|----------|-----------|--------|
+| **Test Runner** | vitest ^5.1.0 | DECIDED |
+| **Linting** | eslint ^9 + typescript-eslint ^8 | DECIDED |
+| **Typecheck** | `bunx tsc --noEmit` | DECIDED |
+| **Bundler** | `Bun.build` via `scripts/build.mjs` (+ `@opentui/solid/bun-plugin`) -> `dist/cli.js` | DECIDED |
 
 ### Infrastructure
 
 | Category | Technology | Status |
 |----------|-----------|--------|
-| **LLM API** | Nvidia NIM (OpenAI-compatible) | DECIDED |
+| **LLM API** | Nvidia NIM (OpenAI-compatible) + other OpenAI-compatible providers | DECIDED |
 | **CI/CD** | GitHub Actions | DECIDED |
-| **Distribution** | npm + pkg binaries | DECIDED |
+| **Distribution** | npm | DECIDED |
 
-## Configuration Files Generated
+## Configuration Files
 
-- `docs/TECH_STACK.md` - Complete technology decisions
-- `package.json` - All dependencies and scripts
-- `tsconfig.json` - TypeScript configuration
-- `tsconfig.test.json` - Test TypeScript configuration
-- `.env.example` - Environment variables template
+- `package.json` — dependencies and scripts (bun-based)
+- `tsconfig.json` — TypeScript configuration
+- `.env.example` — environment variables template (`.env` is git-excluded; never commit it)
 
 ## Architecture Decisions
 
+### Entry Points
+
+- `bin/agent-termo.js` -> `dist/cli.js`
+- `src/cli.ts` — commander CLI; parses args, `init`, MCP subcommands; imports `runRepl` from `./main.js`
+- `src/main.ts` — the **live** runtime: `runRepl` REPL + `runToolLoop` agent loop
+
+`src/main-new.ts` + `src/core/*` were an abandoned duplicate runtime; they were deleted in commit `9f19fd7` (see `docs/TIMELINE.md`). Do not reference or re-create them.
+
 ### Core Components
 
-1. **CLI Layer:**
-   - Entry: `src/cli.ts` (commander-based)
-   - Main: `src/main.ts`
-   - Responsibilities: Argument parsing, startup flow, project initialization
-
-2. **Terminal UI Layer:**
-   - Location: `src/ui/`
-   - blessed-based TUI
-   - Components: screen, input, output, markdown renderer
-   - Style: Dark theme with chalk colors
-
-3. **LLM Integration:**
-   - Location: `src/llm/`
-   - OpenAI SDK with NIM baseURL
-   - Streaming for real-time responses
-   - Tool use (function calling) for agent actions
-
-4. **Agent System (12 agents):**
-   - Location: `src/agents/`
-   - Prompts loaded from `.claude/agents/*.md` at runtime
-   - Memory/timeline persisted to `docs/MEMORY.md`, `docs/TIMELINE.md`
-
-5. **Tool System:**
-   - Location: `src/tools/`
-   - Tools: read, write, bash, git, glob
-   - Sandboxed execution with path validation
-
-## Design Decisions
-
-### Target Aesthetic (Claude Code CLI)
-
-- **Theme:** Dark background with light text
-- **Colors:** chalk palette (cyan, green, yellow, red, magenta, blue)
-- **Typography:** Monospace throughout (terminal-native)
-- **Layout:**
-  - Scrollable message history (top/main area)
-  - Input box at bottom
-  - Optional: side panels for file tree/stats
-- **Features:**
-  - Streaming output (token-by-token display)
-  - Markdown rendering (code blocks, links, headers)
-  - Syntax highlighting for code blocks
-  - Spinner/loading indicators
-  - Error states with red highlighting
-
-### Markdown Rendering Strategy
-
-1. Use `marked` to parse markdown
-2. Convert to ANSI escape sequences via custom renderer
-3. Output through blessed for proper positioning
-4. Support: headers (1-6), bold, italic, code blocks, inline code, links, lists, blockquotes
+1. **CLI Layer:** `src/cli.ts` (commander) -> `src/main.ts`.
+2. **Terminal UI Layer:** `src/ui/` — @opentui/solid-based TUI (`tui.tsx`, `screen.ts`, `selection-copy.ts`).
+3. **LLM Integration:** `src/llm/` — `NimClient`, provider/model limits, streaming + tool-call normalization.
+4. **Agent System:** prompts loaded from `.claude/agents/*.md` at runtime; 12 specialist agents.
+5. **Tool System:** `src/tools/` (execute/tool defs) with runtime safety in `src/runtime/` (permissions, context, sessions, checkpoints, verify, terminal-sessions, subagents, mcp, skills, plans).
+6. **Memory / timeline:** `docs/MEMORY.md`, `docs/TIMELINE.md`, `docs/changes/*.md` (written by `.claude/scripts/log.sh`).
 
 ## Security Considerations
 
-### Defensive (Protecting Agent-Termo)
+- Bash execution is sandboxed behind permission review with allowed-command filtering, timeouts, and path validation against `process.cwd()`.
+- API keys come from environment variables (e.g. `NIM_API_KEY`); never log or commit secrets.
+- Destructive operations are warned/confirmed; terminal process trees are killed on cancellation (`src/runtime/terminal-sessions.ts`).
 
-1. **Bash Execution Sandbox:**
-   - Whitelist allowed commands (git, npm, node, pnpm, yarn, tsx, tsc)
-   - Configurable via `ALLOWED_COMMANDS` env var
-   - Timeout on long-running commands (default: 5 minutes)
+## Reliability fixes applied this build flow (2026-11-23)
 
-2. **Path Validation:**
-   - Prevent path traversal (no `..` in paths)
-   - Restrict operations to project directory
-   - Validate paths against `process.cwd()`
+1. **Context auto-compaction** (`src/runtime/context.ts`): trigger changed from 85% of the input budget to the reserved input budget itself; a deterministic `collectProtectedMessages` keeps the system prompt, original objective, current goal, most recent tool result, and `Status: failure` diagnostics verbatim; `shortenToolMessages` skips protected messages. Caller `completeWithContextRecovery` (`src/main.ts`) keeps the aggressive recovery path for real context-window errors.
+2. **Tool-loop retry gate** (`src/main.ts`): `MAX_CONSECUTIVE_FAILURES_PER_SIGNATURE = 2`; `shouldPauseForRepeatedFailedToolCall` now takes a `Map<string, number>` and blocks only at count >= 2 (one genuine retry allowed). Run-scoped failures are a `Map`; `taskState.failedToolCalls` remains a `Set` for persisted diagnostics. `shouldClearFailedToolCalls` clears on a successful non-read-only corrective action.
+3. **Loop** was a symptom of (1) and (2); bounds are the 20-minute wall-clock budget (`src/runtime/run-budget.ts`) + the retry budget + loop termination when the model stops issuing tool calls.
 
-3. **Secrets Management:**
-   - API key from `NIM_API_KEY` environment variable
-   - Never log API keys
-   - `.env` file excluded from git
+Verification: `bun run typecheck` clean; `bun run test` = **215 passed / 2 skipped** (31 files passed, 1 skipped); `bun run build` = `dist/cli.js`.
 
-### Offensive (Generated Code Awareness)
+## NIM API Validation Results (historical, 2026-07-04)
 
-1. **Dangerous Operation Warnings:**
-   - Detect `rm -rf`, `git push --force`
-   - Warn before destructive operations
-   - Require confirmation for deletions
-
-2. **User Confirmation:**
-   - Before executing bash commands
-   - Before overwriting files
-   - Before git push operations
-
-## Implementation Priority
-
-1. **CRITICAL:** CLI scaffold and blessed TUI foundation
-2. **CRITICAL:** OpenAI SDK integration with NIM
-3. **CRITICAL:** Streaming response rendering
-4. **HIGH:** Basic conversation loop
-5. **HIGH:** Agent system (load prompts, tool calling)
-6. **HIGH:** Tool system (file IO, bash, git)
-7. **MEDIUM:** Memory/timeline runtime
-8. **MEDIUM:** Full 12-agent implementation
-9. **LOW:** Polish, testing, error handling
-
-## Deliverables Created
-
-| File | Purpose | Status |
-|------|---------|--------|
-| `docs/TECH_STACK.md` | Technology decisions | COMPLETE |
-| `package.json` | Dependencies | COMPLETE |
-| `tsconfig.json` | TypeScript config | COMPLETE |
-| `tsconfig.test.json` | Test config | COMPLETE |
-| `.env.example` | Environment template | COMPLETE |
-
-## Next Steps for Implementation
-
-1. Set up project directory structure
-2. Install dependencies: `npm install`
-3. Create src/ui/screen.ts with blessed layout
-4. Create src/llm/client.ts with OpenAI SDK
-5. Create src/cli.ts with commander
-6. Test basic CLI and TUI
-7. Proceed to agent system implementation
-
-## Agent Activities Log
-
-### 2026-07-04 - tech-stack-expert
-
-**Type:** Technology Selection and Documentation
-
-- Analyzed project requirements (terminal-based AI agent)
-- Evaluated 10+ technology options using decision matrix
-- Selected and justified each technology choice
-- Created comprehensive `docs/TECH_STACK.md`
-- Created `package.json` with all dependencies
-- Created `tsconfig.json` and `tsconfig.test.json`
-- Created `.env.example` for configuration
-
-**Key Decisions:**
-- blessed for TUI (mature, cross-platform, widget support)
-- OpenAI SDK for NIM (official, handles tool calls, streaming)
-- TypeScript 5.x (type safety, matches Claude Code approach)
-- pkg for binary distribution (standalone executables)
-
-
-## Project State
-
-| Component | Status |
-|-----------|--------|
-| CLAUDE.md (spec) | Complete |
-| Agent definitions (.claude/agents/) | Complete |
-| Project plan (PROJECT_PROGRESS.md) | Complete |
-| Technology stack decisions | Complete |
-| Source code (11 TS files) | Complete |
-| Integration tests | Complete |
-| TypeScript compilation | Pass |
-| esbuild dist/ | Pass (cli.js 656KB, main.js 621KB) |
-| docs/architecture.md | NEW — Complete system architecture |
-| docs/TECH_STACK.md | REWRITTEN — Comprehensive tech stack decisions |
-| docs/DESIGN_SYSTEM.md | REWRITTEN — Visual design specification |
-| docs/BACKEND_ARCHITECTURE.md | REWRITTEN — Backend/API specification |
-| docs/FRONTEND_ARCHITECTURE.md | REWRITTEN — CLI/TUI behavior specification |
-| docs/ROUTE_MAP.md | REWRITTEN — CLI command reference |
-| docs/DEV_SETUP.md | REWRITTEN — Developer setup guide |
-| docs/MEMORY.md | Complete |
-| docs/TIMELINE.md | Complete |
-| NIM API integration | VERIFIED — HTTP 200 |
-| **Documentation** | **COMPLETE — All .md files rewritten + architecture.md created** |
-
-## NIM API Validation Results (2026-07-04)
-
-**Finding**: The NIM API key in `.env` is REAL and VALID.
-
-**API configuration that works**:
 - URL: `https://integrate.api.nvidia.com/v1/chat/completions`
-- Model: `meta/llama-3.1-8b-instruct` (dot notation REQUIRED)
-- HTTP 200, responds with AI content in real time
-- Token usage: 49 prompt / 3 completion
-
-**Critical model name finding**:
-- DOT notation works: `meta/llama-3.1-70b-instruct` -> HTTP 200
-- UNDERScore returns 404: `meta/llama-3_1-70b-instruct` -> HTTP 404
-- Prefix format NOT available: `nvidia_nim/moonshotai/kimi-k2.6` -> HTTP 404
-
-**Configuration updated everywhere**:
-- `.env` now uses: `NIM_MODEL=meta/llama-3.1-8b-instruct`
-- `.env.example` updated with note about dot notation
-- `src/utils/config.ts` defaults to `meta/llama-3.1-70b-instruct`
-- `scripts/test-nim.mjs` defaults to `meta/llama-3.1-8b-instruct`
-
-## Files Created in This Session
-
-- `scripts/test-nim.mjs` — NIM API validation script
-- `docs/ROUTE_MAP.md` — CLI command reference
-- `docs/DEV_SETUP.md` — developer setup guide
-- `tests/integration/basic.test.ts` — 10 integration tests (all pass)
-
-## Files Modified in This Session
-
-- `.env` — fixed NIM_MODEL to `meta/llama-3.1-8b-instruct`
-- `.env.example` — added dot vs underscore note
-- `src/utils/config.ts` — fixed default model to dot notation
-- `scripts/test-nim.mjs` — fixed model default, improved error messages
-- `scripts/build.mjs` — fixed fs/promises -> fs-extra import
-- `tests/integration/basic.test.ts` — created (10 tests)
-- `docs/TIMELINE.md` — appended session results
-- `docs/PROJECT_PROGRESS.md` — fully updated with accurate state
-- `docs/MEMORY.md` — this update
+- Model names use DOT notation: `meta/llama-3.1-8b-instruct` (HTTP 200); underscore form returns 404.
+- Known per-model context limits live in `src/llm/models.ts` and feed `resolveContextBudget`.
 
 ## Access Rules
 
-1. Read MEMORY.md at start of every session
-2. Update MEMORY.md after significant work
-3. Never delete historical context
-4. Use as single source of truth for decisions
-5. Model names for NIM: ALWAYS use DOT notation (3.1 not 3_1)
+1. Read MEMORY.md at start of every session.
+2. Update MEMORY.md after significant work.
+3. Never delete historical context.
+4. Use as single source of truth for decisions.
 
 ## Related Documentation
 
-- CLAUDE.md: Full agent specification
-- docs/TECH_STACK.md: Technology decisions
-- docs/MEMORY.md: This file
-- docs/TIMELINE.md: Activity log
-- docs/PROJECT_PROGRESS.md: Implementation roadmap and status
-- docs/ROUTE_MAP.md: CLI command reference
-- docs/DEV_SETUP.md: Developer setup guide
+- `CLAUDE.md` — agent workflow / rules
+- `.claude/workflow.md` — agents and flows
+- `docs/architecture/architecture-comparison.md` — OpenCode / Codex / Agent-Termo comparison (source-backed)
+- `docs/architecture/current-architecture-audit.md` — actual current architecture + root-cause findings
+- `docs/architecture/target-architecture.md` — target design with implemented/partial/not-yet markers
+- `docs/architecture/implementation-plan.md` — phases, completed work, outstanding work, risks
+- `plan.md` — remediation plan and defect record
+- `docs/TECH_STACK.md`, `docs/PROVIDERS.md`, `docs/CONTEXT_AND_MEMORY.md`, `docs/MCP.md`, `docs/TESTING.md`
+- `docs/TIMELINE.md` — activity log (auto-appended by `.claude/scripts/log.sh`)
