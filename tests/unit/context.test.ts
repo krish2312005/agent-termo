@@ -180,8 +180,8 @@ describe('context budgeting and compaction', () => {
   it('proactively compacts history before the hard input limit is reached', () => {
     const conversation: ConversationMessage[] = [message('system', 'system prompt')];
     for (let index = 0; index < 8; index++) {
-      conversation.push(message('user', 'request ' + index + ' ' + 'x'.repeat(2_000)));
-      conversation.push(message('assistant', 'result ' + index + ' ' + 'y'.repeat(1_000)));
+      conversation.push(message('user', 'request ' + index + ' ' + 'x'.repeat(4_000)));
+      conversation.push(message('assistant', 'result ' + index + ' ' + 'y'.repeat(2_000)));
     }
     const previousWindow = process.env.AGENT_TERMO_CONTEXT_WINDOW;
     const previousOutput = process.env.AGENT_TERMO_OUTPUT_RESERVE_TOKENS;
@@ -189,7 +189,9 @@ describe('context budgeting and compaction', () => {
     process.env.AGENT_TERMO_OUTPUT_RESERVE_TOKENS = '1024';
     try {
       const before = estimateContextTokens(conversation, undefined, 'proactive-compaction-test');
-      expect(before).toBeLessThan(resolveContextBudget('proactive-compaction-test').inputBudgetTokens);
+      const budget = resolveContextBudget('proactive-compaction-test');
+      expect(before).toBeLessThan(budget.inputBudgetTokens);
+      expect(before).toBeGreaterThan(Math.floor(budget.inputBudgetTokens * 0.85));
       const result = prepareConversationForRequest(conversation, 'proactive-compaction-test');
       expect(result.compacted).toBe(true);
       expect(result.estimatedAfterTokens).toBeLessThan(result.estimatedBeforeTokens);
