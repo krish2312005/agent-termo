@@ -584,7 +584,6 @@ async function executeToolWithReview(
 	return { toolResult, applied: false };
 }
 
-const DELEGATED_TOOL_BUDGET = 48;
 const DELEGATED_TIME_BUDGET_MS = 10 * 60 * 1000;
 
 /** One-line summary of a tool call's arguments for the sub-agent monitor. */
@@ -631,7 +630,7 @@ async function runDelegatedAgent(
 		return { id: toolCall.id, name: toolCall.name, success: false, error, durationMs: Date.now() - started };
 	}
 
-	const subId = spawnSubAgent(toolCall.id, agent.name, task, DELEGATED_TOOL_BUDGET);
+	const subId = spawnSubAgent(toolCall.id, agent.name, task, 0);
 	printInfo('Delegating to ' + agent.name + '…');
 	// Each parallel worker gets its own client/controller so cancelling one request
 	// or updating its usage cannot interrupt a sibling worker.
@@ -666,7 +665,7 @@ async function runDelegatedAgent(
 	const ranChecks: RanCheck[] = [];
 
 	try {
-		for (let iteration = 0; iteration < DELEGATED_TOOL_BUDGET && Date.now() - started < DELEGATED_TIME_BUDGET_MS; iteration++) {
+		for (let iteration = 0; Date.now() - started < DELEGATED_TIME_BUDGET_MS; iteration++) {
 			setSubAgentActivity(subId, 'waiting for the model', iteration + 1);
 			let result: { content: string; toolCalls: ToolCall[] };
 			try {
@@ -742,7 +741,7 @@ async function runDelegatedAgent(
 		const output = finalText.trim();
 		if (!output) {
 			const detail =
-				`Sub-agent ${agent.name} reached its bounded execution budget (${DELEGATED_TOOL_BUDGET} model turns or 10 minutes) without a final report.` +
+				`Sub-agent ${agent.name} reached its 10-minute time budget without a final report.` +
 				(lastNarration ? ` Last progress: ${lastNarration.replace(/\s+/g, ' ').slice(0, 500)}` : '');
 			finishSubAgent(subId, 'failed', detail);
 			logAgentTermoTimeline(`Sub-agent ${agent.name} exhausted its budget before completing: ${task.slice(0, 120)}`, projectRoot);
@@ -781,8 +780,7 @@ async function runDelegatedAgent(
  * Run the tool-call loop: execute tools, feed results back to the LLM,
  * and repeat until the LLM stops issuing tool calls.
  */
-export function getToolLoopStopReason(iterations: number, elapsedMs: number): string | undefined {
-	if (iterations > 120) return 'The run reached its 120 model-turn safety limit.';
+export function getToolLoopStopReason(_iterations: number, elapsedMs: number): string | undefined {
 	if (elapsedMs > 20 * 60 * 1000) return 'The run reached its 20-minute time budget.';
 	return undefined;
 }
