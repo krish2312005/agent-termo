@@ -32,19 +32,88 @@ interface TerminalSession extends TerminalSessionSnapshot {
 
 const sessions = new Map<string, TerminalSession>();
 
-function killProcessTree(child: ChildProcess): void {
-  if (process.platform === 'win32' && child.pid) {
+const TERMINATION_GRACE_MS = 900;
+const TERMINATION_TIMEOUT_MS = 3_000;
+
+export interface TerminalStopSummary { stopped: number; failed: string[]; }
+
+function childHasClosed(child: ChildProcess): boolean {
+  const exited = child.exitCode !== null || child.signalCode !== null;
+  return exited && (!child.stdout || child.stdout.destroyed) && (!child.stderr || child.stderr.destroyed);
+}
+
+function waitForChildClose(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (childHasClosed(child)) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const finish = (closed: boolean): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.removeListener('close', onClose);
+      child.removeListener('error', onError);
+      resolve(closed);
+    };
+    const onClose = (): void => finish(true);
+    const onError = (): void => finish(true);
+    child.once('close', onClose);
+    child.once('error', onError);
+    timer = setTimeout(() => finish(childHasClosed(child)), timeoutMs);
+    if (childHasClosed(child)) finish(true);
+  });
+}
+
+function runTaskkill(pid: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    let killer: ChildProcess;
+    const finish = (success: boolean): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(success);
+    };
     try {
-      spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true, stdio: 'ignore' });
-      return;
+      killer = spawn('taskkill', ['/pid', String(pid), '/t', '/f'], { windowsHide: true, stdio: 'ignore' });
     } catch {
-      // Fall through to the direct kill below.
+      resolve(false);
+      return;
     }
+    killer.once('error', () => finish(false));
+    killer.once('close', (code) => finish(code === 0));
+    timer = setTimeout(() => {
+      try { killer.kill('SIGKILL'); } catch { /* best effort */ }
+      finish(false);
+    }, TERMINATION_TIMEOUT_MS);
+  });
+}
+
+/** Stop a shell and its process tree, waiting until the child and stdio close. */
+export async function terminateProcessTree(child: ChildProcess): Promise<boolean> {
+  const pid = child.pid;
+  if (process.platform === 'win32') {
+    if (pid) await runTaskkill(pid);
+    if (await waitForChildClose(child, TERMINATION_GRACE_MS)) return true;
+    try { child.kill('SIGKILL'); } catch { /* best effort */ }
+    if (pid) await runTaskkill(pid);
+    return waitForChildClose(child, TERMINATION_TIMEOUT_MS);
   }
-  if (child.pid && process.platform !== 'win32') {
-    try { process.kill(-child.pid, 'SIGTERM'); return; } catch { /* Fall back to the direct child. */ }
+
+  let signalledGroup = false;
+  if (pid) {
+    try { process.kill(-pid, 'SIGTERM'); signalledGroup = true; } catch { /* group may have exited */ }
   }
-  try { child.kill('SIGTERM'); } catch { /* best effort */ }
+  if (!signalledGroup) {
+    try { child.kill('SIGTERM'); } catch { /* best effort */ }
+  }
+  if (await waitForChildClose(child, TERMINATION_GRACE_MS)) return true;
+  if (pid) {
+    try { process.kill(-pid, 'SIGKILL'); } catch { /* best effort */ }
+  }
+  try { child.kill('SIGKILL'); } catch { /* best effort */ }
+  return waitForChildClose(child, TERMINATION_TIMEOUT_MS);
 }
 
 function snapshot(session: TerminalSession, cursor = 0): TerminalSessionSnapshot {
@@ -133,23 +202,35 @@ export function readTerminalSession(id: string, cursor = 0): TerminalSessionSnap
   return session ? snapshot(session, cursor) : undefined;
 }
 
-export function stopTerminalSession(id: string): TerminalSessionSnapshot | undefined {
+export async function stopTerminalSession(id: string): Promise<TerminalSessionSnapshot | undefined> {
   const session = sessions.get(id);
   if (!session) return undefined;
   if (session.status === 'running') {
     session.stopping = true;
-    killProcessTree(session.child);
+    const stopped = await terminateProcessTree(session.child);
+    if (!stopped) return snapshot(session);
   }
   return snapshot(session);
 }
 
-export function stopAllTerminalSessions(): void {
-  for (const session of sessions.values()) {
-    if (session.status === 'running') {
-      session.stopping = true;
-      killProcessTree(session.child);
-    }
-  }
+export async function stopAllTerminalSessions(): Promise<TerminalStopSummary> {
+  const running = [...sessions.values()].filter((session) => session.status === 'running');
+  const results = await Promise.all(running.map(async (session) => {
+    const stopped = await stopTerminalSession(session.id);
+    return { session, stopped: stopped?.status !== 'running' };
+  }));
+  return {
+    stopped: results.filter((result) => result.stopped).length,
+    failed: results.filter((result) => !result.stopped).map((result) => result.session.id),
+  };
 }
 
-process.once('exit', stopAllTerminalSessions);
+process.once('exit', () => {
+  for (const session of sessions.values()) {
+    if (session.status !== 'running' || !session.child.pid) continue;
+    if (process.platform !== 'win32') {
+      try { process.kill(-session.child.pid, 'SIGKILL'); } catch { /* best effort */ }
+    }
+    try { session.child.kill('SIGKILL'); } catch { /* best effort */ }
+  }
+});

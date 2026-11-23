@@ -4,7 +4,7 @@ import { readTerminalSession, startTerminalSession, stopTerminalSession, stopAll
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 describe('background terminal sessions', () => {
-  afterAll(() => stopAllTerminalSessions());
+  afterAll(async () => { await stopAllTerminalSessions(); });
 
   it('captures stdout and stderr after the start call has returned', async () => {
     const session = await startTerminalSession(
@@ -21,12 +21,22 @@ describe('background terminal sessions', () => {
     expect(read?.exitCode).toBe(0);
   });
 
-  it('stops a still-running process and retains its final status', async () => {
+  it('waits for a running process to exit before reporting it stopped', async () => {
     const session = await startTerminalSession(`node -e "setInterval(() => console.log('TICK'), 100)"`, process.cwd());
     expect(session.status).toBe('running');
-    stopTerminalSession(session.id);
-    await delay(150);
+    const stopped = await stopTerminalSession(session.id);
+    expect(stopped?.status).toBe('stopped');
     expect(readTerminalSession(session.id)?.status).toBe('stopped');
+  });
+
+  it('escalates to SIGKILL when a POSIX process ignores SIGTERM', async () => {
+    if (process.platform === 'win32') return;
+    const session = await startTerminalSession(
+      `node -e "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"`,
+      process.cwd(),
+    );
+    const stopped = await stopTerminalSession(session.id);
+    expect(stopped?.status).toBe('stopped');
   });
 
   it('returns only output after the supplied cursor', async () => {
