@@ -49,7 +49,7 @@ flowchart TB
 |---|---|---|
 | `src/runtime/app.ts` | composition root: build services, own lifecycle/shutdown | `partially implemented` — this is `runRepl` today, but it also renders UI. |
 | `src/runtime/agent-loop.ts` | turn/tool loop as pure orchestration (no `print*`) | `partially implemented` — `runToolLoop` exists but calls UI directly. |
-| `src/runtime/events.ts` | typed event envelope (turn/tool/usage/compaction) | `not yet implemented` — only `runtime/subagents.ts` has a subscribe API; no general bus. |
+| `src/runtime/events.ts` | typed event stream: `AgentEvent` union + `AgentEventHub` (publish/subscribe) | `not yet implemented` — contract specified below; implementation lands in this flow. Target: six typed events (`turn.started`, `tool.started`, `tool.completed`, `usage.updated`, `context.updated`, `turn.completed`) will be published from `runToolLoop`; listener errors isolated. No event persistence; permission, assistant-delta, compaction, and process-exit events still aren't events. |
 | `src/llm/*` | provider adapter + normalization | `implemented` for OpenAI-compatible + Anthropic; `partially implemented` for a formal adapter interface (provider conditionals live inside `NimClient`). |
 | `src/tools/*` | tool registry + execution | `implemented` for execution; `partially implemented` for a validated registry (schemas live in `llm/tools.ts`, execution in `tools/index.ts`, no registration-time validation). |
 | `src/runtime/context.ts` | budget/compaction | `implemented` (deterministic, tested). |
@@ -138,16 +138,215 @@ flowchart LR
 
 | Event | Status |
 |---|---|
-| Session created / turn started / completed / failed / cancelled | `not yet implemented` as events (file timeline only) |
-| Assistant delta / completed | `partially implemented` (`onChunk` → `MarkdownPrinter` + `setScreenStatus`) |
-| Tool call received / execution started / output / completed | `partially implemented` (`printToolCall`, `printToolResult`, terminal hooks, sub-agent monitor) |
+| Session created / turn started / completed / failed / cancelled | `not yet implemented` — target: `turn.started` and `turn.completed` will be published (`turn.completed.status` = `completed \| failed \| cancelled \| paused`); session-created is not an event. |
+| Assistant delta / completed | `partially implemented` (`onChunk` → `MarkdownPrinter` + `setScreenStatus`) — unchanged by this slice; not an event. |
+| Tool call received / execution started / output / completed | `not yet implemented` — target: `tool.started` and `tool.completed` will be published (`tool.started` carries normalized args; `tool.completed` carries `success`); tool output is not carried in the event. |
 | Permission requested / resolved | `partially implemented` (inline prompt flow, no event) |
-| Token usage updated | `implemented` (`setScreenStatus({usage})`) |
+| Token usage updated | `not yet implemented` — target: `usage.updated` event will carry the preformatted `NimClient.formatUsage()` string. (Direct `setScreenStatus({usage})` is the current behavior.) |
+| Context usage updated | `not yet implemented` — target: `context.updated` event (`usedTokens` from `estimateContextTokens`; `budgetTokens` from `resolveContextBudget(model).inputBudgetTokens`). |
 | Context compacted | `implemented` (`printInfo('Context compacted…')`), no event |
 | Process exited | `implemented` (terminal hooks `onEnd`) |
 
-Envelope shape to standardize later: `{ type, id, timestamp, sessionId, turnId?, payload }`
-— type-safe payloads per event, one-way from runtime to UI.
+Target envelope shape (this flow): a flat discriminated union on `type` —
+`{ type, sessionId, turnId, ...eventFields, at }` where `at` is `Date.now()`.
+One-way from runtime to UI; no nested `payload` and no numeric sequence id.
+
+## Runtime event contract (this slice)
+
+Status: `not yet implemented` — this section is the contract only; the
+implementation lands in this flow.
+
+The runtime will publish a typed, flat event stream; the UI will subscribe. The
+stream is additive/observability-only in this slice: it will not replace
+transcript printing.
+
+```ts
+// src/runtime/events.ts — no imports, no I/O
+export type AgentEvent =
+  | {
+      type: 'turn.started';
+      sessionId: string;
+      turnId: string;
+      goal: string;
+      at: number;
+    }
+  | {
+      type: 'tool.started';
+      sessionId: string;
+      turnId: string;
+      toolCallId: string;
+      name: string;
+      args: Record<string, unknown>;
+      at: number;
+    }
+  | {
+      type: 'tool.completed';
+      sessionId: string;
+      turnId: string;
+      toolCallId: string;
+      name: string;
+      success: boolean;
+      at: number;
+    }
+  | {
+      type: 'usage.updated';
+      sessionId: string;
+      turnId: string;
+      usage: string;
+      at: number;
+    }
+  | {
+      type: 'context.updated';
+      sessionId: string;
+      turnId: string;
+      usedTokens: number;
+      budgetTokens: number;
+      at: number;
+    }
+  | {
+      type: 'turn.completed';
+      sessionId: string;
+      turnId: string;
+      status: 'completed' | 'failed' | 'cancelled' | 'paused';
+      at: number;
+    };
+```
+
+Contract rules:
+
+- `at` is `Date.now()` at publication time.
+- `type` is the discriminant; every field is flat on the event (no `payload`).
+- `tool.started.args` is the normalized `ToolCall.arguments`.
+- `tool.completed` carries only `success`; tool output stays in the transcript
+  and session, not in the event.
+- `usage.updated.usage` is the preformatted display string from
+  `NimClient.formatUsage()` (for example `"12,345 tokens"`).
+- `context.updated.budgetTokens` is `resolveContextBudget(model).inputBudgetTokens`;
+  `usedTokens` is `estimateContextTokens(conversation, tools, model)` using the
+  same tool definitions that would be sent with the next request.
+- `turnId` is a fresh `crypto.randomUUID()` per `runToolLoop` invocation.
+  `sessionId` is the REPL session id, or `''` when the caller omits it (tests).
+- Events are not persisted and are not replayed.
+
+## Event hub boundary
+
+Status: `not yet implemented` — the hub contract below is specified, not yet
+present.
+
+`src/runtime/events.ts` will also export the hub:
+
+```ts
+export class AgentEventHub {
+  subscribe(listener: (event: AgentEvent) => void): () => void;
+  publish(event: AgentEvent): void;
+}
+```
+
+- Dependency-free (no imports).
+- `subscribe` registers a listener and returns an unsubscribe function; calling
+  the unsubscribe function more than once is safe.
+- `publish` delivers synchronously to a snapshot of the current listeners, so
+  subscribing or unsubscribing during dispatch does not affect the in-flight
+  publish.
+- `publish` wraps each listener call in `try/catch` and swallows the error — no
+  rethrow and no stdout/stderr write, because the TUI owns the terminal. A
+  broken listener must never break the agent loop.
+- No buffering, replay, filtering, or async delivery.
+
+Wiring and publication (all in `src/main.ts`):
+
+1. `runToolLoop` will gain two trailing optional parameters so existing
+   positional callers and tests compile unchanged:
+   `events: AgentEventHub = new AgentEventHub(), sessionId = ''`. The default
+   will create one hub per run when the caller passes none. The hub is
+   run-local: it is discarded when the loop returns, so there is nothing to
+   clean up and no leak.
+2. `runToolLoop` will register the observability adapter immediately at loop
+   entry, as the first statement of the function body: `observeAgentEvents(events);`.
+   `observeAgentEvents` will be a module-local function in `src/main.ts` — not
+   part of the `src/ui/` public API and not exported. Its returned unsubscribe
+   handle will not be captured, because the hub dies with the loop.
+3. The adapter will only drive status. It will ignore every event except
+   `usage.updated` → `setScreenStatus({ usage })` and `context.updated` →
+   `setScreenStatus({ context: 'context ' + formatContextMeter(usedTokens, budgetTokens) })`.
+   It will never print transcript content.
+4. `runRepl`'s two `runToolLoop` call sites will change only by passing
+   `session.id` as the trailing `sessionId` argument. They will not create,
+   subscribe, or unsubscribe a hub, and no UI-level subscription helper will
+   exist.
+
+Publication points inside `runToolLoop`:
+
+| Point | Event |
+|---|---|
+| On entry | `turn.started` (`goal` = `taskState.goal`, `turnId` = fresh UUID) |
+| After every model response (primary and fallback) | `context.updated` |
+| Immediately before the execution phase of each iteration, for every call in `toolCalls` | `tool.started` (`toolCallId` = `tc.id`, `args` = `tc.arguments`) |
+| In the results loop, for every call in `toolCalls` | `tool.completed` (`success` = `toolResult.success`) |
+| After every successful model response (primary and fallback) | `usage.updated` (`nimClient.formatUsage()`) |
+| Immediately before every `return` | `turn.completed` |
+
+Started/completed will stay balanced for blocked calls, budget-skipped calls,
+and both the parallel-delegation and sequential execution paths, because
+`started` will be published before the execution phase and `completed` will be
+published from the results loop.
+
+`turn.completed.status` mapping:
+
+| Exit | `status` |
+|---|---|
+| Loop ends with no tool calls and the evidence gate passes (normal `return finalText`) | `completed` |
+| 20-minute budget stop | `paused` |
+| Repeated-failure retry gate | `paused` |
+| Completion verification blocked | `paused` |
+| User cancellation (`isRequestCancelled`) | `cancelled` |
+| Partial stream failure | `failed` |
+| Provider error after the fallback attempt | `failed` |
+
+`paused` means an intentional safety stop that can resume with `continue`;
+`failed` means the model or transport errored. Tool execution inside delegated
+sub-agents (`runDelegatedAgent`) will not publish events in this slice.
+
+Additive-only rule: existing `print*`, `MarkdownPrinter`, spinner, and
+`setScreenStatus` calls will stay as they are. Publishing will not throw and
+will never change control flow. The adapter may write a `usage` value the
+existing direct call already writes; that duplicate is harmless and intentional
+in this slice.
+
+## Context meter
+
+Status: `not yet implemented` — the contract below is specified, not yet
+present.
+
+`formatContextMeter(usedTokens: number, budgetTokens: number): string` will be
+a pure function in `src/ui/tui.tsx` (the existing OpenTUI module): it will use
+no UI state and do no I/O. `src/ui/index.ts` will re-export it
+(`export { formatContextMeter } from "./tui.js";`) so `src/main.ts` can keep
+importing presentation from the facade. Tests will import it from the TUI
+module itself: from `tests/unit/`, the specifier will be
+`'../../src/ui/tui.js'` — the same module `tests/unit/keys.test.ts` already
+imports.
+
+- `ratio = usedTokens / budgetTokens`, clamped to `0..1`; if `budgetTokens <= 0`
+  or not finite, use `1`.
+- `filled = Math.round(ratio * 7)`, clamped to `0..7`. The bar is exactly 7
+  cells: `▰` for filled, `▱` for empty.
+- `percent = Math.round(ratio * 100)`. The return value is
+  `bar + ' ' + percent + '%'`.
+- No color, no locale formatting, no token label.
+
+Examples: `formatContextMeter(43_000, 100_000)` → `▰▰▰▱▱▱▱ 43%`;
+`formatContextMeter(0, 1_000)` → `▱▱▱▱▱▱▱ 0%`;
+`formatContextMeter(2_000, 1_000)` → `▰▰▰▰▰▰▰ 100%`.
+
+Rendering:
+
+- `setScreenStatus` and the screen state will gain `context?: string`. The
+  bottom status line will render `thinking · permissionMode · usage` and will
+  append ` · context <meter>` only when `context` is non-empty.
+- `/context` will print `context <meter>` (the same string) in addition to its
+  existing lines:
+  `printInfo('context ' + formatContextMeter(estimated, budget.inputBudgetTokens))`.
 
 ## Summary of the honest gap
 

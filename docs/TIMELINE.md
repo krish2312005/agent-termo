@@ -3415,3 +3415,10 @@ Completed tool-assisted request
 - [2026-11-23 09:00] Agent-Termo session started. Model: nvidia/nemotron-3.5-super-vl-120b-a12b
 - [2026-11-23 09:00] Commands: /help /clear /memory /timeline /model /thinking /agents /history
 | 2026-11-23 01:07 PST | main-agent | premium UI spacing and terminal stop resize per-session kill | [20261123-010733-main-agent-premium-ui-spacing-and-terminal-stop-resize-per-se.md](changes/20261123-010733-main-agent-premium-ui-spacing-and-terminal-stop-resize-per-se.md) |
+
+- [2026-11-23 09:10] Agent-Termo session started. Model: nvidia/nemotron-3.5-super-vl-120b-a12b
+- [2026-11-23 09:10] Commands: /help /clear /memory /timeline /model /thinking /agents /history
+| 2026-11-23 01:14 PST | architect | spec runtime event stream and context meter | [20261123-011445-architect-spec-runtime-event-stream-and-context-meter.md](changes/20261123-011445-architect-spec-runtime-event-stream-and-context-meter.md) |
+| 2026-11-23 01:16 PST | architect | correct event spec to match implementation brief | [20261123-011608-architect-correct-event-spec-to-match-implementation-brief.md](changes/20261123-011608-architect-correct-event-spec-to-match-implementation-brief.md) |
+| 2026-11-23 01:17 PST | git-manager | review runtime event spec - changes requested | [20261123-011731-git-manager-review-runtime-event-spec-changes-requested.md](changes/20261123-011731-git-manager-review-runtime-event-spec-changes-requested.md) |
+| 2026-11-23 01:18 PST | architect | relabel event spec as unimplemented contract | [20261123-011853-architect-relabel-event-spec-as-unimplemented-contract.md](changes/20261123-011853-architect-relabel-event-spec-as-unimplemented-contract.md) |
