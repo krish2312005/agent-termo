@@ -244,7 +244,7 @@ async function completeWithContextRecovery(
 	onCompacted?: (messages: ConversationMessage[]) => void,
 ): Promise<Awaited<ReturnType<NimClient['complete']>>> {
 	const model = typeof nimClient.getModel === 'function' ? nimClient.getModel() : 'unknown-model';
-	const prepare = (aggressive = false): void => {
+	const prepare = (aggressive = false) => {
 		const result = prepareConversationForRequest(messages, model, tools, { aggressive });
 		if (result.archivedMessages.length > 0) {
 			try {
@@ -257,7 +257,8 @@ async function completeWithContextRecovery(
 			printInfo('Context compacted: ~' + result.estimatedAfterTokens.toLocaleString() +
 				' input tokens (budget ' + result.budget.inputBudgetTokens.toLocaleString() + ').');
 		}
-		if (result.warning) printInfo(result.warning);
+		if (result.warning) throw new Error(result.warning);
+		return result;
 	};
 
 	prepare();
@@ -266,8 +267,10 @@ async function completeWithContextRecovery(
 	} catch (error) {
 		if (!isContextWindowError(error)) throw error;
 		const before = estimateContextTokens(messages, tools, model);
-		prepare(true);
-		if (estimateContextTokens(messages, tools, model) >= before) throw error;
+		const recovered = prepare(true);
+		if (recovered.warning || estimateContextTokens(messages, tools, model) >= before) {
+			throw new Error(recovered.warning ?? providerError(error));
+		}
 		printInfo('The provider rejected the context size. Retrying once with a more aggressive compacted history.');
 		return await completeWithRetry(nimClient, messages, tools, onChunk);
 	}
