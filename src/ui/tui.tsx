@@ -487,7 +487,7 @@ function App() {
       <scrollbox flexGrow={1} flexBasis={0} minHeight={0} stickyScroll stickyStart="bottom" viewportCulling contentOptions={{ layoutMode: "list" }}>
         <For each={entries()}>
           {(entry) => (
-            <box flexDirection="column" paddingX={1} marginTop={1}>
+            <box flexDirection="column" paddingX={1}>
               <Show when={entry.kind === "user" || entry.kind === "markdown"}>
                 <text fg={entry.kind === "user" ? "#8FCB9B" : "#6D625A"}>
                   {entry.kind === "user" ? "❯ You" : "⏺ Agent-Termo"}
