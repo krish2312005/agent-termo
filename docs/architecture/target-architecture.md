@@ -257,7 +257,7 @@ Wiring and publication (all in `src/main.ts`):
 
 1. `runToolLoop` will gain two trailing optional parameters so existing
    positional callers and tests compile unchanged:
-   `events: AgentEventHub = new AgentEventHub(), sessionId = ''`. The default
+   `sessionId = '', events: AgentEventHub = new AgentEventHub()`. The default
    will create one hub per run when the caller passes none. The hub is
    run-local: it is discarded when the loop returns, so there is nothing to
    clean up and no leak.
@@ -268,7 +268,7 @@ Wiring and publication (all in `src/main.ts`):
    handle will not be captured, because the hub dies with the loop.
 3. The adapter will only drive status. It will ignore every event except
    `usage.updated` → `setScreenStatus({ usage })` and `context.updated` →
-   `setScreenStatus({ context: 'context ' + formatContextMeter(usedTokens, budgetTokens) })`.
+   `setScreenStatus({ context: { usedTokens: event.usedTokens, budgetTokens: event.budgetTokens } })`.
    It will never print transcript content.
 4. `runRepl`'s two `runToolLoop` call sites will change only by passing
    `session.id` as the trailing `sessionId` argument. They will not create,
@@ -281,15 +281,16 @@ Publication points inside `runToolLoop`:
 |---|---|
 | On entry | `turn.started` (`goal` = `taskState.goal`, `turnId` = fresh UUID) |
 | After every model response (primary and fallback) | `context.updated` |
-| Immediately before the execution phase of each iteration, for every call in `toolCalls` | `tool.started` (`toolCallId` = `tc.id`, `args` = `tc.arguments`) |
-| In the results loop, for every call in `toolCalls` | `tool.completed` (`success` = `toolResult.success`) |
+| Immediately before each tool is executed, in both the parallel-delegation branch and the sequential branch | `tool.started` (`toolCallId` = `tc.id`, `args` = `tc.arguments`) |
+| Immediately after each executed tool returns, in both the parallel-delegation branch and the sequential branch | `tool.completed` (`success` = `toolResult.success`) |
 | After every successful model response (primary and fallback) | `usage.updated` (`nimClient.formatUsage()`) |
 | Immediately before every `return` | `turn.completed` |
 
-Started/completed will stay balanced for blocked calls, budget-skipped calls,
-and both the parallel-delegation and sequential execution paths, because
-`started` will be published before the execution phase and `completed` will be
-published from the results loop.
+Blocked calls and budget-skipped calls are not executed and will publish no
+`tool.started`/`tool.completed` pair. Every executed call will publish exactly
+one `started` immediately before it runs and one `completed` immediately after
+it returns, so the pair stays balanced in both the parallel-delegation and the
+sequential branch.
 
 `turn.completed.status` mapping:
 
@@ -315,12 +316,13 @@ in this slice.
 
 ## Context meter
 
-Status: `not yet implemented` — the contract below is specified, not yet
-present.
+Status: `partially implemented` — the UI half is present; pending are the
+`src/main.ts` event adapter that feeds `context`, the `/context` meter print,
+and the unit tests.
 
-`formatContextMeter(usedTokens: number, budgetTokens: number): string` will be
-a pure function in `src/ui/tui.tsx` (the existing OpenTUI module): it will use
-no UI state and do no I/O. `src/ui/index.ts` will re-export it
+`formatContextMeter(usedTokens: number, budgetTokens: number): string` is a
+pure function in `src/ui/tui.tsx` (the existing OpenTUI module): it uses
+no UI state and does no I/O. `src/ui/index.ts` re-exports it
 (`export { formatContextMeter } from "./tui.js";`) so `src/main.ts` can keep
 importing presentation from the facade. Tests will import it from the TUI
 module itself: from `tests/unit/`, the specifier will be
@@ -341,11 +343,16 @@ Examples: `formatContextMeter(43_000, 100_000)` → `▰▰▰▱▱▱▱ 43%`;
 
 Rendering:
 
-- `setScreenStatus` and the screen state will gain `context?: string`. The
-  bottom status line will render `thinking · permissionMode · usage` and will
-  append ` · context <meter>` only when `context` is non-empty.
-- `/context` will print `context <meter>` (the same string) in addition to its
-  existing lines:
+- Shipped in the UI half: `ScreenContext` and `ScreenState` carry
+  `context?: { usedTokens: number; budgetTokens: number }`, and
+  `setScreenStatus` accepts the same optional `context`. The bottom status line
+  renders one row —
+  `context <meter> · thinking · permissionMode · usage` — prefixing
+  `` context `` + `formatContextMeter(screen().context.usedTokens, screen().context.budgetTokens)`
+  only when `context` is present. Pending: the `src/main.ts` event adapter that
+  supplies `context`.
+- `/context` will print `context <meter>` in addition to its existing lines,
+  formatting directly at this call site:
   `printInfo('context ' + formatContextMeter(estimated, budget.inputBudgetTokens))`.
 
 ## Summary of the honest gap
