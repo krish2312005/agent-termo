@@ -1,8 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import { parseBrowserActions, runBrowserVerification } from '../../src/runtime/browser-verification.js';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { createServer } from 'node:http';
+import { createRequire } from 'node:module';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+
+const hasInstalledChromium = (() => {
+  try {
+    const requireFromProject = createRequire(resolve(process.cwd(), 'package.json'));
+    const playwright = requireFromProject('playwright') as { chromium: { executablePath(): string } };
+    return existsSync(playwright.chromium.executablePath());
+  } catch {
+    return false;
+  }
+})();
 
 describe('browser verification action parsing', () => {
   it('accepts a supported end-to-end user flow', () => {
@@ -40,6 +52,50 @@ describe('browser verification action parsing', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it('runs a real user interaction in desktop, tablet, and mobile Chromium viewports', async () => {
+    const server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html' });
+      response.end(`<!doctype html>
+        <html><body>
+          <h1>Task board</h1>
+          <button id="increment" onclick="document.querySelector('#count').textContent = '1'">Add one</button>
+          <output id="count">0</output>
+        </body></html>`);
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Could not start browser test server.');
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    try {
+      for (const viewport of ['desktop', 'tablet', 'mobile']) {
+        const result = await runBrowserVerification({
+          base_url: baseUrl,
+          viewport,
+          screenshot: false,
+          actions: JSON.stringify([
+            { type: 'click', selector: '#increment' },
+            { type: 'expect_text', selector: '#count', text: '1' },
+          ]),
+        }, process.cwd());
+        expect(result.success, result.error ?? result.output).toBe(true);
+        expect(result.output).toContain(`Viewport: ${viewport}`);
+        expect(result.output).toContain('Browser diagnostics: 0');
+      }
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error ? reject(error) : resolve());
+      });
+    }
+  }, 30_000);
+
+  it.skipIf(!hasInstalledChromium)('skips the real browser test when Playwright Chromium is not installed', () => {
+    expect(hasInstalledChromium).toBe(true);
   });
 
   it('allows no extra actions', () => {
