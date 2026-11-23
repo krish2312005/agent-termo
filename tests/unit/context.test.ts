@@ -174,6 +174,75 @@ describe('context budgeting and compaction', () => {
     }
   });
 
+  it('proactively compacts history before the hard input limit is reached', () => {
+    const conversation: ConversationMessage[] = [message('system', 'system prompt')];
+    for (let index = 0; index < 8; index++) {
+      conversation.push(message('user', 'request ' + index + ' ' + 'x'.repeat(2_000)));
+      conversation.push(message('assistant', 'result ' + index + ' ' + 'y'.repeat(1_000)));
+    }
+    const previousWindow = process.env.AGENT_TERMO_CONTEXT_WINDOW;
+    const previousOutput = process.env.AGENT_TERMO_OUTPUT_RESERVE_TOKENS;
+    process.env.AGENT_TERMO_CONTEXT_WINDOW = '16384';
+    process.env.AGENT_TERMO_OUTPUT_RESERVE_TOKENS = '1024';
+    try {
+      const before = estimateContextTokens(conversation, undefined, 'proactive-compaction-test');
+      expect(before).toBeLessThan(resolveContextBudget('proactive-compaction-test').inputBudgetTokens);
+      const result = prepareConversationForRequest(conversation, 'proactive-compaction-test');
+      expect(result.compacted).toBe(true);
+      expect(result.estimatedAfterTokens).toBeLessThan(result.estimatedBeforeTokens);
+      expect(conversation.at(-2)?.content).toContain('request 7');
+    } finally {
+      if (previousWindow === undefined) delete process.env.AGENT_TERMO_CONTEXT_WINDOW;
+      else process.env.AGENT_TERMO_CONTEXT_WINDOW = previousWindow;
+      if (previousOutput === undefined) delete process.env.AGENT_TERMO_OUTPUT_RESERVE_TOKENS;
+      else process.env.AGENT_TERMO_OUTPUT_RESERVE_TOKENS = previousOutput;
+    }
+  });
+
+  it('preserves the original task objective in the compacted system context', () => {
+    const conversation: ConversationMessage[] = [
+      message('system', 'Base system prompt'),
+      message('user', 'Build the payment service and preserve idempotency.'),
+      message('assistant', 'Use a database transaction and unique request key.'),
+      message('user', 'Add retry handling.'),
+      message('assistant', 'Retry only transient failures.'),
+      message('user', 'Now add tests.'),
+      message('assistant', 'Tests should cover duplicate requests.'),
+    ];
+    const result = compactConversation(conversation, 1);
+    expect(result.archivedMessages.length).toBeGreaterThan(0);
+    expect(conversation[0]?.content).toContain('Build the payment service');
+    expect(conversation[0]?.content).toContain('idempotency');
+    expect(conversation.at(-2)?.content).toBe('Now add tests.');
+  });
+
+  it('returns actionable diagnostics when the newest request cannot fit after compaction', () => {
+    const conversation: ConversationMessage[] = [
+      message('system', 'System prompt'),
+      message('user', 'x'.repeat(60_000)),
+    ];
+    const previousWindow = process.env.AGENT_TERMO_CONTEXT_WINDOW;
+    const previousOutput = process.env.AGENT_TERMO_OUTPUT_RESERVE_TOKENS;
+    const previousSafety = process.env.AGENT_TERMO_CONTEXT_SAFETY_MARGIN;
+    process.env.AGENT_TERMO_CONTEXT_WINDOW = '8192';
+    process.env.AGENT_TERMO_OUTPUT_RESERVE_TOKENS = '1024';
+    process.env.AGENT_TERMO_CONTEXT_SAFETY_MARGIN = '512';
+    try {
+      const result = prepareConversationForRequest(conversation, 'oversized-request-test');
+      expect(result.warning).toContain('Unable to fit this request');
+      expect(result.warning).toContain('Estimated input:');
+      expect(result.warning).toContain('available input budget:');
+      expect(result.estimatedAfterTokens).toBeGreaterThan(result.budget.inputBudgetTokens);
+    } finally {
+      if (previousWindow === undefined) delete process.env.AGENT_TERMO_CONTEXT_WINDOW;
+      else process.env.AGENT_TERMO_CONTEXT_WINDOW = previousWindow;
+      if (previousOutput === undefined) delete process.env.AGENT_TERMO_OUTPUT_RESERVE_TOKENS;
+      else process.env.AGENT_TERMO_OUTPUT_RESERVE_TOKENS = previousOutput;
+      if (previousSafety === undefined) delete process.env.AGENT_TERMO_CONTEXT_SAFETY_MARGIN;
+      else process.env.AGENT_TERMO_CONTEXT_SAFETY_MARGIN = previousSafety;
+    }
+  });
+
   it('shortens oversized tool messages and returns their complete original for archiving', () => {
     const conversation: ConversationMessage[] = [
       message('system', 'System'),
