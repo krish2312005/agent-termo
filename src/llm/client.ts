@@ -283,6 +283,97 @@ export function parseToolCallsFromText(text: string): ToolCall[] {
 	return calls;
 }
 
+/**
+ * Lines that may begin a tool call a model emitted as plain text. Models that
+ * do not support native tool calling print JSON like {"tool_calls":[...]};
+ * this keeps it out of the visible transcript while the runtime still parses
+ * and executes the call.
+ */
+const TOOL_JSON_START = /^[\[{]\s*"(?:tool_calls|toolCalls|name|function)"/;
+
+function isBalancedJson(text: string): boolean {
+	let depth = 0;
+	let inString = false;
+	let escaped = false;
+	for (const ch of text) {
+		if (inString) {
+			if (escaped) escaped = false;
+			else if (ch === '\\') escaped = true;
+			else if (ch === '"') inString = false;
+			continue;
+		}
+		if (ch === '"') inString = true;
+		else if (ch === '{' || ch === '[') depth++;
+		else if (ch === '}' || ch === ']') depth--;
+	}
+	return depth === 0 && !inString;
+}
+
+/**
+ * Streaming filter that suppresses JSON tool-call payloads from visible text.
+ * Works line by line and also holds multi-line (pretty-printed) JSON until it
+ * is complete. Non-tool JSON and normal prose pass through unchanged.
+ */
+export class ToolCallTextFilter {
+	private partialLine = '';
+	private pending = '';
+
+	push(chunk: string): string {
+		this.partialLine += chunk;
+		let out = '';
+		let newline = this.partialLine.indexOf('\n');
+		while (newline !== -1) {
+			const line = this.partialLine.slice(0, newline);
+			this.partialLine = this.partialLine.slice(newline + 1);
+			out += this.acceptLine(line);
+			newline = this.partialLine.indexOf('\n');
+		}
+		return out;
+	}
+
+	flush(): string {
+		let out = '';
+		if (this.partialLine) {
+			out += this.acceptLine(this.partialLine);
+			this.partialLine = '';
+		}
+		if (this.pending) out += this.finishPending();
+		return out;
+	}
+
+	private acceptLine(line: string): string {
+		const trimmed = line.trim();
+		if (this.pending) {
+			this.pending += '\n' + line;
+			return isBalancedJson(this.pending) ? this.finishPending() : '';
+		}
+		if (!trimmed || !TOOL_JSON_START.test(trimmed)) {
+			// A bare opener may start a multi-line (pretty-printed) JSON payload.
+			if (/^[\[{]$/.test(trimmed)) {
+				this.pending = line;
+				return '';
+			}
+			return line + '\n';
+		}
+		if (isBalancedJson(trimmed)) return parseToolCallsFromText(trimmed).length > 0 ? '' : line + '\n';
+		this.pending = line;
+		return '';
+	}
+
+	private finishPending(): string {
+		const block = this.pending;
+		this.pending = '';
+		return parseToolCallsFromText(block).length > 0 ? '' : block;
+	}
+}
+
+/** Remove recognized JSON tool-call payloads from a completed response. */
+export function stripToolCallJson(text: string): string {
+	if (!text) return text;
+	const filter = new ToolCallTextFilter();
+	return filter.push(text) + filter.flush();
+}
+
 
 export interface StreamedToolCallDelta {
   index?: number;
@@ -696,8 +787,7 @@ export class NimClient {
 			}, { signal: controller.signal });
 
 			const rawChunks: string[] = [];
-			let deferredJsonText: string | undefined;
-			let emittedVisibleText = false;
+			const textFilter = new ToolCallTextFilter();
 			const toolCalls = new ToolCallStreamAccumulator();
 			const toolCallSnapshots = new Map<number, { name: string; arguments: string }>();
 			const startTag = '<tool_call>';
@@ -707,7 +797,6 @@ export class NimClient {
 
 			const emitVisible = (text: string): void => {
 				if (!text || text === 'null' || text === 'undefined') return;
-				if (text.trim()) emittedVisibleText = true;
 				onChunk?.(text);
 			};
 			const emitTextChunk = (text: string): void => {
@@ -756,14 +845,8 @@ export class NimClient {
 						controller.abort();
 						throw new MalformedModelOutputError(MALFORMED_MODEL_OUTPUT_MESSAGE);
 					}
-					if (deferredJsonText !== undefined) {
-						deferredJsonText += rawContent;
-					} else if (!emittedVisibleText && /^\s*[\[{]/.test(accumulated)) {
-						// Hold JSON-looking output until we know whether it is a tool payload.
-						deferredJsonText = accumulated;
-					} else {
-						emitTextChunk(rawContent);
-					}
+					const visible = textFilter.push(rawContent);
+					if (visible) emitTextChunk(visible);
 				}
 				if (delta.tool_calls) {
 					for (const toolCall of delta.tool_calls) {
@@ -786,20 +869,14 @@ export class NimClient {
 				}
 			}
 
+			const tailVisible = textFilter.flush();
+			if (tailVisible) emitTextChunk(tailVisible);
 			if (!insideMarkupCall) emitVisible(pendingText);
 			const content = rawChunks.join('');
 			this.finishRequestUsage(responsePromptTokens || this.estimatePromptTokens(messages, tools), responseCompletionTokens || Math.ceil(outputCharacters / 4), responsePromptTokens > 0);
 			const parsedToolCalls = toolCalls.toToolCalls();
-			let visibleContent = content;
-			if (parsedToolCalls.length === 0) {
-				const textCalls = parseToolCallsFromText(content);
-				if (textCalls.length > 0) {
-					parsedToolCalls.push(...textCalls);
-					visibleContent = content.includes('<tool_call>') ? removeToolCallMarkup(content) : '';
-				} else if (deferredJsonText !== undefined) {
-					emitVisible(deferredJsonText);
-				}
-			}
+			if (parsedToolCalls.length === 0) parsedToolCalls.push(...parseToolCallsFromText(content));
+			const visibleContent = removeToolCallMarkup(stripToolCallJson(content));
 			yield { content: visibleContent, toolCalls: parsedToolCalls };
 		} finally {
 			this.inFlightUsage = null;
@@ -880,17 +957,8 @@ export class NimClient {
 	    });
 
     // If no native tool calls, parse JSON tool calls emitted as text.
-	    if (toolCalls.length === 0) {
-	      const parsedCalls = parseToolCallsFromText(content);
-	      if (parsedCalls.length > 0) {
-	        toolCalls.push(...parsedCalls);
-	        content = content.includes('<tool_call>') ? removeToolCallMarkup(content) : (() => {
-	          const marker = content.indexOf('"tool_calls"');
-	          const start = marker !== -1 ? content.lastIndexOf('{', marker) : content.trimStart().startsWith('[') ? content.indexOf('[') : content.lastIndexOf('{');
-	          return start !== -1 ? content.slice(0, start).trim() : content;
-	        })();
-	      }
-    }
+	    if (toolCalls.length === 0) toolCalls.push(...parseToolCallsFromText(content));
+	    content = removeToolCallMarkup(stripToolCallJson(content));
 
 		if (this.activeController === controller) this.activeController = null;
 		return { content, toolCalls };
