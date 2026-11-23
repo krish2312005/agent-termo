@@ -38,6 +38,14 @@ describe('executeTool', () => {
 		expect(existsSync(lifecycleAbsolutePath)).toBe(false);
 	});
 
+	it('file:write explains required arguments when the model sends an empty call', async () => {
+		const result = await executeTool('file:write', {}, PROJECT_ROOT);
+		expect(result.success).toBe(false);
+		expect(result.error).toContain('path is required');
+		expect(result.error).toContain('"path" and "content"');
+		expect(result.error).toContain('empty arguments');
+	});
+
 	it('file:write with empty content creates an empty file instead of a deletion', async () => {
 		const path = '.test-empty-write.txt';
 		const absolutePath = resolve(PROJECT_ROOT, path);
