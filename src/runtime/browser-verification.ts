@@ -169,7 +169,7 @@ export async function runBrowserVerification(args: Record<string, unknown>, proj
     const lines = [
       `URL: ${page.url()}`,
       `Viewport: ${viewportName} (${viewport.width}x${viewport.height})`,
-      `Actions: ${actionResults.length}/${actions.length} passed`,
+      `Actions: ${Math.max(0, actionResults.length - 1)}/${actions.length} passed`,
       ...actionResults.map((item) => 'PASS ' + item),
       `Browser diagnostics: ${diagnostics.length}`,
       ...diagnostics.map((item) => 'ERROR ' + item),

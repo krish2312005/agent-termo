@@ -72,7 +72,7 @@ describe.skipIf(!hasPlaywright)('Playwright browser verification integration', (
       ]),
     }, projectRoot);
     expect(success.success).toBe(true);
-    expect(success.output).toContain('Actions: 4/3 passed');
+    expect(success.output).toContain('Actions: 3/3 passed');
     expect(success.output).toContain('390x844');
 
     const failure = await runBrowserVerification({
