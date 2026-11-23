@@ -84,6 +84,11 @@ describe('context budgeting and compaction', () => {
       contextWindowTokens: 131_072,
       maxOutputTokens: 8_192,
     });
+    expect(resolveContextBudget('nvidia/llama-3.1-nemotron-70b-instruct', {})).toMatchObject({
+      contextWindowTokens: 131_072,
+      maxOutputTokens: 4_096,
+      inputBudgetTokens: 124_928,
+    });
     expect(resolveContextBudget('qwen/qwq-32b', {})).toMatchObject({
       contextWindowTokens: 131_072,
       maxOutputTokens: 4_096,

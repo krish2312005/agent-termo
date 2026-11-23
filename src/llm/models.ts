@@ -23,6 +23,11 @@ export const NVIDIA_NIM_MODEL_LIMITS: Record<string, ProviderModelLimits> = {
     contextWindowTokens: 131_072,
     source: 'https://catalog.ngc.nvidia.com/orgs/nim/deepseek-ai/models/deepseek-r1/hf-5dde110-nim-fp8',
   },
+  'nvidia/llama-3.1-nemotron-70b-instruct': {
+    contextWindowTokens: 131_072,
+    maxOutputTokens: 4_096,
+    source: 'https://huggingface.co/nvidia/Llama-3.1-Nemotron-70B-Instruct',
+  },
   'deepseek-ai/deepseek-v4-pro': {
     contextWindowTokens: 1_000_000,
     maxOutputTokens: 16_384,

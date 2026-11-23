@@ -14,6 +14,10 @@ describe('NVIDIA NIM model limits', () => {
     expect(getProviderModelLimits('deepseek-ai/deepseek-r1')).toMatchObject({
       contextWindowTokens: 131_072,
     });
+    expect(getProviderModelLimits('nvidia/llama-3.1-nemotron-70b-instruct')).toMatchObject({
+      contextWindowTokens: 131_072,
+      maxOutputTokens: 4_096,
+    });
   });
 });
 
