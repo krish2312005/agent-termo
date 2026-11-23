@@ -76,9 +76,11 @@ its invariants. Unused parallel modules are not a completed migration.
 
 ## Additional reliability work on this branch
 
-- The active shell executor now starts common development-server commands as retained background terminal sessions. Their output is captured with bounded buffering, can be read incrementally by cursor, and can be stopped explicitly.
-- The main tool loop no longer pauses at 40 turns. It has a larger 120-turn / 20-minute safety budget; delegated agents have a 48-turn / 10-minute budget. These are guardrails, not claims that every large task will complete within one run.
-- The system prompt now requires end-to-end full-stack tracing and real frontend/backend runtime-log inspection. This improves execution discipline but cannot replace missing browser automation or project-specific integration tests.
+- The active shell executor starts persistent background processes as retained terminal sessions. Output is buffered with bounded retention and exposed by cursor; `bash:read` now waits on stdout/stderr/exit events (up to 30 seconds) instead of requiring sleep-and-poll loops.
+- Parent and delegated agent loops have no arbitrary model-turn cutoff. They retain wall-clock safeguards (20 minutes for a parent run and 10 minutes for a delegated run), repeated-failure protection, and resumable conversation/file state.
+- Provider wire names for `browser:verify`, `bash:start`, `bash:read`, and `bash:stop` are mapped back to their registered tool names. This prevents calls such as `browser_verify` from being rejected as unknown tools.
+- File glob results are normalized to forward-slash relative paths on every operating system.
+- The system prompt requires end-to-end full-stack tracing and event-driven inspection of frontend/backend logs. Browser automation still requires Playwright and Chromium in the target project; the tool reports installation guidance when either is missing.
 
 
 ### Phase 7 — browser verification (implemented in this branch)
