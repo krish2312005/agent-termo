@@ -48,6 +48,11 @@ jobs:
       - name: Install dependencies
         run: bun install
 
+      - name: Install Playwright and Chromium for browser integration tests
+        run: |
+          npm install --no-save --no-package-lock playwright
+          ./node_modules/.bin/playwright install --with-deps chromium
+
       - name: Set package version from tag
         run: npm version "$PACKAGE_VERSION" --no-git-tag-version --allow-same-version
 
