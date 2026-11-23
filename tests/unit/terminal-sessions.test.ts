@@ -29,6 +29,32 @@ describe('background terminal sessions', () => {
     expect(readTerminalSession(session.id)?.status).toBe('stopped');
   });
 
+  it('kills descendant processes instead of leaving background children alive', async () => {
+    const session = await startTerminalSession(
+      `node -e "const { spawn } = require('node:child_process'); const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' }); console.log('GRANDCHILD_PID=' + child.pid); setInterval(() => {}, 1000);"`,
+      process.cwd(),
+    );
+    const output = readTerminalSession(session.id, 0)?.output ?? '';
+    const match = output.match(/GRANDCHILD_PID=(\\d+)/);
+    expect(match).not.toBeNull();
+    const childPid = Number(match?.[1]);
+    const stopped = await stopTerminalSession(session.id);
+    expect(stopped?.status).toBe('stopped');
+
+    const deadline = Date.now() + 2_000;
+    let childAlive = true;
+    while (childAlive && Date.now() < deadline) {
+      try {
+        process.kill(childPid, 0);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ESRCH') childAlive = false;
+        else throw error;
+      }
+      if (childAlive) await delay(50);
+    }
+    expect(childAlive).toBe(false);
+  });
+
   it('escalates to SIGKILL when a POSIX process ignores SIGTERM', async () => {
     if (process.platform === 'win32') return;
     const session = await startTerminalSession(
