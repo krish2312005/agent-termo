@@ -3,13 +3,14 @@ import {
   createClipboard,
   createHostClipboard,
   createRendererClipboardAdapter,
+  decodePasteBytes,
   RGBA,
   SyntaxStyle,
   type CliRenderer,
   type ClipboardService,
   type TextareaRenderable,
 } from "@opentui/core";
-import { render, useKeyboard, useRenderer } from "@opentui/solid";
+import { render, useKeyboard, usePaste, useRenderer } from "@opentui/solid";
 import { For, Show, createSignal, onCleanup, type Accessor } from "solid-js";
 import { createInterface } from "node:readline";
 import packageJson from "../../package.json" with { type: "json" };
@@ -107,6 +108,11 @@ export function formatTokenCount(tokens: number): string {
   if (value < 1000) return String(value);
   if (value < 1_000_000) return Math.round(value / 1000) + "k";
   return (value / 1_000_000).toFixed(1).replace(/\.0$/, "") + "M";
+}
+
+/** Next masked API-key draft after a paste. Pure so it is testable without a renderer. */
+export function applySecretPaste(current: string, pasted: string | Uint8Array): string {
+  return current + (typeof pasted === "string" ? pasted : decodePasteBytes(pasted));
 }
 
 function cleanAnsi(value: string): string {
@@ -444,6 +450,14 @@ function App() {
       event.preventDefault();
       return;
     }
+  });
+
+  // Bracketed paste arrives as a PasteEvent, not a keypress. The focused
+  // textarea handles it normally, but secret mode unmounts that textarea.
+  usePaste((event) => {
+    if (!secretMode()) return;
+    setSecretDraft((value) => applySecretPaste(value, event.bytes));
+    event.preventDefault();
   });
 
   const colors: Record<UiKind, string> = {

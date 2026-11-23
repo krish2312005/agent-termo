@@ -3767,3 +3767,8 @@ Tool execution: grep
 - Result: succeeded
 - Details: src/main.ts:289: const model = typeof nimClient.getModel === 'function' ? nimClient.getModel() : 'unknown-model'; src/main.ts:691: delegatedClient.setModel(nimClient.getModel()); src/main.ts:1066: events.publish({ type: 'context.updated', sessionId, turnId, usedTokens: estimateContextTokens(conversation, tools, nimClient.getModel()), budgetTokens: resolveContextBudget(nimClient.getModel()).inputBudgetTokens, at: Date.now() }); src/main.ts:1094: events.publish({ type: 'context.updated', sessionId
 | 2026-11-23 02:00 PST | main-agent | suppress JSON tool-call payloads from streamed output | [20261123-020032-main-agent-suppress-json-tool-call-payloads-from-streamed-out.md](changes/20261123-020032-main-agent-suppress-json-tool-call-payloads-from-streamed-out.md) |
+
+- [2026-11-23 23:21] Agent-Termo session started. Model: nvidia/nemotron-3.5-super-vl-120b-a12b
+- [2026-11-23 23:21] Commands: /help /clear /memory /timeline /model /thinking /agents /history
+| 2026-11-23 15:30 PST | frontend-expert | fix(ui): accept pasted API keys in masked provider prompt | [20261123-153022-frontend-expert-fix-ui-accept-pasted-api-keys-in-masked-provider-p.md](changes/20261123-153022-frontend-expert-fix-ui-accept-pasted-api-keys-in-masked-provider-p.md) |
+| 2026-11-23 15:32 PST | git-manager | review+commit fix(ui): accept pasted API keys | [20261123-153214-git-manager-review-commit-fix-ui-accept-pasted-api-keys.md](changes/20261123-153214-git-manager-review-commit-fix-ui-accept-pasted-api-keys.md) |
