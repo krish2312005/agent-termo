@@ -77,7 +77,7 @@ its invariants. Unused parallel modules are not a completed migration.
 ## Additional reliability work on this branch
 
 - The active shell executor starts persistent background processes as retained terminal sessions. Output is buffered with bounded retention and exposed by cursor; `bash:read` now waits on stdout/stderr/exit events (up to 30 seconds) instead of requiring sleep-and-poll loops.
-- Parent and delegated agent loops have no arbitrary model-turn cutoff. They retain wall-clock safeguards (20 minutes for a parent run and 10 minutes for a delegated run), repeated-failure protection, and resumable conversation/file state.
+- Parent and delegated agent loops have no arbitrary model-turn cutoff. They retain wall-clock safeguards (20 minutes for a parent run and 10 minutes for a delegated run), repeated-failure protection, and resumable conversation/file state. If the parent time budget expires while the model has requested more tools, the pending assistant/tool exchange is persisted with explicit "not executed" results; resuming never blindly replays those side effects.
 - Provider wire names for `browser:verify`, `bash:start`, `bash:read`, and `bash:stop` are mapped back to their registered tool names. This prevents calls such as `browser_verify` from being rejected as unknown tools.
 - File glob results are normalized to forward-slash relative paths on every operating system.
 - The system prompt requires end-to-end full-stack tracing and event-driven inspection of frontend/backend logs. Browser automation still requires Playwright and Chromium in the target project; the tool reports installation guidance when either is missing.
