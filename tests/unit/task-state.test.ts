@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { finishTaskState, getToolLoopStopReason, isTransientError, shouldRunDelegationsInParallel, withTransientRetries } from '../../src/main.js';
+import { finishTaskState, getToolLoopStopReason, isTransientError, shouldClearFailedToolCalls, shouldPauseForRepeatedFailedToolCall, shouldRunDelegationsInParallel, withTransientRetries } from '../../src/main.js';
 
 describe('task resumability', () => {
 	it('keeps an interrupted task resumable instead of marking it idle', () => {
@@ -37,6 +37,21 @@ describe('task resumability', () => {
 			throw partial;
 		}, [0, 0])).rejects.toBe(partial);
 		expect(attempts).toBe(1);
+	});
+
+	it('suppresses an identical failed call only after it repeats within the same run', () => {
+		const failed = new Set(['browser:verify:{}']);
+		const blocked = new Set<string>();
+		expect(shouldPauseForRepeatedFailedToolCall('browser:verify:{}', failed, blocked)).toBe(false);
+		expect(shouldPauseForRepeatedFailedToolCall('browser:verify:{}', failed, blocked)).toBe(true);
+	});
+
+	it('clears failed-call suppression after a successful corrective operation, but not a read', () => {
+		expect(shouldClearFailedToolCalls('bash:execute', true)).toBe(true);
+		expect(shouldClearFailedToolCalls('file:write', true)).toBe(true);
+		expect(shouldClearFailedToolCalls('file:read', true)).toBe(false);
+		expect(shouldClearFailedToolCalls('git:status', true)).toBe(false);
+		expect(shouldClearFailedToolCalls('bash:execute', false)).toBe(false);
 	});
 
 	it('detects independent delegation calls as a parallel fan-out', () => {
