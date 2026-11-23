@@ -128,6 +128,56 @@ describe('agent tool-loop orchestration', () => {
 		}
 	});
 
+	it('stops duplicate empty file writes within the same model response', async () => {
+		const projectRoot = mkdtempSync(join(tmpdir(), 'agent-termo-loop-empty-write-'));
+		let providerCalls = 0;
+		const fakeClient = {
+			buildToolDefs: () => [],
+			async *streamComplete() {
+				providerCalls++;
+				throw new Error('The provider must not be called after duplicate invalid tool calls.');
+			},
+			complete: async () => ({ content: '', toolCalls: [] }),
+			formatUsage: () => '0 tokens',
+		} as unknown as NimClient;
+		const conversation: ConversationMessage[] = [
+			{ id: 'system', role: 'system', content: 'You are a coding agent.', timestamp: new Date() },
+		];
+		const taskState = { goal: 'Create test files.', status: 'running' as const, reason: '', lastActions: [] as string[] };
+		const duplicateCalls: ToolCall[] = Array.from({ length: 6 }, (_, index) => ({
+			id: 'empty-write-' + index,
+			name: 'file:write',
+			arguments: {},
+		}));
+
+		try {
+			await runToolLoop(
+				conversation,
+				projectRoot,
+				duplicateCalls,
+				{ close() {}, showPrompt() {} },
+				fakeClient,
+				'auto',
+				new Set(),
+				taskState,
+				() => '',
+				() => undefined,
+			);
+
+			const toolResults = conversation.filter((message) => message.role === 'tool');
+			expect(taskState.status).toBe('interrupted');
+			expect(taskState.reason).toContain('unchanged failed tool call');
+			expect(providerCalls).toBe(0);
+			expect(toolResults).toHaveLength(6);
+			expect(toolResults[0]?.content).toContain('path is required');
+			expect(toolResults.slice(1).every((message) =>
+				message.content.includes('already failed and was requested again unchanged'),
+			)).toBe(true);
+		} finally {
+			rmSync(projectRoot, { recursive: true, force: true });
+		}
+	});
+
 	it('pauses instead of executing an unchanged failed call forever', async () => {
 		const projectRoot = mkdtempSync(join(tmpdir(), 'agent-termo-loop-repeat-'));
 		const command = `node -e "console.error('persistent failure'); process.exit(1)"`;
