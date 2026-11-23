@@ -40,6 +40,7 @@ describe('agent tool-loop orchestration', () => {
 			},
 			complete: async () => ({ content: '', toolCalls: [] }),
 			formatUsage: () => '0 tokens',
+			getModel: () => 'test-model',
 		} as unknown as NimClient;
 
 		const conversation: ConversationMessage[] = [
@@ -98,6 +99,7 @@ describe('agent tool-loop orchestration', () => {
 			},
 			complete: async () => ({ content: '', toolCalls: [] }),
 			formatUsage: () => '0 tokens',
+			getModel: () => 'test-model',
 		} as unknown as NimClient;
 		const conversation: ConversationMessage[] = [
 			{ id: 'system', role: 'system', content: 'You are a coding agent.', timestamp: new Date() },
@@ -139,6 +141,7 @@ describe('agent tool-loop orchestration', () => {
 			},
 			complete: async () => ({ content: '', toolCalls: [] }),
 			formatUsage: () => '0 tokens',
+			getModel: () => 'test-model',
 		} as unknown as NimClient;
 		const conversation: ConversationMessage[] = [
 			{ id: 'system', role: 'system', content: 'You are a coding agent.', timestamp: new Date() },
@@ -191,6 +194,7 @@ describe('agent tool-loop orchestration', () => {
 			},
 			complete: async () => ({ content: '', toolCalls: [] }),
 			formatUsage: () => '0 tokens',
+			getModel: () => 'test-model',
 		} as unknown as NimClient;
 		const conversation: ConversationMessage[] = [
 			{ id: 'system', role: 'system', content: 'You are a coding agent.', timestamp: new Date() },
@@ -242,6 +246,7 @@ describe('agent tool-loop orchestration', () => {
 			},
 			complete: async () => ({ content: '', toolCalls: [] }),
 			formatUsage: () => '0 tokens',
+			getModel: () => 'test-model',
 		} as unknown as NimClient;
 
 		const conversation: ConversationMessage[] = [

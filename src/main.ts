@@ -28,6 +28,7 @@ import { runProjectChecks } from './runtime/checks.js';
 import { appendSessionArchive, createSession, forkSession, listSessions, loadLatestSession, loadSession, saveSession, searchSessionHistory, type StoredSession } from './runtime/sessions.js';
 import { compactConversation, estimateContextTokens, isContextWindowError, prepareConversationForRequest, resolveContextBudget } from './runtime/context.js';
 import { listTerminalSessions, stopTerminalSession } from './runtime/terminal-sessions.js';
+import { AgentEventHub } from './runtime/events.js';
 import {
 	addSubAgentProgress,
 	beginSubAgentRun,
@@ -58,6 +59,7 @@ import {
 	createInput,
 	initScreen,
 	teardownScreen,
+	formatContextMeter,
 	pick,
 	setScreenStatus,
 	promptAcceptReject,
@@ -827,6 +829,13 @@ async function runDelegatedAgent(
 }
 
 
+function observeAgentEvents(events: AgentEventHub): void {
+	events.subscribe((event) => {
+		if (event.type === 'usage.updated') setScreenStatus({ usage: event.usage });
+		else if (event.type === 'context.updated') setScreenStatus({ context: { usedTokens: event.usedTokens, budgetTokens: event.budgetTokens } });
+	});
+}
+
 /**
  * Run the tool-call loop: execute tools, feed results back to the LLM,
  * and repeat until the LLM stops issuing tool calls.
@@ -845,7 +854,16 @@ export async function runToolLoop(
 	taskPlan?: TaskPlan,
 	agentToolDefinitions?: ToolDef[],
 	onMessagesCompacted?: (messages: ConversationMessage[]) => void,
+	sessionId = '',
+	events: AgentEventHub = new AgentEventHub(),
 ): Promise<string> {
+	const turnId = crypto.randomUUID();
+	observeAgentEvents(events);
+	events.publish({ type: 'turn.started', sessionId, turnId, goal: taskState.goal, at: Date.now() });
+	const finishTurn = (status: 'completed' | 'failed' | 'cancelled' | 'paused'): string => {
+		events.publish({ type: 'turn.completed', sessionId, turnId, status, at: Date.now() });
+		return '';
+	};
 	let toolCalls = initialToolCalls;
 	let finalText = '';
 	const runStartedAt = Date.now();
@@ -888,7 +906,7 @@ export async function runToolLoop(
 			printError(taskState.reason);
 			printInfo('The task was safely paused instead of running indefinitely.');
 			onConversationChanged();
-			return '';
+			return finishTurn('paused');
 		}
 			// OpenAI-compatible APIs require the assistant tool-call message directly
 			// before the corresponding tool results. Without this message, the next
@@ -937,12 +955,14 @@ export async function runToolLoop(
 			}
 		};
 		if (allDelegations) {
-			executions.push(...await Promise.all(toolCalls.map(async (tc) =>
-				blockedResult(tc) ?? {
-					toolResult: await runDelegatedAgent(projectRoot, tc, nimClient, input, permissionMode, allowedCommands, taskState, getCheckpointId, parentContextExcerpt(conversation)),
-					applied: false,
-				},
-			)));
+			executions.push(...await Promise.all(toolCalls.map(async (tc) => {
+				const blocked = blockedResult(tc);
+				if (blocked) return blocked;
+				events.publish({ type: 'tool.started', sessionId, turnId, toolCallId: tc.id, name: tc.name, args: tc.arguments, at: Date.now() });
+				const toolResult = await runDelegatedAgent(projectRoot, tc, nimClient, input, permissionMode, allowedCommands, taskState, getCheckpointId, parentContextExcerpt(conversation));
+				events.publish({ type: 'tool.completed', sessionId, turnId, toolCallId: tc.id, name: tc.name, success: toolResult.success, at: Date.now() });
+				return { toolResult, applied: false };
+			})));
 			for (const [index, tc] of toolCalls.entries()) recordToolCallOutcome(tc, executions[index]!);
 		} else {
 			for (const tc of toolCalls) {
@@ -960,6 +980,7 @@ export async function runToolLoop(
 					executions.push(blocked);
 					continue;
 				}
+				events.publish({ type: 'tool.started', sessionId, turnId, toolCallId: tc.id, name: tc.name, args: tc.arguments, at: Date.now() });
 				let execution: (typeof executions)[number];
 				if (tc.name === 'plan:update') {
 					let result: { success: boolean; output?: string; error?: string };
@@ -976,6 +997,7 @@ export async function runToolLoop(
 						? { toolResult: await runDelegatedAgent(projectRoot, tc, nimClient, input, permissionMode, allowedCommands, taskState, getCheckpointId, parentContextExcerpt(conversation)), applied: false }
 						: await executeToolWithReview(tc.name, tc.arguments, projectRoot, input, permissionMode, allowedCommands, undefined, getCheckpointId);
 				}
+				events.publish({ type: 'tool.completed', sessionId, turnId, toolCallId: tc.id, name: tc.name, success: execution.toolResult.success, at: Date.now() });
 				executions.push(execution);
 				recordToolCallOutcome(tc, execution);
 					}
@@ -1022,7 +1044,7 @@ export async function runToolLoop(
 			taskState.reason = 'The model repeated an unchanged failed tool call. The previous diagnostic must be addressed before continuing.';
 			onConversationChanged();
 			printInfo('Task paused: the same failed tool call was requested again. Inspect the diagnostic and type "continue" after correcting the approach.');
-			return '';
+			return finishTurn('paused');
 		}
 
 			// Send conversation (including tool results) back to the LLM
@@ -1040,6 +1062,8 @@ export async function runToolLoop(
 					if (fallbackText && !fallbackText.includes('"tool_calls"') && !fallbackText.includes('<tool_call>')) printAssistantMessage(fallbackText);
 				}
 				setScreenStatus({ usage: nimClient.formatUsage() });
+				events.publish({ type: 'usage.updated', sessionId, turnId, usage: nimClient.formatUsage(), at: Date.now() });
+				events.publish({ type: 'context.updated', sessionId, turnId, usedTokens: estimateContextTokens(conversation, tools, nimClient.getModel()), budgetTokens: resolveContextBudget(nimClient.getModel()).inputBudgetTokens, at: Date.now() });
 			} catch (err) {
 				if (isRequestCancelled(err)) {
 					stopSpinner();
@@ -1047,7 +1071,7 @@ export async function runToolLoop(
 					taskState.status = 'interrupted';
 					taskState.reason = 'cancelled by user';
 					printInfo('Task paused. Type "continue" to resume from where it stopped.');
-					return '';
+					return finishTurn('cancelled');
 				}
 									if (isPartialStreamFailure(err)) {
 					stopSpinner();
@@ -1055,7 +1079,7 @@ export async function runToolLoop(
 					taskState.status = 'interrupted';
 					taskState.reason = providerError(err);
 					printInfo('The task is paused. Type "continue" to resume without replaying the partial response.');
-					return '';
+					return finishTurn('failed');
 				}
 // and parse any JSON tool calls emitted in the content.
 					try {
@@ -1064,6 +1088,10 @@ export async function runToolLoop(
 					fallbackStream.end();
 					if (!fallbackStream.printed) stopSpinner();
 				setScreenStatus({ usage: nimClient.formatUsage() });
+				events.publish({ type: 'usage.updated', sessionId, turnId, usage: nimClient.formatUsage(), at: Date.now() });
+				// The fallback request is sent without tool definitions, so this
+				// estimate omits tool schemas to match what is actually sent.
+				events.publish({ type: 'context.updated', sessionId, turnId, usedTokens: estimateContextTokens(conversation, undefined, nimClient.getModel()), budgetTokens: resolveContextBudget(nimClient.getModel()).inputBudgetTokens, at: Date.now() });
 				result = {
 					content: fallback.content,
 					toolCalls: fallback.toolCalls.length > 0 ? fallback.toolCalls : parseToolCallsFromText(fallback.content),
@@ -1078,7 +1106,7 @@ export async function runToolLoop(
 					printInfo('The task was interrupted. Type "continue" to resume from where it stopped.');
 					// Do not return stale narration from an earlier turn; the
 					// caller must not treat this interrupted run as finished.
-					return '';
+					return finishTurn('failed');
 				}
 		}
 		stopSpinner();
@@ -1114,7 +1142,7 @@ export async function runToolLoop(
 			printError('Completion blocked: required verification did not pass.', details);
 			printInfo('Task paused. Type "continue" to address the findings and rerun verification.');
 			logAgentTermoTimeline('Evidence gate blocked completion: ' + details.replace(/\s+/g, ' ').slice(0, 300), projectRoot);
-			return '';
+			return finishTurn('paused');
 		}
 	}
 
@@ -1122,6 +1150,7 @@ export async function runToolLoop(
 		void appendToTimeline(projectRoot, 'Agent-Termo', 'Completed tool-assisted request', ['Assistant summary: ' + finalText.replace(/\s+/g, ' ').slice(0, 700)], []);
 	}
 
+	finishTurn('completed');
 	return finalText;
 }
 
@@ -2214,6 +2243,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						const budget = resolveContextBudget(nimClient.getModel());
 						printInfo('Estimated input: ~' + estimated.toLocaleString() + ' tokens');
 						printInfo('Input budget: ' + budget.inputBudgetTokens.toLocaleString() + ' / ' + budget.contextWindowTokens.toLocaleString());
+						printInfo('context ' + formatContextMeter(estimated, budget.inputBudgetTokens));
 						printInfo('Output reserve: ' + budget.outputReserveTokens.toLocaleString() + ' tokens; safety margin: ' + budget.safetyMarginTokens.toLocaleString());
 						printInfo('Messages: ' + (conversation.length - 1) + ' (tool-call JSON and tool schemas included)');
 						printInfo('Active agent: ' + (activeAgentName || '(default)'));
@@ -2513,7 +2543,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						if (narration && !streamed.printed) printAssistantMessage(narration);
 
 						// Run the tool-call loop: execute tools, feed results back, repeat
-						await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, permissionMode, allowedCommands, taskState, ensureTaskCheckpoint, persistSession, activePlan, activeAgentToolDefinitions, (messages) => appendSessionArchive(projectRoot, session.id, messages));
+						await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, permissionMode, allowedCommands, taskState, ensureTaskCheckpoint, persistSession, activePlan, activeAgentToolDefinitions, (messages) => appendSessionArchive(projectRoot, session.id, messages), session.id);
 					}
 					} catch (err) {
 						stopSpinner();
@@ -2552,7 +2582,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						if (toolCalls.length > 0) {
 							const narration = (fallback.content ?? '').trim().replace(/^null$/, '').trim();
 							if (narration && !fallbackStream.printed && !narration.includes('"tool_calls"')) printAssistantMessage(narration);
-							await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, permissionMode, allowedCommands, taskState, ensureTaskCheckpoint, persistSession, activePlan, activeAgentToolDefinitions, (messages) => appendSessionArchive(projectRoot, session.id, messages));
+							await runToolLoop(conversation, projectRoot, toolCalls, input, nimClient, permissionMode, allowedCommands, taskState, ensureTaskCheckpoint, persistSession, activePlan, activeAgentToolDefinitions, (messages) => appendSessionArchive(projectRoot, session.id, messages), session.id);
 						} else {
 							const cleanText = (fallback.content ?? '').trim().replace(/^null$/, '').trim();
 							if (cleanText) {
