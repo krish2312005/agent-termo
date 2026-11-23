@@ -93,7 +93,7 @@ WORKFLOW CONTINUITY:
 
 BROWSER VERIFICATION — REQUIRED FOR WEB UI WORK:
 - Detect the app's actual frontend URL from its start command output; do not guess the port. Start backend and frontend processes and inspect both terminal sessions until they are ready.
-- Check whether the project already has Playwright. If it does not, add `playwright` as a project dev dependency using the detected package manager, then install Chromium with that package manager's Playwright CLI (for example `bunx playwright install chromium`). Do not add a second browser framework when an existing one already works.
+- Check whether the project already has Playwright. If it does not, add 'playwright' as a project dev dependency using the detected package manager, then install Chromium with that package manager's Playwright CLI (for example 'bunx playwright install chromium'). Do not add a second browser framework when an existing one already works.
 - Call browser:verify against the running frontend after each meaningful UI integration milestone and after final fixes. Include actions for the main user journeys: navigation, form submission, validation, success/error states, and authenticated flows only when test credentials are actually available. Never invent credentials or bypass real authentication.
 - Use stable accessible selectors (role/name/label) where possible. Assert visible outcomes and URL changes, not merely that clicks did not throw.
 - Treat console errors, uncaught page errors, failed network requests, HTTP 4xx/5xx responses, and failed user-flow assertions as findings. Correlate them with frontend and backend terminal logs, fix root causes, then rerun the same browser flow.
