@@ -13,10 +13,18 @@ describe('background terminal sessions', () => {
     );
     expect(session.id).toBeTruthy();
     expect(session.command).toContain('node -e');
-    await delay(250);
-    const read = readTerminalSession(session.id, 0);
-    expect(read?.output).toContain('SERVER_READY');
-    expect(read?.output).toContain('LATE_STARTUP_ERROR');
+    let read = readTerminalSession(session.id, 0);
+    let output = read?.output ?? '';
+    const deadline = Date.now() + 5_000;
+    while (read?.status === 'running' && Date.now() < deadline) {
+      const remaining = deadline - Date.now();
+      const next = await waitForTerminalSession(session.id, read.nextCursor, remaining);
+      if (!next) break;
+      output += next.output;
+      read = next;
+    }
+    expect(output).toContain('SERVER_READY');
+    expect(output).toContain('LATE_STARTUP_ERROR');
     expect(read?.status).toBe('exited');
     expect(read?.exitCode).toBe(0);
   });
