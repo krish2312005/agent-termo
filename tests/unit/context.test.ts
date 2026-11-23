@@ -80,6 +80,10 @@ describe('context budgeting and compaction', () => {
       contextWindowTokens: 1_000_000,
       maxOutputTokens: 8_192,
     });
+    expect(resolveContextBudget('deepseek-ai/deepseek-r1', {})).toMatchObject({
+      contextWindowTokens: 131_072,
+      maxOutputTokens: 8_192,
+    });
     expect(resolveContextBudget('qwen/qwq-32b', {})).toMatchObject({
       contextWindowTokens: 131_072,
       maxOutputTokens: 4_096,
