@@ -113,7 +113,53 @@ function parseMarkupToolCalls(text: string): ToolCall[] {
 }
 
 function removeToolCallMarkup(text: string): string {
-	return text.replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '').trim();
+	return text.replace(/<tool_call>[\\s\\S]*?<\\/tool_call>/gi, '').trim();
+}
+
+/** Parse adjacent JSON objects/arrays emitted when a model repeats its tool payload. */
+function parseAdjacentJsonValues(text: string): unknown[] {
+	const values: unknown[] = [];
+	let start = -1;
+	let closers: string[] = [];
+	let inString = false;
+	let escaped = false;
+
+	for (let index = 0; index < text.length; index++) {
+		const character = text[index]!;
+		if (start < 0) {
+			if (character === '{' || character === '[') {
+				start = index;
+				closers = [character === '{' ? '}' : ']'];
+			}
+			continue;
+		}
+		if (inString) {
+			if (escaped) escaped = false;
+			else if (character === '\\\\') escaped = true;
+			else if (character === '"') inString = false;
+			continue;
+		}
+		if (character === '"') inString = true;
+		else if (character === '{') closers.push('}');
+		else if (character === '[') closers.push(']');
+		else if (character === '}' || character === ']') {
+			if (closers.at(-1) !== character) {
+				start = -1;
+				closers = [];
+				continue;
+			}
+			closers.pop();
+			if (closers.length === 0) {
+				try {
+					values.push(JSON.parse(text.slice(start, index + 1)));
+				} catch {
+					// Ignore an invalid candidate and continue looking for the next value.
+				}
+				start = -1;
+			}
+		}
+	}
+	return values;
 }
 
 /**
@@ -147,40 +193,51 @@ export function parseToolCallsFromText(text: string): ToolCall[] {
 	};
 
 	const parsed = readJson(cleaned);
-	if (!parsed || typeof parsed !== 'object') return [];
-
-	const container = parsed as { tool_calls?: unknown; toolCalls?: unknown; name?: unknown; arguments?: unknown; parameters?: unknown; input?: unknown; function?: { name?: unknown; arguments?: unknown } };
-	const isSingleCall = Boolean(
-		(container.name && (container.arguments !== undefined || container.parameters !== undefined || container.input !== undefined)) ||
-		(container.function?.name && container.function.arguments !== undefined),
-	);
-	const rawCalls: unknown[] = Array.isArray(parsed)
-		? parsed
-		: Array.isArray(container.tool_calls)
-			? container.tool_calls
-			: Array.isArray(container.toolCalls)
-				? container.toolCalls
-				: isSingleCall
-					? [container]
-					: [];
+	const parsedValues = parsed && typeof parsed === 'object' ? [parsed] : parseAdjacentJsonValues(cleaned);
+	if (parsedValues.length === 0) return [];
 
 	const calls: ToolCall[] = [];
-	for (const raw of rawCalls) {
-		if (!raw || typeof raw !== 'object') continue;
-		const tc = raw as { id?: unknown; name?: unknown; arguments?: unknown; parameters?: unknown; input?: unknown; function?: { name?: unknown; arguments?: unknown } };
-		const name = fromWireToolName(String(tc.name ?? tc.function?.name ?? ''));
-		if (!name) continue;
-		const rawArgs = tc.arguments ?? tc.parameters ?? tc.input ?? tc.function?.arguments ?? {};
-		let args: Record<string, unknown> = {};
-		if (typeof rawArgs === 'string') {
-			try {
-				const parsedArgs = JSON.parse(rawArgs) as unknown;
-				args = parsedArgs && typeof parsedArgs === 'object' ? (parsedArgs as Record<string, unknown>) : { _raw: rawArgs };
-			} catch { args = { _raw: rawArgs }; }
-		} else if (rawArgs && typeof rawArgs === 'object') {
-			args = rawArgs as Record<string, unknown>;
+	for (const value of parsedValues) {
+		const containers = Array.isArray(value) ? value : [value];
+		for (const item of containers) {
+			if (!item || typeof item !== 'object') continue;
+			const container = item as { tool_calls?: unknown; toolCalls?: unknown; name?: unknown; arguments?: unknown; parameters?: unknown; input?: unknown; function?: { name?: unknown; arguments?: unknown } };
+			const isSingleCall = Boolean(
+				(container.name && (container.arguments !== undefined || container.parameters !== undefined || container.input !== undefined)) ||
+				(container.function?.name && container.function.arguments !== undefined),
+			);
+			const rawCalls: unknown[] = Array.isArray(container.tool_calls)
+				? container.tool_calls
+				: Array.isArray(container.toolCalls)
+					? container.toolCalls
+					: isSingleCall
+						? [container]
+						: Array.isArray(value) ? [container] : [];
+
+			for (const raw of rawCalls) {
+				if (!raw || typeof raw !== 'object') continue;
+				const tc = raw as { id?: unknown; name?: unknown; arguments?: unknown; parameters?: unknown; input?: unknown; function?: { name?: unknown; arguments?: unknown } };
+				const name = fromWireToolName(String(tc.name ?? tc.function?.name ?? ''));
+				if (!name) continue;
+				const rawArgs = tc.arguments ?? tc.parameters ?? tc.input ?? tc.function?.arguments ?? {};
+				let args: Record<string, unknown> = {};
+				if (typeof rawArgs === 'string') {
+					try {
+						const parsedArgs = JSON.parse(rawArgs) as unknown;
+						args = parsedArgs && typeof parsedArgs === 'object' ? (parsedArgs as Record<string, unknown>) : { _raw: rawArgs };
+					} catch { args = { _raw: rawArgs }; }
+				} else if (rawArgs && typeof rawArgs === 'object') {
+					args = rawArgs as Record<string, unknown>;
+				}
+				let id = typeof tc.id === 'string' && tc.id ? tc.id : crypto.randomUUID();
+				const duplicate = calls.find((call) => call.id === id);
+				if (duplicate) {
+					if (duplicate.name === name && JSON.stringify(duplicate.arguments) === JSON.stringify(args)) continue;
+					id = id + '-' + calls.length;
+				}
+				calls.push({ id, name, arguments: args });
+			}
 		}
-		calls.push({ id: typeof tc.id === 'string' && tc.id ? tc.id : crypto.randomUUID(), name, arguments: args });
 	}
 	return calls;
 }
