@@ -15,6 +15,19 @@ describe('verify', () => {
     expect(scanForPlaceholders('a.ts', '// TODO: implement this\nexport function f() { return 1; }')).toHaveLength(1);
   });
 
+  it('does not flag a legitimate error that merely starts with a domain word like "Todo"', () => {
+    // Regression: the placeholder regex used to match case-insensitively, so
+    // `throw new Error("Todo not found")` was wrongly reported as a stub and
+    // blocked an otherwise verified completion.
+    const content = 'export function done(id: number) { if (!row) throw new Error(`Todo not found: ${id}`); }';
+    expect(scanForPlaceholders('todo.ts', content)).toHaveLength(0);
+  });
+
+  it('still flags real placeholder throws: uppercase TODO and "not implemented"', () => {
+    expect(scanForPlaceholders('a.ts', 'function add() { throw new Error("TODO: implement add"); }')).toHaveLength(1);
+    expect(scanForPlaceholders('a.ts', 'function add() { throw new Error("Not implemented"); }')).toHaveLength(1);
+  });
+
   it('does not flag a real implementation', () => {
     expect(scanForPlaceholders('src/Transactions.tsx', 'export function Transactions() { return <ul>{items.map(renderItem)}</ul>; }')).toHaveLength(0);
   });

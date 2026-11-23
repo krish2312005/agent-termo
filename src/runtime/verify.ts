@@ -32,7 +32,10 @@ export interface VerificationResult {
 const STUB_PATTERNS: Array<{ re: RegExp; label: string }> = [
 	{ re: /function\s+[\w$]*\s*\([^)]*\)\s*(?::\s*[^\n{]+)?\s*\{\s*return\s+(null|undefined)\s*;?\s*\}/g, label: 'function body is only "return null/undefined"' },
 	{ re: /=>\s*\{\s*return\s+(null|undefined)\s*;?\s*\}/g, label: 'arrow function body is only "return null/undefined"' },
-	{ re: /throw new Error\(\s*["'`](not implemented|unimplemented|todo)/gi, label: 'throws a "not implemented" error' },
+	{ re: /throw new Error\(\s*["'`](?:not implemented|unimplemented)\b/gi, label: 'throws a "not implemented" error' },
+	// TODO must be uppercase: a lowercase "todo" is usually domain vocabulary
+	// (e.g. "Todo not found"), not a stub marker.
+	{ re: /throw new Error\(\s*["'`]TODO\b/, label: 'throws a "TODO" placeholder error' },
 	{ re: /\bNotImplementedError\b/g, label: 'raises NotImplementedError' },
 	{ re: /^\s*pass\s*(#.*)?$/gm, label: 'empty "pass" body' },
 	{ re: /\/\/\s*(TODO|FIXME)\b/i, label: 'TODO/FIXME left in the code' },
