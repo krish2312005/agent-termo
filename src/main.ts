@@ -210,12 +210,8 @@ export function toolCallSignature(toolCall: Pick<ToolCall, 'name' | 'arguments'>
 export function shouldPauseForRepeatedFailedToolCall(
 	signature: string,
 	failedToolCalls: Set<string>,
-	blockedThisRun: Set<string>,
 ): boolean {
-	if (!failedToolCalls.has(signature)) return false;
-	if (blockedThisRun.has(signature)) return true;
-	blockedThisRun.add(signature);
-	return false;
+	return failedToolCalls.has(signature);
 }
 
 // A successful operation that can change the workspace or process environment
@@ -855,7 +851,6 @@ export async function runToolLoop(
 	const failedToolCalls = new Set<string>();
 	// Older callers and saved task states may not include this field.
 	taskState.failedToolCalls ??= new Set<string>();
-	const blockedToolCallsThisRun = new Set<string>();
 	// Same evidence gate as delegated runs (runtime/verify.ts): track what this
 	// turn actually wrote and ran, independent of direct file:write/file:edit
 	// tool calls made without going through agent:delegate at all.
@@ -914,23 +909,13 @@ export async function runToolLoop(
 		let repeatedFailure = false;
 		const blockedResult = (tc: ToolCall) => {
 			const signature = toolCallSignature(tc);
-			if (!shouldPauseForRepeatedFailedToolCall(signature, failedToolCalls, blockedToolCallsThisRun)) {
-				if (!failedToolCalls.has(signature)) return undefined;
-				return {
-					toolResult: {
-						name: tc.name,
-						success: false,
-						error: 'This exact tool call failed earlier in the task and was not executed again. The previous diagnostic is in the conversation history. Verify the current state, correct the cause, or use different arguments.',
-					},
-					applied: false,
-				};
-			}
+			if (!shouldPauseForRepeatedFailedToolCall(signature, failedToolCalls)) return undefined;
 			repeatedFailure = true;
 			return {
 				toolResult: {
 					name: tc.name,
 					success: false,
-					error: 'The same failed tool call was requested repeatedly without a correction. It was not executed. Change the approach before continuing.',
+					error: 'This exact tool call already failed and was requested again unchanged. It was not executed again. The task is paused so the failure can be corrected before continuing.',
 				},
 				applied: false,
 			};
