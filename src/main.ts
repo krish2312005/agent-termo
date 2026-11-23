@@ -186,6 +186,38 @@ export function shouldRunDelegationsInParallel(toolCalls: ToolCall[]): boolean {
 	return toolCalls.length > 1 && toolCalls.every((toolCall) => toolCall.name === 'agent:delegate');
 }
 
+function normalizeToolArguments(value: unknown): unknown {
+	if (Array.isArray(value)) return value.map(normalizeToolArguments);
+	if (value && typeof value === 'object') {
+		return Object.fromEntries(
+			Object.entries(value as Record<string, unknown>)
+				.sort(([left], [right]) => left.localeCompare(right))
+				.map(([key, item]) => [key, normalizeToolArguments(item)]),
+		);
+	}
+	return value;
+}
+
+/** Stable across model responses that reorder JSON object keys. */
+export function toolCallSignature(toolCall: Pick<ToolCall, 'name' | 'arguments'>): string {
+	return toolCall.name + ':' + JSON.stringify(normalizeToolArguments(toolCall.arguments));
+}
+
+/**
+ * A failed call is blocked once per run so the model can see the diagnostic
+ * and correct its approach. Repeating it again in the same run pauses safely.
+ */
+export function shouldPauseForRepeatedFailedToolCall(
+	signature: string,
+	failedToolCalls: Set<string>,
+	blockedThisRun: Set<string>,
+): boolean {
+	if (!failedToolCalls.has(signature)) return false;
+	if (blockedThisRun.has(signature)) return true;
+	blockedThisRun.add(signature);
+	return false;
+}
+
 class RequestCancelledError extends Error {
 	constructor() {
 		super('Request cancelled');
@@ -319,11 +351,12 @@ interface TaskState {
 	reason: string;
 	lastActions: string[];
 	completedOperations?: Set<string>;
+	failedToolCalls: Set<string>;
 	checkpointId?: string;
 }
 
 function newTaskState(): TaskState {
-	return { goal: '', status: 'idle', reason: '', lastActions: [], completedOperations: new Set() };
+	return { goal: '', status: 'idle', reason: '', lastActions: [], completedOperations: new Set(), failedToolCalls: new Set() };
 }
 
 function recordTaskAction(state: TaskState, action: string): void {
@@ -404,6 +437,10 @@ function buildContinueMessage(state: TaskState): string {
 	if (state.lastActions.length > 0) {
 		lines.push('', 'Last completed actions (oldest first):');
 		for (const action of state.lastActions) lines.push('- ' + action);
+	}
+	if (state.failedToolCalls.size > 0) {
+		lines.push('', 'Previously failed tool calls — DO NOT repeat these exact calls. Their diagnostics are in the conversation history. Verify prerequisites or change the arguments before attempting a recovery:');
+		for (const signature of [...state.failedToolCalls].slice(-8)) lines.push('- ' + signature.slice(0, 500));
 	}
 	lines.push(
 		'',
@@ -803,7 +840,8 @@ export async function runToolLoop(
 	let toolCalls = initialToolCalls;
 	let finalText = '';
 	const runStartedAt = Date.now();
-	const failedToolCalls = new Set<string>();
+	const failedToolCalls = taskState.failedToolCalls;
+	const blockedToolCallsThisRun = new Set<string>();
 	// Same evidence gate as delegated runs (runtime/verify.ts): track what this
 	// turn actually wrote and ran, independent of direct file:write/file:edit
 	// tool calls made without going through agent:delegate at all.
@@ -860,8 +898,36 @@ export async function runToolLoop(
 						const allDelegations = shouldRunDelegationsInParallel(toolCalls);
 		const executions: Array<{ toolResult: { success: boolean; output?: string; error?: string; name?: string }; applied: boolean; change?: ProposedFileChange }> = [];
 		let repeatedFailure = false;
+		const blockedResult = (tc: ToolCall) => {
+			const signature = toolCallSignature(tc);
+			if (!shouldPauseForRepeatedFailedToolCall(signature, failedToolCalls, blockedToolCallsThisRun)) {
+				if (!failedToolCalls.has(signature)) return undefined;
+				return {
+					toolResult: {
+						name: tc.name,
+						success: false,
+						error: 'This exact tool call failed earlier in the task and was not executed again. The previous diagnostic is in the conversation history. Verify the current state, correct the cause, or use different arguments.',
+					},
+					applied: false,
+				};
+			}
+			repeatedFailure = true;
+			return {
+				toolResult: {
+					name: tc.name,
+					success: false,
+					error: 'The same failed tool call was requested repeatedly without a correction. It was not executed. Change the approach before continuing.',
+				},
+				applied: false,
+			};
+		};
 		if (allDelegations) {
-						executions.push(...await Promise.all(toolCalls.map((tc) => runDelegatedAgent(projectRoot, tc, nimClient, input, permissionMode, allowedCommands, taskState, getCheckpointId, parentContextExcerpt(conversation)).then((toolResult) => ({ toolResult, applied: false })) )));
+			executions.push(...await Promise.all(toolCalls.map(async (tc) =>
+				blockedResult(tc) ?? {
+					toolResult: await runDelegatedAgent(projectRoot, tc, nimClient, input, permissionMode, allowedCommands, taskState, getCheckpointId, parentContextExcerpt(conversation)),
+					applied: false,
+				},
+			)));
 		} else {
 			for (const tc of toolCalls) {
 				if (Date.now() - runStartedAt > 20 * 60 * 1000) {
@@ -871,17 +937,9 @@ export async function runToolLoop(
 					});
 					continue;
 				}
-				const signature = tc.name + ':' + JSON.stringify(tc.arguments);
-				if (failedToolCalls.has(signature)) {
-					repeatedFailure = true;
-					executions.push({
-						toolResult: {
-							name: tc.name,
-							success: false,
-							error: 'The identical tool call already failed in this turn and was not executed again. Inspect the previous diagnostic, change the source or command, then retry with a different call.',
-						},
-						applied: false,
-					});
+				const blocked = blockedResult(tc);
+				if (blocked) {
+					executions.push(blocked);
 					continue;
 				}
 				if (tc.name === 'plan:update') {
@@ -906,8 +964,11 @@ export async function runToolLoop(
 						const execution = executions[index]!;
 
 		const toolResult = execution.toolResult;
-		if (execution.applied) failedToolCalls.clear();
-		if (!toolResult.success) failedToolCalls.add(tc.name + ':' + JSON.stringify(tc.arguments));
+		if (execution.applied) {
+			failedToolCalls.clear();
+			blockedToolCallsThisRun.clear();
+		}
+		if (!toolResult.success) failedToolCalls.add(toolCallSignature(tc));
 						if (execution.applied) ranChecks.length = 0;
 				if (execution.applied && execution.change) changedFiles.set(execution.change.path, execution.change.proposedContent);
 					if (tc.name === 'bash:execute') {
@@ -1353,6 +1414,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 			reason: session.taskState.status === 'running' ? 'Agent-Termo restarted before the task finished.' : session.taskState.reason,
 			lastActions: [...session.taskState.lastActions],
 			completedOperations: new Set(session.taskState.completedOperations),
+			failedToolCalls: new Set(session.taskState.failedToolCalls ?? []),
 			checkpointId: session.taskState.checkpointId,
 		};
 	}
@@ -1405,6 +1467,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 			reason: taskState.reason,
 			lastActions: [...taskState.lastActions],
 			completedOperations: [...(taskState.completedOperations ?? [])],
+			failedToolCalls: [...taskState.failedToolCalls],
 			checkpointId: taskState.checkpointId,
 		};
 		session.taskPlan = activePlan;
@@ -1452,6 +1515,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 			reason: selected.taskState.status === 'running' ? 'Agent-Termo restarted before the task finished.' : selected.taskState.reason,
 			lastActions: [...selected.taskState.lastActions],
 			completedOperations: new Set(selected.taskState.completedOperations),
+			failedToolCalls: new Set(selected.taskState.failedToolCalls ?? []),
 			checkpointId: selected.taskState.checkpointId,
 		} : newTaskState();
 		if (activePlan?.status === 'approved' && taskState.status === 'interrupted') activePlan.status = 'in_progress';
@@ -2349,6 +2413,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					taskState.reason = '';
 					taskState.lastActions = [];
 					taskState.completedOperations = new Set();
+					taskState.failedToolCalls = new Set();
 					taskState.checkpointId = undefined;
 					taskState.status = 'running';
 			}
