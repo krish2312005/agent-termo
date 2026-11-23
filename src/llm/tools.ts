@@ -62,7 +62,7 @@ export const TOOL_DEFINITIONS: ToolDef[] = [
   },
   {
     name: 'file:write',
-    description: 'Write or overwrite a complete file. Use this to create new files or replace existing ones entirely.',
+    description: 'Write or overwrite a complete file. Requires BOTH path and content as arguments; never call with empty or missing arguments. Use this to create new files or replace existing ones entirely.',
     parameters: {
       type: 'object',
       properties: {
