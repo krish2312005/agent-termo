@@ -253,6 +253,9 @@ export class AgentEventHub {
   broken listener never breaks the agent loop.
 - No buffering, replay, filtering, or async delivery.
 
+`tests/unit/events.test.ts` covers hub delivery, unsubscribe idempotence, and
+listener-error isolation.
+
 Wiring and publication (all in `src/main.ts`):
 
 1. `runToolLoop` has two trailing optional parameters so existing positional
@@ -313,17 +316,17 @@ call already writes; that duplicate is harmless and intentional in this slice.
 
 ## Context meter
 
-Status: `partially implemented` — the UI, the `src/main.ts` event adapter, and
-the `/context` meter print are present; pending: unit tests.
+Status: `implemented` — the UI, the `src/main.ts` event adapter, the
+`/context` meter print, and the unit tests are present.
 
 `formatContextMeter(usedTokens: number, budgetTokens: number): string` is a
 pure function in `src/ui/tui.tsx` (the existing OpenTUI module): it uses
 no UI state and does no I/O. `src/ui/index.ts` re-exports it
 (`export { formatContextMeter } from "./tui.js";`) so `src/main.ts` can keep
-importing presentation from the facade. Tests will import it from the TUI
-module itself: from `tests/unit/`, the specifier will be
-`'../../src/ui/tui.js'` — the same module `tests/unit/keys.test.ts` already
-imports.
+importing presentation from the facade. Tests live in
+`tests/unit/context-meter.test.ts` and import it from the TUI module itself:
+the specifier is `'../../src/ui/tui.js'` — the same module
+`tests/unit/keys.test.ts` already imports.
 
 - `ratio = usedTokens / budgetTokens`, clamped to `0..1`; if `budgetTokens <= 0`
   or not finite, use `1`.
