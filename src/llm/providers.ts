@@ -33,3 +33,82 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
 export function getProviderDefinition(id: string): ProviderDefinition | undefined {
   return BUILTIN_PROVIDERS.find((provider) => provider.id === id);
 }
+
+/** A provider counts as connected only when its saved API key is non-empty. */
+export function isProviderConnected(provider: Pick<StoredProviderConfig, 'apiKey'> | null | undefined): boolean {
+  return typeof provider?.apiKey === 'string' && provider.apiKey.trim().length > 0;
+}
+
+/** Model used for a fast switch: the saved model, else the provider's first suggested model. */
+export function providerActivationModel(
+  provider: Pick<StoredProviderConfig, 'model' | 'suggestedModels'>,
+  definition?: Pick<ProviderDefinition, 'suggestedModels'>,
+): string {
+  return provider.model.trim() || definition?.suggestedModels[0] || provider.suggestedModels[0] || '';
+}
+
+export interface ProviderGroupEntry {
+  id: string;
+  name: string;
+  description: string;
+  model: string;
+  connected: boolean;
+  active: boolean;
+  saved: StoredProviderConfig | undefined;
+}
+
+export interface ProviderGroups {
+  connected: ProviderGroupEntry[];
+  notConnected: ProviderGroupEntry[];
+}
+
+/**
+ * Split saved providers and built-ins into connected (saved key) and not connected.
+ * A current provider that was never saved (e.g. env-only NVIDIA) is listed as not
+ * connected but keeps the active marker.
+ */
+export function groupProviders(
+  saved: StoredProviderConfig[],
+  current?: { id: string; name?: string; model?: string },
+): ProviderGroups {
+  const entries = new Map<string, ProviderGroupEntry>();
+  for (const provider of saved) {
+    entries.set(provider.id, {
+      id: provider.id,
+      name: provider.name,
+      description: provider.description,
+      model: provider.model,
+      connected: isProviderConnected(provider),
+      active: provider.id === current?.id,
+      saved: provider,
+    });
+  }
+  for (const definition of BUILTIN_PROVIDERS) {
+    if (entries.has(definition.id)) continue;
+    entries.set(definition.id, {
+      id: definition.id,
+      name: definition.name,
+      description: definition.description,
+      model: definition.id === current?.id ? (current?.model ?? '') : '',
+      connected: false,
+      active: definition.id === current?.id,
+      saved: undefined,
+    });
+  }
+  if (current && !entries.has(current.id)) {
+    entries.set(current.id, {
+      id: current.id,
+      name: current.name ?? current.id,
+      description: '',
+      model: current.model ?? '',
+      connected: false,
+      active: true,
+      saved: undefined,
+    });
+  }
+  const all = [...entries.values()];
+  return {
+    connected: all.filter((provider) => provider.connected),
+    notConnected: all.filter((provider) => !provider.connected),
+  };
+}

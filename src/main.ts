@@ -15,7 +15,7 @@ import { createApprovalQueue } from './runtime/approval-queue.js';
 const withApprovalPrompt = createApprovalQueue();
 import { buildSystemPrompt, filterAgentTools, resolveDelegation } from './agents/index.js';
 import { resolveProjectRoot, saveNimModel, saveNimThinking, savePermissionMode, listSavedProviders, activateProvider, saveProviderConfig } from './utils/config.js';
-import { BUILTIN_PROVIDERS, type ProviderDefinition, type StoredProviderConfig } from './llm/providers.js';
+import { BUILTIN_PROVIDERS, groupProviders, isProviderConnected, providerActivationModel, type ProviderDefinition, type StoredProviderConfig } from './llm/providers.js';
 import { resolve, relative, sep } from 'node:path';
 import { existsSync, realpathSync, readdirSync, readFileSync } from 'node:fs';
 import { ensureAgentFolder, loadProjectAgents, loadAgentCommands, type AgentCommand } from './runtime/agent-folder.js';
@@ -1220,12 +1220,22 @@ async function handleProvidersCommand(
 	const current = nimClient.getProvider();
 
 	if (action === 'list') {
-		printInfo('Configured API providers:');
-		const entries = [...configured];
-		if (!entries.some((provider) => provider.id === current.id)) entries.unshift(current);
-		for (const provider of entries) {
-			const marker = provider.id === current.id ? '  ● active' : '';
-			printInfo(`  ${provider.name} · ${provider.model || 'no model selected'}${marker}`);
+		const groups = groupProviders(configured, current);
+		printInfo('API providers:');
+		printInfo('Connected:');
+		if (groups.connected.length === 0) printInfo('  (none)');
+		for (const provider of groups.connected) {
+			printInfo(`  ${provider.name} · ${provider.model || 'no model selected'}${provider.active ? '  ● active' : ''}`);
+		}
+		printInfo('Not connected:');
+		if (groups.notConnected.length === 0) printInfo('  (none)');
+		for (const provider of groups.notConnected) {
+			const detail = provider.saved
+				? 'no API key saved'
+				: provider.active
+					? 'active session · not saved'
+					: 'not connected';
+			printInfo(`  ${provider.name} · ${detail}${provider.active ? '  ● active' : ''}`);
 		}
 		return;
 	}
@@ -1249,17 +1259,23 @@ async function handleProvidersCommand(
 	}
 
 	const requestedId = action === 'add' ? rest[0] : action;
-	const existingDefinitions = configured.filter((provider) => !BUILTIN_PROVIDERS.some((item) => item.id === provider.id));
+	const groups = groupProviders(configured, current);
 	const providerOptions = [
-		...BUILTIN_PROVIDERS.map((provider) => ({
+		...groups.connected.map((provider) => ({
 			value: provider.id,
 			label: provider.name,
-			hint: provider.protocol === 'anthropic' ? 'native Claude API' : provider.description,
+			hint: provider.model || 'no saved model',
+			group: 'Connected',
 		})),
-		...existingDefinitions.map((provider) => ({
+		...groups.notConnected.map((provider) => ({
 			value: provider.id,
 			label: provider.name,
-			hint: 'saved custom endpoint',
+			hint: provider.saved
+				? 'no API key saved'
+				: provider.active
+					? 'active session · not saved'
+					: provider.description || 'not connected',
+			group: 'Not connected',
 		})),
 	];
 	let providerId: string | null = requestedId ?? null;
@@ -1310,22 +1326,69 @@ async function handleProvidersCommand(
 	}
 
 	const saved = configured.find((provider) => provider.id === providerId);
-	const secret = await input.questionSecret(
-		saved
-			? 'API key (press Enter to keep the saved key): '
-			: 'API key (input hidden): ',
-	);
-	if (secret === null) {
-		printInfo('Provider setup cancelled.');
-		return;
-	}
-	const envKey = process.env[providerId.toUpperCase().replace(/[^A-Z0-9]/g, '_') + '_API_KEY']
-		?? (providerId === 'nvidia' ? process.env.NIM_API_KEY : undefined)
-		?? '';
-	const apiKey = secret.trim() || saved?.apiKey || envKey;
-	if (!apiKey) {
-		printError('An API key is required for ' + definition.name + '.');
-		return;
+	let apiKey = '';
+	if (saved && isProviderConnected(saved)) {
+		const model = providerActivationModel(saved, definition);
+		const choice = await pick({
+			title: 'Provider: ' + saved.name,
+			items: [
+				{ value: 'use-saved', label: 'Use saved API key', hint: model || 'choose a model next' },
+				{ value: 'change-key', label: 'Enter a new API key', hint: 'replace the saved key' },
+			],
+			current: 'use-saved',
+		});
+		if (!choice) {
+			printInfo('Provider switch cancelled.');
+			return;
+		}
+		if (choice === 'use-saved') {
+			if (model) {
+				const provider = { ...saved, model };
+				if (model === saved.model) activateProvider(saved.id);
+				else saveProviderConfig(provider);
+				nimClient.setProvider(provider);
+				setScreenStatus({ model: provider.model });
+				printSuccess('Active provider: ' + provider.name + ' · ' + provider.model);
+				logAgentTermoTimeline('Provider switched to ' + provider.name + ' (' + provider.model + ')', projectRoot);
+				return;
+			}
+			// No saved or suggested model: reuse the saved key and pick a model below.
+			apiKey = saved.apiKey;
+		} else {
+			const replacement = await input.questionSecret('New API key (input hidden): ');
+			if (replacement === null) {
+				printInfo('Provider setup cancelled.');
+				return;
+			}
+			apiKey = replacement.trim();
+			if (!apiKey) {
+				printInfo('API key unchanged; nothing was saved.');
+				return;
+			}
+			if (model) {
+				const provider = { ...saved, model, apiKey };
+				saveProviderConfig(provider);
+				nimClient.setProvider(provider);
+				setScreenStatus({ model: provider.model });
+				printSuccess('API key updated · active provider: ' + provider.name + ' · ' + provider.model);
+				logAgentTermoTimeline('Provider key updated: ' + provider.name, projectRoot);
+				return;
+			}
+		}
+	} else {
+		const secret = await input.questionSecret('API key (input hidden): ');
+		if (secret === null) {
+			printInfo('Provider setup cancelled.');
+			return;
+		}
+		const envKey = process.env[providerId.toUpperCase().replace(/[^A-Z0-9]/g, '_') + '_API_KEY']
+			?? (providerId === 'nvidia' ? process.env.NIM_API_KEY : undefined)
+			?? '';
+		apiKey = secret.trim() || envKey;
+		if (!apiKey) {
+			printError('An API key is required for ' + definition.name + '.');
+			return;
+		}
 	}
 
 	const candidate: StoredProviderConfig = {

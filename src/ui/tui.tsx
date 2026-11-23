@@ -21,7 +21,15 @@ export type UiKind = "user" | "assistant" | "tool" | "info" | "success" | "error
 export interface UiEntry { id: number; kind: UiKind; content: string; streaming?: boolean; }
 export interface Key { name: string; text?: string; }
 export interface CommandInfo { name: string; description: string; }
-export interface PickItem { value: string; label: string; hint?: string; }
+export interface PickItem {
+  value: string;
+  label: string;
+  hint?: string;
+  /** Optional section name; rows from different groups get a non-selectable header. */
+  group?: string;
+  /** A non-selectable section header rendered by the picker. */
+  header?: boolean;
+}
 interface PickerState {
   title: string;
   items: PickItem[];
@@ -181,17 +189,38 @@ async function copySelection(text: string): Promise<void> {
   }
 }
 
-function filteredPicker(query: string, items: PickItem[], allowCustom = false): PickItem[] {
+/** Filter picker rows by query and insert non-selectable headers for grouped items. */
+export function filteredPicker(query: string, items: PickItem[], allowCustom = false): PickItem[] {
   const words = query.toLowerCase().split(/\s+/).filter(Boolean);
-  const filtered = items.filter((item) => {
+  const matches = items.filter((item) => {
+    if (item.header) return false;
     const haystack = (item.label + " " + (item.hint ?? "")).toLowerCase();
     return words.every((word) => haystack.includes(word));
   });
+  const grouped = matches.some((item) => item.group);
+  const filtered: PickItem[] = [];
+  let lastGroup: string | undefined;
+  for (const item of matches) {
+    if (grouped && item.group && item.group !== lastGroup) {
+      filtered.push({ value: "", label: item.group, header: true });
+      lastGroup = item.group;
+    }
+    filtered.push(item);
+  }
   const typed = query.trim();
   if (allowCustom && typed && !items.some((item) => item.value === typed)) {
     filtered.push({ value: typed, label: typed, hint: "use as typed" });
   }
   return filtered;
+}
+
+/** Next selectable picker row, skipping non-selectable section headers. */
+export function nextPickerIndex(items: PickItem[], from: number, delta: number): number {
+  const step = delta >= 0 ? 1 : -1;
+  for (let index = from + step; index >= 0 && index < items.length; index += step) {
+    if (!items[index]?.header) return index;
+  }
+  return from;
 }
 
 function choosePicker(value: string | null): void {
@@ -335,20 +364,24 @@ function App() {
     const currentPicker = picker();
 
     if (currentPicker) {
-      if (name === "up") setPicker((current) => current ? { ...current, selected: Math.max(0, current.selected - 1) } : current);
-      else if (name === "down") setPicker((current) => current ? { ...current, selected: Math.min(Math.max(0, current.filtered.length - 1), current.selected + 1) } : current);
-      else if (name === "enter") choosePicker(currentPicker.filtered[currentPicker.selected]?.value ?? null);
+      if (name === "up") setPicker((current) => current ? { ...current, selected: nextPickerIndex(current.filtered, current.selected, -1) } : current);
+      else if (name === "down") setPicker((current) => current ? { ...current, selected: nextPickerIndex(current.filtered, current.selected, 1) } : current);
+      else if (name === "enter") {
+        const item = currentPicker.filtered[currentPicker.selected];
+        if (item && !item.header) choosePicker(item.value);
+      }
       else if (name === "escape" || name === "ctrl+c") choosePicker(null);
       else if (name === "backspace") setPicker((current) => {
         if (!current) return current;
         const query = current.query.slice(0, -1);
         const filtered = filteredPicker(query, current.items, current.allowCustom);
-        return { ...current, query, filtered, selected: Math.min(current.selected, Math.max(0, filtered.length - 1)) };
+        return { ...current, query, filtered, selected: nextPickerIndex(filtered, -1, 1) };
       });
       else if (key.text && key.text.length > 0 && key.text >= " ") setPicker((current) => {
         if (!current) return current;
         const query = current.query + key.text;
-        return { ...current, query, filtered: filteredPicker(query, current.items, current.allowCustom), selected: 0 };
+        const filtered = filteredPicker(query, current.items, current.allowCustom);
+        return { ...current, query, filtered, selected: nextPickerIndex(filtered, -1, 1) };
       });
       event.preventDefault();
       return;
@@ -553,7 +586,9 @@ function App() {
             <text fg="#D99168">{current().title}</text>
             <text fg="#8F8982">Filter: {current().query}</text>
             <For each={visiblePickerItems()}>
-              {(item) => <text fg={item.selected ? "#F0B38D" : "#D0C9C2"}>{item.selected ? "› " : "  "}{item.label}{item.hint ? "  " + item.hint : ""}</text>}
+              {(item) => item.header
+                ? <text fg="#8F8982">{"— " + item.label + " —"}</text>
+                : <text fg={item.selected ? "#F0B38D" : "#D0C9C2"}>{item.selected ? "› " : "  "}{item.label}{item.hint ? "  " + item.hint : ""}</text>}
             </For>
             <text fg="#8F8982">↑ ↓ move · type to filter · Enter select · Esc cancel</text>
           </box>
@@ -895,7 +930,8 @@ export function pick(options: { title: string; items: PickItem[]; current?: stri
   if (!renderer || options.items.length === 0) return Promise.resolve(null);
   if (pickerResolver) choosePicker(null);
   const filtered = filteredPicker("", options.items, options.allowCustom);
-  const selected = Math.max(0, filtered.findIndex((item) => item.value === options.current));
+  const match = filtered.findIndex((item) => !item.header && item.value === options.current);
+  const selected = match >= 0 ? match : nextPickerIndex(filtered, -1, 1);
   setPicker({ title: options.title, items: options.items, filtered, selected, query: "", allowCustom: options.allowCustom === true });
   return new Promise((resolve) => { pickerResolver = resolve; });
 }

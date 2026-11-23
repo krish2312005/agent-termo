@@ -3811,3 +3811,4 @@ User request
 
 ### Notes
 - (none)
+| 2026-11-23 15:46 PST | frontend-expert | providers connected grouping and fast switch | [20261123-154614-frontend-expert-providers-connected-grouping-and-fast-switch.md](changes/20261123-154614-frontend-expert-providers-connected-grouping-and-fast-switch.md) |
