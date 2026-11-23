@@ -113,7 +113,7 @@ function parseMarkupToolCalls(text: string): ToolCall[] {
 }
 
 function removeToolCallMarkup(text: string): string {
-	return text.replace(/<tool_call>[\\s\\S]*?<\\/tool_call>/gi, '').trim();
+	return text.replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '').trim();
 }
 
 /** Parse adjacent JSON objects/arrays emitted when a model repeats its tool payload. */
@@ -135,7 +135,7 @@ function parseAdjacentJsonValues(text: string): unknown[] {
 		}
 		if (inString) {
 			if (escaped) escaped = false;
-			else if (character === '\\\\') escaped = true;
+			else if (character === '\\') escaped = true;
 			else if (character === '"') inString = false;
 			continue;
 		}
@@ -655,6 +655,8 @@ export class NimClient {
 			}, { signal: controller.signal });
 
 			const rawChunks: string[] = [];
+			let deferredJsonText: string | undefined;
+			let emittedVisibleText = false;
 			const toolCalls = new ToolCallStreamAccumulator();
 			const toolCallSnapshots = new Map<number, { name: string; arguments: string }>();
 			const startTag = '<tool_call>';
@@ -663,7 +665,9 @@ export class NimClient {
 			let insideMarkupCall = false;
 
 			const emitVisible = (text: string): void => {
-				if (text && text !== 'null' && text !== 'undefined') onChunk?.(text);
+				if (!text || text === 'null' || text === 'undefined') return;
+				if (text.trim()) emittedVisibleText = true;
+				onChunk?.(text);
 			};
 			const emitTextChunk = (text: string): void => {
 				let pending = pendingText + text;
@@ -706,7 +710,15 @@ export class NimClient {
 					rawChunks.push(rawContent);
 					outputCharacters += rawContent.length;
 					this.updateRequestOutputUsage(Math.ceil(outputCharacters / 4));
-					emitTextChunk(rawContent);
+					const accumulated = rawChunks.join('');
+					if (deferredJsonText !== undefined) {
+						deferredJsonText += rawContent;
+					} else if (!emittedVisibleText && /^[\\s]*[\\[{]/.test(accumulated)) {
+						// Hold JSON-looking output until we know whether it is a tool payload.
+						deferredJsonText = accumulated;
+					} else {
+						emitTextChunk(rawContent);
+					}
 				}
 				if (delta.tool_calls) {
 					for (const toolCall of delta.tool_calls) {
@@ -734,6 +746,9 @@ export class NimClient {
 			this.finishRequestUsage(responsePromptTokens || this.estimatePromptTokens(messages, tools), responseCompletionTokens || Math.ceil(outputCharacters / 4), responsePromptTokens > 0);
 			const parsedToolCalls = toolCalls.toToolCalls();
 			let visibleContent = content;
+			if (parsedToolCalls.length === 0 && deferredJsonText !== undefined) {
+				emitVisible(deferredJsonText);
+			}
 			if (parsedToolCalls.length === 0) {
 				const textCalls = parseToolCallsFromText(content);
 				if (textCalls.length > 0) {
