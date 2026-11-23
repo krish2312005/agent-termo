@@ -738,7 +738,7 @@ async function runDelegatedAgent(
 			}
 		}
 
-		// A delegated agent must return a final report. Reaching the iteration limit
+		// A delegated agent must return a final report. Reaching the time budget
 		// after tool calls is not completion: the parent must see the failure and recover.
 		const output = finalText.trim();
 		if (!output) {
@@ -811,6 +811,24 @@ export async function runToolLoop(
 	while (toolCalls.length > 0) {
 		const budgetStopReason = getToolLoopStopReason(Date.now() - runStartedAt);
 		if (budgetStopReason) {
+			// Preserve pending model intent as a complete assistant/tool exchange.
+			// The calls have not run, so record explicit failures instead of replaying
+			// potentially side-effecting tools automatically after a resume.
+			conversation.push({
+				id: crypto.randomUUID(),
+				role: 'assistant',
+				content: finalText || '',
+				toolCalls,
+				timestamp: new Date(),
+			});
+			for (const toolCall of toolCalls) {
+				conversation.push({
+					id: toolCall.id,
+					role: 'tool',
+					content: 'Not executed: ' + budgetStopReason + ' The pending request was preserved for review. Resume with "continue" and decide whether the action should be retried.',
+					timestamp: new Date(),
+				});
+			}
 			taskState.status = 'interrupted';
 			taskState.reason = budgetStopReason + ' Progress is preserved; type "continue" to resume.';
 			printError(taskState.reason);
