@@ -35,10 +35,19 @@ export interface InputController {
   close: () => void;
   showPrompt: () => void;
 }
+export interface ScreenContext { usedTokens: number; budgetTokens: number; }
+export interface ScreenState {
+  model: string;
+  project: string;
+  thinking: string;
+  usage: string;
+  permissionMode: PermissionMode;
+  context?: ScreenContext;
+}
 
 const [entries, setEntries] = createSignal<UiEntry[]>([]);
 const [status, setStatus] = createSignal("");
-const [screen, setScreen] = createSignal({ model: "", project: "", thinking: "auto", usage: "0 tokens", permissionMode: "ask" as "ask" | "files" | "auto" });
+const [screen, setScreen] = createSignal<ScreenState>({ model: "", project: "", thinking: "auto", usage: "0 tokens", permissionMode: "ask" });
 const [commands, setCommandsState] = createSignal<CommandInfo[]>([]);
 const [agentNames, setAgentNamesState] = createSignal<string[]>([]);
 const [contextFiles, setContextFilesState] = createSignal<string[]>([]);
@@ -82,6 +91,15 @@ export function permissionBarColor(mode: PermissionMode): string {
 }
 const keyHandlers = new Set<(key: Key) => void>();
 const history: string[] = [];
+
+/** Compact 7-cell context usage meter, e.g. `▰▰▰▱▱▱▱ 43%`. */
+export function formatContextMeter(usedTokens: number, budgetTokens: number): string {
+  const valid = Number.isFinite(usedTokens) && Number.isFinite(budgetTokens) && budgetTokens > 0;
+  const ratio = valid ? Math.min(1, Math.max(0, usedTokens / budgetTokens)) : 1;
+  const filled = Math.max(0, Math.min(7, Math.round(ratio * 7)));
+  const percent = Math.round(ratio * 100);
+  return "▰".repeat(filled) + "▱".repeat(7 - filled) + " " + percent + "%";
+}
 
 function cleanAnsi(value: string): string {
   return value
@@ -426,6 +444,14 @@ function App() {
     "diff-add": "#B7E4C7", "diff-remove": "#F0B4AE", "diff-context": "#BDB6AE",
   };
 
+  const statusLine = () => {
+    const state = screen();
+    const rest = state.thinking + " · " + state.permissionMode + " · " + state.usage;
+    return state.context
+      ? "context " + formatContextMeter(state.context.usedTokens, state.context.budgetTokens) + " · " + rest
+      : rest;
+  };
+
   const handleSelectionMouseUp = () => {
     const selectedText = activeRenderer.getSelection()?.getSelectedText() ?? "";
     if (selectedText) void copySelection(selectedText);
@@ -441,7 +467,17 @@ function App() {
       gap={0}
       onMouseUp={handleSelectionMouseUp}
     >
-      <box height={2} flexDirection="row" justifyContent="space-between" alignItems="center">
+      <box
+        width="100%"
+        border
+        borderStyle="rounded"
+        borderColor="#6D625A"
+        paddingX={1}
+        flexShrink={0}
+        flexDirection="row"
+        justifyContent="space-between"
+        alignItems="center"
+      >
         <box flexDirection="row" alignItems="center" gap={1}>
           <text fg="#D99168">✻ Agent-Termo</text>
           <text fg="#8D857D">v{packageJson.version}</text>
@@ -534,7 +570,7 @@ function App() {
         </Show>
       </box>
       <box height={1} flexDirection="row" justifyContent="space-between">
-        <text fg="#8D857D">{screen().thinking} · {screen().permissionMode} · {screen().usage}</text>
+        <text fg="#8D857D">{statusLine()}</text>
         <text fg="#8D857D">{status() || (legacyAppleTerminal
           ? "Return send · Shift+Return newline · Tab complete · Select text to copy · Ctrl+C quit"
           : "Enter send · Shift+Enter newline · Tab complete · Select text to copy · Ctrl+C quit")}</text>
@@ -612,7 +648,7 @@ export async function teardownScreen(): Promise<void> {
   await current.closed.catch(() => {});
 }
 
-export function setScreenStatus(info: { model?: string; project?: string; thinking?: string; usage?: string }): void {
+export function setScreenStatus(info: { model?: string; project?: string; thinking?: string; usage?: string; context?: ScreenContext }): void {
   setScreen((current) => ({ ...current, ...info }));
 }
 export function isRendererActive(): boolean { return renderer !== null; }

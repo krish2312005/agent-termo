@@ -3,6 +3,7 @@
 
 import type { ProposedFileChange } from "../types/index.js";
 import Chalk from "chalk";
+import packageJson from "../../package.json" with { type: "json" };
 import { loadMemory, loadTimeline } from "../memory/index.js";
 import { getSubAgent, listSubAgents, subscribeSubAgents } from "../runtime/subagents.js";
 import { buildInspector, formatDuration, statusIcon } from "./subagent-view.js";
@@ -21,6 +22,8 @@ import {
 } from "./tui.js";
 
 export * from "./screen.js";
+
+export { formatContextMeter } from "./tui.js";
 
 export interface CommandInfo {
   name: string;
@@ -67,12 +70,10 @@ const rule = (): string => "─".repeat(Math.max(10, Math.min(terminalWidth() - 
 function print(content: string, kind: UiKind = "info"): void { appendLog(content, kind); }
 
 export function printWelcome(projectRoot: string, model: string): void {
-  print("╭─ ✻ Agent-Termo " + "─".repeat(24) + "╮", "success");
-  print("│ AI coding agent for your terminal", "dim");
-  print("│ model  " + model, "info");
-  print("│ cwd    " + projectRoot, "info");
-  print("╰" + "─".repeat(42) + "╯", "success");
-  print("/help commands · /model switch NIM model · @agent invoke · Tab completes", "dim");
+  print("✻ Agent-Termo v" + packageJson.version, "success");
+  print("model  " + model, "info");
+  print("cwd    " + projectRoot, "info");
+  print("/help · /model · @agent · Tab", "dim");
 }
 
 function inline(text: string): string {
