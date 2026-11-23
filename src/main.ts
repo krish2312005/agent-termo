@@ -853,6 +853,8 @@ export async function runToolLoop(
 	// A later "continue" may follow a user/environment change and must be able
 	// to retry the same call. Persisted failures are retained for diagnostics only.
 	const failedToolCalls = new Set<string>();
+	// Older callers and saved task states may not include this field.
+	taskState.failedToolCalls ??= new Set<string>();
 	const blockedToolCallsThisRun = new Set<string>();
 	// Same evidence gate as delegated runs (runtime/verify.ts): track what this
 	// turn actually wrote and ran, independent of direct file:write/file:edit
