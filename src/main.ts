@@ -4,6 +4,8 @@
 
 import { NimClient, parseToolCallsFromText, type ThinkingCapacity } from './llm/client.js';
 import { buildPlanContext, formatTaskPlanMarkdown, parseTaskPlan, PLAN_PROGRESS_TOOL, updatePlanStep, writeTaskPlanFile, type TaskPlan } from './runtime/plans.js';
+import { getToolLoopStopReason } from './runtime/run-budget.js';
+export { getToolLoopStopReason } from './runtime/run-budget.js';
 import { activeManualCheckpointIds, createCheckpoint, findCheckpoint, latestRedoableCheckpoint, latestUndoableCheckpoint, listCheckpoints, recordCheckpointAfter, recordCheckpointBefore, redoCheckpoint, undoCheckpoint } from './runtime/checkpoints.js';
 import { TOOL_DEFINITIONS } from './llm/tools.js';
 import { executeTool, applyFileChange, setTerminalHooks, killRunningTerminal } from './tools/index.js';
@@ -780,11 +782,6 @@ async function runDelegatedAgent(
  * Run the tool-call loop: execute tools, feed results back to the LLM,
  * and repeat until the LLM stops issuing tool calls.
  */
-export function getToolLoopStopReason(_iterations: number, elapsedMs: number): string | undefined {
-	if (elapsedMs > 20 * 60 * 1000) return 'The run reached its 20-minute time budget.';
-	return undefined;
-}
-
 export async function runToolLoop(
 	conversation: ConversationMessage[],
 	projectRoot: string,
@@ -802,7 +799,6 @@ export async function runToolLoop(
 ): Promise<string> {
 	let toolCalls = initialToolCalls;
 	let finalText = '';
-	let iterations = 0;
 	const runStartedAt = Date.now();
 	const failedToolCalls = new Set<string>();
 	// Same evidence gate as delegated runs (runtime/verify.ts): track what this
@@ -813,8 +809,7 @@ export async function runToolLoop(
 
 	// Continue looping while the LLM keeps issuing tool calls
 	while (toolCalls.length > 0) {
-		iterations++;
-		const budgetStopReason = getToolLoopStopReason(iterations, Date.now() - runStartedAt);
+		const budgetStopReason = getToolLoopStopReason(Date.now() - runStartedAt);
 		if (budgetStopReason) {
 			taskState.status = 'interrupted';
 			taskState.reason = budgetStopReason + ' Progress is preserved; type "continue" to resume.';
