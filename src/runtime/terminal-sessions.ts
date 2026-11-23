@@ -209,6 +209,11 @@ export function readTerminalSession(id: string, cursor = 0): TerminalSessionSnap
   return session ? snapshot(session, cursor) : undefined;
 }
 
+/** Every retained session (no output payload) — for listing and picking one to stop. */
+export function listTerminalSessions(): TerminalSessionSnapshot[] {
+  return [...sessions.values()].map((session) => snapshot(session, session.outputBase + session.output.length));
+}
+
 /**
  * Wait for the next output/exit event instead of sleeping and repeatedly polling.
  * Resolves immediately when unread output already exists or the process has ended.

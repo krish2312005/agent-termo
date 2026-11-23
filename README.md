@@ -302,8 +302,9 @@ It includes:
 | Ctrl + C | Interrupt the current response or operation. |
 | Ctrl + D | Exit the session. |
 | Ctrl + L | Clear the screen. |
-| Ctrl + O | Toggle the terminal output panel. |
-| Ctrl + T | Toggle the terminal output panel. |
+| Ctrl + O | Show or hide the terminal output panel. |
+| Ctrl + T | Expand the terminal panel to about 60% of the screen, or shrink it back. |
+| Ctrl + K | Stop the command the agent is currently running (when the prompt is idle). |
 
 ### Mention Files and Agents
 
@@ -440,9 +441,10 @@ Use /help inside Agent-Termo to display the available commands.
 | /agent-folder | Create or refresh the project agent and command folders. |
 | /goal <text> | Set the current goal; /goal displays it. |
 | /status | Show project, model, thinking, permission, token, agent, goal, and message status. |
-| /terminal | Show terminal-session status. |
-| /terminal list | Show the current or most recent terminal command. |
-| /terminal kill | Stop a running terminal command. |
+| /terminal | Show the foreground command and running background sessions. |
+| /terminal list | Show the foreground command and running background sessions (with session IDs). |
+| /terminal kill | Stop the foreground command and every background session. |
+| /terminal kill <id> | Stop one specific background session by its ID. |
 | /context | Show context information and project/runtime paths. |
 | /compact | Compact older conversation context. |
 | /continue | Resume an interrupted task. |

@@ -27,6 +27,7 @@ import { verifyCompletionWithChecks, formatIssues, type RanCheck } from './runti
 import { runProjectChecks } from './runtime/checks.js';
 import { appendSessionArchive, createSession, forkSession, listSessions, loadLatestSession, loadSession, saveSession, searchSessionHistory, type StoredSession } from './runtime/sessions.js';
 import { compactConversation, estimateContextTokens, isContextWindowError, prepareConversationForRequest, resolveContextBudget } from './runtime/context.js';
+import { listTerminalSessions, stopTerminalSession } from './runtime/terminal-sessions.js';
 import {
 	addSubAgentProgress,
 	beginSubAgentRun,
@@ -73,6 +74,7 @@ import {
 	finishTerminalPanel,
 	printSubAgents,
 	startBackgroundCommandListener,
+	setTerminalStopHandler,
 } from './ui/index.js';
 import type { ConversationMessage, ToolCall, ToolResult, ToolDef, ProposedFileChange, PermissionMode } from './types/index.js';
 
@@ -1398,6 +1400,12 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 		onOutput: appendTerminalOutput,
 		onEnd: finishTerminalPanel,
 	});
+	// Ctrl+K in the UI stops whatever command the agent is currently running.
+	setTerminalStopHandler(async () => {
+		const result = await killRunningTerminal();
+		if (result.stopped > 0) printInfo(`Stopped ${result.stopped} agent terminal process(es).`);
+		for (const failure of result.failed) printError('Could not confirm termination of ' + failure + '.');
+	});
 	let customCommands: AgentCommand[] = loadAgentCommands(projectRoot);
 	const refreshCommandCompletion = (): void => {
 		setCommands([...COMMANDS, { name: '/mcp', description: 'list MCP servers and available tools' }, ...customCommands.filter((command) => !['skill', 'sessions', 'resume', 'fork', 'plan', 'checkpoint', 'checkpoints', 'undo', 'redo'].includes(command.name.toLowerCase())).map((command) => ({ name: '/' + command.name, description: command.description || 'project command' }))]);
@@ -2171,6 +2179,12 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 							if (result.stopped > 0) printInfo(`Stopped ${result.stopped} agent terminal process(es).`);
 							for (const failure of result.failed) printError('Could not confirm termination of ' + failure + '.');
 							if (result.stopped === 0 && result.failed.length === 0) printInfo('No agent terminal process is running.');
+						} else if (sub.startsWith('kill ') || sub.startsWith('stop ')) {
+							const id = sub.slice(sub.indexOf(' ') + 1).trim();
+							const stopped = await stopTerminalSession(id);
+							if (!stopped) printError('Unknown terminal session: ' + id);
+							else if (stopped.status === 'running') printError('Could not confirm termination of terminal session ' + id + '.');
+							else printInfo('Terminal session ' + id + ' is now ' + stopped.status + '.');
 						} else if (sub === 'list' || sub === 'status' || sub === '') {
 							const { terminalPanelVisible, terminalPanelState } = await import('./ui/screen.js');
 							const visible = terminalPanelVisible();
@@ -2178,12 +2192,19 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 							if (state) {
 								const status = state.exitCode === null ? 'running' : state.exitCode === 0 ? 'exit ' + state.exitCode : 'exit ' + state.exitCode + ' (failed)';
 								printInfo('Terminal: ' + state.command + ' — ' + status);
-								if (!visible) printInfo('(panel closed — press Ctrl+O to open)');
+								if (!visible) printInfo('(panel hidden — press Ctrl+O to open, Ctrl+T to expand)');
 							} else {
-								printInfo('No terminal session.');
+								printInfo('No foreground terminal command is shown.');
+							}
+							const running = listTerminalSessions().filter((session) => session.status === 'running');
+							if (running.length === 0) printInfo('No background terminal sessions are running.');
+							else {
+								printInfo('Background sessions (' + running.length + '):');
+								for (const session of running) printInfo('  ' + session.id + ' — ' + session.command.slice(0, 80));
+								printInfo('Stop one with /terminal kill <id>, or all with /terminal kill.');
 							}
 						} else {
-							printInfo('Usage: /terminal [list|kill] — list shows status, kill stops running command.');
+							printInfo('Usage: /terminal [list | kill | kill <session-id>] — list shows status; kill stops the running command or a specific background session.');
 						}
 						continue mainLoop;
 					}

@@ -6,5 +6,6 @@ export {
   setKeyInterceptor, setNextInput, setPermissionMode, setScreenStatus,
   startBackgroundCommandListener, startTerminalPanel, teardownScreen,
   terminalPanelState, terminalPanelVisible, terminalWidth, toggleTerminalPanel,
+  setTerminalStopHandler, terminalPanelHeight,
   type CommandInfo, type InputController, type Key, type PickItem,
 } from "./tui.js";

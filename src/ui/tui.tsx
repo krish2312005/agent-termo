@@ -47,6 +47,7 @@ const [completionHiddenFor, setCompletionHiddenFor] = createSignal("");
 const [inputActive, setInputActive] = createSignal(false);
 const [terminal, setTerminal] = createSignal<{ command: string; lines: string[]; exitCode: number | null } | null>(null);
 const [terminalVisible, setTerminalVisible] = createSignal(false);
+const [terminalExpanded, setTerminalExpanded] = createSignal(false);
 const [picker, setPicker] = createSignal<PickerState | null>(null);
 const [completionSelected, setCompletionSelected] = createSignal(0);
 const [secretMode, setSecretMode] = createSignal(false);
@@ -62,6 +63,11 @@ let historyIndex = -1;
 let historyDraft = "";
 let nextInput = "";
 let keyInterceptor: ((key: Key) => boolean) | null = null;
+// The runtime registers this so the UI can stop the command the agent is running.
+let terminalStopHandler: (() => void | Promise<void>) | null = null;
+export function setTerminalStopHandler(handler: (() => void | Promise<void>) | null): void {
+  terminalStopHandler = handler;
+}
 
 export function permissionBarColor(mode: PermissionMode): string {
   switch (mode) {
@@ -193,10 +199,11 @@ function App() {
 
   const legacyAppleTerminal = usesLegacyAppleTerminal();
   const currentPicker = () => picker();
-  const overlayAvailableRows = (reservedRows = 0): number => {
-    const terminalPanelRows = terminalVisible() && terminal() ? 8 : 0;
-    return Math.max(1, (process.stdout.rows ?? 24) - 9 - terminalPanelRows - reservedRows);
-  };
+  const terminalPanelRows = (): number => terminalVisible() && terminal()
+    ? terminalPanelHeight(terminalExpanded(), process.stdout.rows ?? 24)
+    : 0;
+  const overlayAvailableRows = (reservedRows = 0): number =>
+    Math.max(1, (process.stdout.rows ?? 24) - 9 - terminalPanelRows() - reservedRows);
   const visiblePickerItems = () => {
     const current = picker();
     if (!current) return [];
@@ -370,8 +377,24 @@ function App() {
       event.preventDefault();
       return;
     }
-    if (name === "ctrl+o" || name === "ctrl+t") {
+    if (name === "ctrl+o") {
       if (terminal()) setTerminalVisible((visible) => !visible);
+      event.preventDefault();
+      return;
+    }
+    if (name === "ctrl+t") {
+      if (terminal()) {
+        setTerminalVisible(true);
+        setTerminalExpanded((expanded) => !expanded);
+      }
+      event.preventDefault();
+      return;
+    }
+    // Stop the command the agent is running. Only while the prompt is idle, so
+    // Ctrl+K keeps its usual kill-line meaning while typing.
+    if (name === "ctrl+k" && !inputActive() && terminal() && terminal()!.exitCode === null) {
+      setStatus("Stopping terminal…");
+      void Promise.resolve(terminalStopHandler?.()).finally(() => setStatus(""));
       event.preventDefault();
       return;
     }
@@ -428,7 +451,12 @@ function App() {
       <scrollbox flexGrow={1} flexBasis={0} minHeight={0} stickyScroll stickyStart="bottom" viewportCulling contentOptions={{ layoutMode: "list" }}>
         <For each={entries()}>
           {(entry) => (
-            <box flexDirection="column" paddingX={1}>
+            <box flexDirection="column" paddingX={1} marginTop={1}>
+              <Show when={entry.kind === "user" || entry.kind === "markdown"}>
+                <text fg={entry.kind === "user" ? "#8FCB9B" : "#6D625A"}>
+                  {entry.kind === "user" ? "❯ You" : "⏺ Agent-Termo"}
+                </text>
+              </Show>
               <Show when={entry.kind === "diff-add" || entry.kind === "diff-remove"} fallback={
                 <Show when={entry.kind === "markdown" || entry.kind === "diff-context"} fallback={<text fg={colors[entry.kind]}>{entry.content}</text>}>
                   <Show when={entry.kind === "markdown"} fallback={<text fg={colors["diff-context"]}>{entry.content}</text>}>
@@ -445,10 +473,14 @@ function App() {
         </For>
       </scrollbox>
       <Show when={terminalVisible() && terminal()} fallback={<box height={0} />}>
-        <box height={8} border borderStyle="single" borderColor="#6D625A" paddingX={1} flexDirection="column">
+        <box height={terminalPanelRows()} border borderStyle="single" borderColor="#6D625A" paddingX={1} flexDirection="column" flexShrink={0}>
           <text fg="#D99168">Terminal · {terminal()!.exitCode === null ? "running" : "exit " + terminal()!.exitCode}</text>
+          <text fg="#8D857D">$ {terminal()!.command}</text>
+          <text fg="#6D625A">
+            {terminal()!.exitCode === null ? "Ctrl+K stop · " : ""}Ctrl+T {terminalExpanded() ? "shrink" : "expand"} · Ctrl+O hide
+          </text>
           <scrollbox flexGrow={1} minHeight={0} stickyScroll stickyStart="bottom">
-            <text fg="#C9C1BA">{terminal()!.lines.slice(-5).join("\n")}</text>
+            <text fg="#C9C1BA">{terminal()!.lines.join("\n")}</text>
           </scrollbox>
         </box>
       </Show>
@@ -639,6 +671,10 @@ export function promptInputHeight(value: string, width: number, maxRows = 8): nu
 }
 
 export function terminalWidth(): number { return process.stdout.columns || 80; }
+/** Terminal panel rows: compact by default, ~60% of the screen when expanded. */
+export function terminalPanelHeight(expanded: boolean, totalRows: number): number {
+  return expanded ? Math.max(10, Math.floor(totalRows * 0.6)) : 8;
+}
 export function clipText(value: string, max: number): string {
   if (max <= 0) return "";
   const chars = [...value];
@@ -654,10 +690,13 @@ export function startTerminalPanel(command: string): void {
   setTerminal({ command, lines: [], exitCode: null });
   setTerminalVisible(true);
 }
+const MAX_TERMINAL_LINES = 2000;
 export function appendTerminalOutput(text: string): void {
   const clean = cleanAnsi(text);
   if (!clean) return;
-  setTerminal((current) => current ? { ...current, lines: [...current.lines, ...clean.split("\n")] } : current);
+  setTerminal((current) => current
+    ? { ...current, lines: [...current.lines, ...clean.split("\n")].slice(-MAX_TERMINAL_LINES) }
+    : current);
 }
 export function finishTerminalPanel(exitCode: number | null): void {
   setTerminal((current) => current ? { ...current, exitCode } : current);

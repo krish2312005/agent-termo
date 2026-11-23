@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it } from 'vitest';
-import { readTerminalSession, waitForTerminalSession, startTerminalSession, stopTerminalSession, stopAllTerminalSessions } from '../../src/runtime/terminal-sessions.js';
+import { readTerminalSession, waitForTerminalSession, startTerminalSession, stopTerminalSession, stopAllTerminalSessions, listTerminalSessions } from '../../src/runtime/terminal-sessions.js';
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -104,6 +104,19 @@ describe('background terminal sessions', () => {
 
   it('returns immediately for an unknown session', async () => {
     await expect(waitForTerminalSession('missing-session', 0, 100)).resolves.toBeUndefined();
+  });
+
+  it('lists a running session by id without dumping its output', async () => {
+    const session = await startTerminalSession(`node -e "console.log('LISTED'); setInterval(() => {}, 1000)"`, process.cwd());
+    try {
+      const listed = listTerminalSessions().find((item) => item.id === session.id);
+      expect(listed).toBeDefined();
+      expect(listed?.status).toBe('running');
+      expect(listed?.command).toContain('LISTED');
+      expect(listed?.output).toBe('');
+    } finally {
+      await stopTerminalSession(session.id);
+    }
   });
 
   it('returns only output after the supplied cursor', async () => {
