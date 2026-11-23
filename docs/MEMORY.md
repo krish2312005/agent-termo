@@ -12,7 +12,7 @@ This document tracks the project's memory and context for all agents to ensure c
 ## Current Phase
 
 - **Phase:** Implemented; typed runtime event stream (first vertical slice) landed on `local-branch`
-- **Status:** Live runtime is `src/main.ts` (`runRepl` + `runToolLoop`). The agent loop now publishes a typed `AgentEvent` stream consumed only for observability (usage + context status); the TUI shows a context meter and a compact bordered header. Prior reliability fixes (context auto-compaction, tool-loop retry gate, loop symptom) remain in place. A degenerate raw-control-token guard now rejects malformed model output, and the user's Nemotron model is registered at a 262K context window.
+- **Status:** Live runtime is `src/main.ts` (`runRepl` + `runToolLoop`). The agent loop now publishes a typed `AgentEvent` stream consumed only for observability (usage + context status); the TUI shows a context meter and a compact bordered header. Prior reliability fixes (context auto-compaction, tool-loop retry gate, loop symptom) remain in place. A degenerate raw-control-token guard now rejects malformed model output, and the user's Nemotron model is registered at a 262K context window. The masked provider API-key prompt now accepts pasted text.
 
 ## Technology Decisions (current, verified against `package.json`)
 
@@ -112,6 +112,16 @@ Verification: `bun run typecheck` clean; `bun run test` = **215 passed / 2 skipp
 - **Tests:** `tests/unit/models.test.ts` (limit + `resolveContextBudget` contextWindowTokens, `inputBudgetTokens > 200_000`) and `tests/unit/malformed-output.test.ts` (5 vs 6 repeated-line threshold, real `streamComplete`/`complete()` rejection via a fake transport with no yielded content, legitimate markup false).
 - **Verification:** `bun run typecheck` exit 0; `bun run test` = **242 passed / 2 skipped** (34 files passed, 1 skipped); `bun run build` clean (`dist/cli.js`).
 - **Unverified locally:** live provider behavior with the actual Nemotron model (needs the model/endpoint); the guard only rejects the observed repetition pattern.
+
+## Pasted API keys in the provider prompt (2026-11-23 fix)
+
+- **Symptom:** in `/providers`, the masked API-key prompt ignored pasted text; users had to type the key character by character. Normal prompt input and the picker were unaffected.
+- **Root cause:** `src/main.ts:1313` calls `input.questionSecret`; secret mode unmounts the normal `<textarea>` (`src/ui/tui.tsx`, `Show when={secretMode()}`). OpenTUI delivers bracketed paste as a separate `PasteEvent` (`@opentui/core` `InternalKeyHandler` / `usePaste`), while `useKeyboard` subscribes only to `keypress`/`keyrelease`. With the textarea unmounted, no paste receiver existed; the secret branch's `name === "paste"` case was unreachable. Normal prompts accepted paste because the focused textarea handles it natively.
+- **Fix (commit `7cf2ca8`, branch `fix/ui-paste-api-keys`):** `App` adds a `usePaste` handler that, only while `secretMode()` is true, appends decoded bytes to `secretDraft` through exported pure `applySecretPaste(current, pasted: string | Uint8Array)` (`decodePasteBytes`) and calls `event.preventDefault()`; otherwise it is a no-op, so textarea/picker paste is unchanged. `src/ui/index.ts` re-exports the helper.
+- **Tests (commit `a4cd4e3`):** `tests/unit/secret-paste.test.ts` — 4 cases: append to an existing draft, UTF-8 `Uint8Array` decode (incl. multibyte), empty paste no-op, 72-character fake key preserved intact. Fake `sk-test-*` values only.
+- **Verification:** `bun run typecheck` exit 0; `bun run test` = **252 passed / 2 skipped** (36 files passed, 1 skipped); `bun run build` clean (`dist/cli.js`).
+- **Unverified:** interactive TUI paste (`usePaste`/`useKeyboard` wiring, `preventDefault`, real terminal bracketed paste); the non-renderer raw-stdin `questionSecret` branch and picker were intentionally unchanged.
+- **Branch state:** both commits are local on `fix/ui-paste-api-keys`, unpushed and not merged to `master`.
 
 ## NIM API Validation Results (historical, 2026-07-04)
 
