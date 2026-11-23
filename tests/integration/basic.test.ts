@@ -175,6 +175,26 @@ describe('executeTool', () => {
 			expect(bare[0]?.name).toBe('file:read');
 		});
 
+		it('parses repeated adjacent JSON tool-call payloads only once per call id', () => {
+			const batch = JSON.stringify({
+				tool_calls: [
+					{ id: 'call_1', name: 'file_read', arguments: { path: 'server/db/database.ts' } },
+					{ id: 'call_2', name: 'file_read', arguments: { path: 'server/routes/users.ts' } },
+					{ id: 'call_3', name: 'file_read', arguments: { path: 'server/index.ts' } },
+				],
+			});
+			const repeated = Array.from({ length: 30 }, () => batch).join('\\n');
+			const calls = parseToolCallsFromText(repeated);
+
+			expect(calls).toHaveLength(3);
+			expect(calls.map((call) => call.id)).toEqual(['call_1', 'call_2', 'call_3']);
+			expect(calls.map((call) => call.arguments.path)).toEqual([
+				'server/db/database.ts',
+				'server/routes/users.ts',
+				'server/index.ts',
+			]);
+		});
+
 		it('parses XML-style tool calls without exposing markup', () => {
 			const calls = parseToolCallsFromText('<tool_call><function=file_read><parameter name="path">package.json</parameter></function></tool_call>');
 			expect(calls).toHaveLength(1);
