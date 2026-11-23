@@ -128,6 +128,11 @@ export function setTerminalHooks(hooks: TerminalHooks): void {
 /** The currently running bash child process, so a stuck agent terminal can be killed. */
 let activeBashChild: ChildProcess | null = null;
 
+/** Backward-compatible synchronous trigger used by the experimental core tool registry. */
+export function killProcessTree(child: ChildProcess): void {
+	void terminateProcessTree(child);
+}
+
 /** Stop the foreground command and all persistent background terminal sessions. */
 export async function killRunningTerminal(): Promise<TerminalStopSummary> {
 	const result: TerminalStopSummary = { stopped: 0, failed: [] };
