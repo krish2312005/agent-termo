@@ -46,11 +46,11 @@ function validHttpUrl(value: string): boolean {
 
 export async function runBrowserVerification(args: Record<string, unknown>, projectRoot: string): Promise<{ success: boolean; output: string; error?: string }> {
   const baseUrl = String(args.base_url ?? '').trim();
-  if (!validHttpUrl(baseUrl)) return { success: false, error: 'base_url must be a valid http:// or https:// URL.' };
+  if (!validHttpUrl(baseUrl)) return { success: false, output: '', error: 'base_url must be a valid http:// or https:// URL.' };
 
   let actions: BrowserAction[];
   try { actions = parseBrowserActions(args.actions); } catch (error) {
-    return { success: false, error: error instanceof Error ? error.message : String(error) };
+    return { success: false, output: '', error: error instanceof Error ? error.message : String(error) };
   }
 
   const timeoutMs = Math.min(120_000, Math.max(5_000, Number(args.timeout_ms) || 60_000));
@@ -61,7 +61,7 @@ export async function runBrowserVerification(args: Record<string, unknown>, proj
     mobile: { width: 390, height: 844 },
   };
   const viewport = viewports[viewportName];
-  if (!viewport) return { success: false, error: 'viewport must be desktop, tablet, or mobile.' };
+  if (!viewport) return { success: false, output: '', error: 'viewport must be desktop, tablet, or mobile.' };
   const requireFromProject = createRequire(resolve(projectRoot, 'package.json'));
   let playwright: any;
   try {
@@ -70,6 +70,7 @@ export async function runBrowserVerification(args: Record<string, unknown>, proj
   } catch {
     return {
       success: false,
+      output: '',
       error: 'Playwright is not installed in this project. Install it with the project package manager (for example: bun add -d playwright), then install Chromium with: bunx playwright install chromium. Re-run browser:verify after installation.',
     };
   }
