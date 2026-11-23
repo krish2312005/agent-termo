@@ -11,7 +11,9 @@ describe('NVIDIA NIM model limits', () => {
       contextWindowTokens: 32_768,
       maxOutputTokens: 4_000,
     });
-    expect(getProviderModelLimits('deepseek-ai/deepseek-r1')).toBeUndefined();
+    expect(getProviderModelLimits('deepseek-ai/deepseek-r1')).toMatchObject({
+      contextWindowTokens: 131_072,
+    });
   });
 });
 
