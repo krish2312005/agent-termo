@@ -3586,3 +3586,88 @@ User request
 
 ### Notes
 - (none)
+
+---
+
+## [2026-11-23 09:41] - Agent-Termo
+
+### Phase/Activity
+User request
+
+### Actions Taken
+- Request: Comapre yourself with opencode in architecture
+
+### Notes
+- (none)
+
+---
+
+## [2026-11-23 09:41] - Agent-Termo
+
+### Phase/Activity
+Tool execution: file:read
+
+### Actions Taken
+- Requested tool: file:read
+- File: docs/architecture/current-architecture-audit.md
+
+### Notes
+- Result: succeeded
+- Details: # Current Architecture Audit — Agent-Termo > Audited against `local-branch` HEAD `ec7e8c0`. Everything below reflects the > actual code in `src/`, not the aspirational target (see > `target-architecture.md` for the gap analysis). > > Static component/tech-stack/directory-structure reference is covered by > `docs/architecture.md` (singular); this audit focuses on the live code and > findings, and deliberately does not duplicate that document. ## Entry points and execution flow - `bin/agent-termo.
+
+---
+
+## [2026-11-23 09:41] - Agent-Termo
+
+### Phase/Activity
+Tool execution: file:read
+
+### Actions Taken
+- Requested tool: file:read
+- File: docs/architecture/target-architecture.md
+
+### Notes
+- Result: succeeded
+- Details: # Target Architecture — Agent-Termo > Truthful gap analysis. Every item is marked against the ACTUAL code on > `local-branch` HEAD `ec7e8c0`: > > - `implemented` — present and behaving as described in `src/`. > - `partially implemented` — present but not at the target level of ownership/robustness. > - `not yet implemented` — absent; a real gap, not a fiction. > > This document defines where the architecture should go; it does not claim the > work is done. The design stays within Agent-Termo's e
+
+---
+
+## [2026-11-23 09:41] - Agent-Termo
+
+### Phase/Activity
+Tool execution: file:read
+
+### Actions Taken
+- Requested tool: file:read
+- File: docs/architecture/architecture-comparison.md
+
+### Notes
+- Result: succeeded
+- Details: # Architecture Comparison — OpenCode vs Codex vs Agent-Termo > Source-backed comparison. This document records the exact reference sources > examined and cites real file paths for every important claim. It compares the > ACTUAL Agent-Termo code as of `local-branch` (HEAD `ec7e8c0`), not an aspirational > design. ## Research status | Repository | URL | Branch | Commit SHA (examined) | Clone method | Notes | |---|---|---|---|---|---| | OpenCode | https://github.com/anomalyco/opencode | `main` | `6
+
+---
+
+## [2026-11-23 09:41] - Agent-Termo
+
+### Phase/Activity
+Completed tool-assisted request
+
+### Actions Taken
+- Assistant summary: Based on the project's own architecture comparison document (`docs/architecture/architecture-comparison.md`), here's how Agent-Termo differs from OpenCode: **Overall structure:** OpenCode is a TypeScript monorepo where the runtime (`packages/core`) is an Effect.TS dependency-injection service graph — every subsystem (Agent, Session, SessionRunner, Provider, Tool, Permission, Bus, Database) is a service with Layers composing dependencies. Agent-Termo is a single-process TypeScript CLI where the REPL, tool loop, and UI calls all live in one module (`src/main.ts`, ~2,595 lines). **Presentation/runtime separation:** OpenCode's core is client-agnostic; `cli`, `tui`, `sdk`, `server`, and `desktop`
+
+### Notes
+- (none)
+
+---
+
+## [2026-11-23 09:41] - Agent-Termo
+
+### Phase/Activity
+User request
+
+### Actions Taken
+- Request: which one is better?
+
+### Notes
+- (none)
+| 2026-11-23 01:44 PST | main-agent | fix stale and mislabelled context meter | [20261123-014449-main-agent-fix-stale-and-mislabelled-context-meter.md](changes/20261123-014449-main-agent-fix-stale-and-mislabelled-context-meter.md) |

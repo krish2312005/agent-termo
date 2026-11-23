@@ -23,7 +23,7 @@ import {
 
 export * from "./screen.js";
 
-export { formatContextMeter } from "./tui.js";
+export { formatContextMeter, formatTokenCount } from "./tui.js";
 
 export interface CommandInfo {
   name: string;

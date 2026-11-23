@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatContextMeter } from '../../src/ui/tui.js';
+import { formatContextMeter, formatTokenCount } from '../../src/ui/tui.js';
 
 describe('formatContextMeter', () => {
   it('renders an empty meter at 0%', () => {
@@ -24,5 +24,22 @@ describe('formatContextMeter', () => {
     const [bar = '', percent = ''] = output.split(' ');
     expect([...bar]).toHaveLength(7);
     expect(percent).toMatch(/^\d+%$/);
+  });
+});
+
+describe('formatTokenCount', () => {
+  it('shows small counts verbatim', () => {
+    expect(formatTokenCount(0)).toBe('0');
+    expect(formatTokenCount(943)).toBe('943');
+  });
+
+  it('abbreviates thousands and millions', () => {
+    expect(formatTokenCount(11_243)).toBe('11k');
+    expect(formatTokenCount(22_528)).toBe('23k');
+    expect(formatTokenCount(1_200_000)).toBe('1.2M');
+  });
+
+  it('treats non-finite input as zero', () => {
+    expect(formatTokenCount(Number.NaN)).toBe('0');
   });
 });

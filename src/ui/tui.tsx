@@ -101,6 +101,14 @@ export function formatContextMeter(usedTokens: number, budgetTokens: number): st
   return "▰".repeat(filled) + "▱".repeat(7 - filled) + " " + percent + "%";
 }
 
+/** Compact token count for the status line: 943 tokens, 11k tokens, 1.2M tokens. */
+export function formatTokenCount(tokens: number): string {
+  const value = Number.isFinite(tokens) ? Math.max(0, Math.round(tokens)) : 0;
+  if (value < 1000) return String(value);
+  if (value < 1_000_000) return Math.round(value / 1000) + "k";
+  return (value / 1_000_000).toFixed(1).replace(/\.0$/, "") + "M";
+}
+
 function cleanAnsi(value: string): string {
   return value
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
@@ -446,10 +454,15 @@ function App() {
 
   const statusLine = () => {
     const state = screen();
-    const rest = state.thinking + " · " + state.permissionMode + " · " + state.usage;
-    return state.context
-      ? "context " + formatContextMeter(state.context.usedTokens, state.context.budgetTokens) + " · " + rest
-      : rest;
+    const parts: string[] = [];
+    if (state.context) {
+      parts.push(
+        "context " + formatContextMeter(state.context.usedTokens, state.context.budgetTokens) +
+        " · " + formatTokenCount(state.context.usedTokens) + "/" + formatTokenCount(state.context.budgetTokens),
+      );
+    }
+    parts.push(state.thinking, state.permissionMode, "session " + state.usage);
+    return parts.join(" · ");
   };
 
   const handleSelectionMouseUp = () => {

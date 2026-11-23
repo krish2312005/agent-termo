@@ -1503,6 +1503,17 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 		const compacted = conversation[0]?.content.match(/\n\n## Compacted Conversation Context[\s\S]*$/)?.[0] ?? '';
 		conversation[0]!.content = buildSessionPrompt() + compacted;
 	};
+	// Recompute the context meter from the live conversation so the status line
+	// never shows a stale value after /clear, a restore, or a compaction.
+	const refreshContextMeter = (): void => {
+		const model = nimClient.getModel();
+		const tools = nimClient.buildToolDefs([...TOOL_DEFINITIONS, ...getMcpToolDefinitions()]);
+		const budget = resolveContextBudget(model);
+		setScreenStatus({ context: {
+			usedTokens: estimateContextTokens(conversation, tools, model),
+			budgetTokens: budget.inputBudgetTokens,
+		} });
+	};
 
 	let persistenceWarningShown = false;
 	const persistSession = (): void => {
@@ -1575,10 +1586,12 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 		if (conversation.length === 0) conversation.push({ id: crypto.randomUUID(), role: 'system', content: buildSessionPrompt(), timestamp: new Date() });
 		refreshSystemPrompt();
 		persistSession();
+		refreshContextMeter();
 	};
 
 	await initScreen({ model: nimClient.getModel(), project: projectRoot, thinking: nimClient.getThinkingCapacity() });
 	setScreenStatus({ usage: nimClient.formatUsage() });
+	refreshContextMeter();
 	setPermissionMode(permissionMode);
 	printWelcome(projectRoot, nimClient.getModel());
 	if (session.messages.some((message) => message.role !== 'system')) {
@@ -1941,6 +1954,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					clearScreen();
 					printWelcome(projectRoot, nimClient.getModel());
 					printSuccess('Conversation cleared.');
+					refreshContextMeter();
 					continue mainLoop;
 				}
 				if (cmd === '/memory') {
@@ -2244,6 +2258,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						printInfo('Estimated input: ~' + estimated.toLocaleString() + ' tokens');
 						printInfo('Input budget: ' + budget.inputBudgetTokens.toLocaleString() + ' / ' + budget.contextWindowTokens.toLocaleString());
 						printInfo('context ' + formatContextMeter(estimated, budget.inputBudgetTokens));
+						setScreenStatus({ context: { usedTokens: estimated, budgetTokens: budget.inputBudgetTokens } });
 						printInfo('Output reserve: ' + budget.outputReserveTokens.toLocaleString() + ' tokens; safety margin: ' + budget.safetyMarginTokens.toLocaleString());
 						printInfo('Messages: ' + (conversation.length - 1) + ' (tool-call JSON and tool schemas included)');
 						printInfo('Active agent: ' + (activeAgentName || '(default)'));
@@ -2262,6 +2277,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						}
 						printSuccess(result.message);
 						persistSession();
+						refreshContextMeter();
 						continue mainLoop;
 					}
 					if (cmd === '/checkpoint' || cmd.startsWith('/checkpoint ')) {
