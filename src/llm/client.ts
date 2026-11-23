@@ -713,7 +713,7 @@ export class NimClient {
 					const accumulated = rawChunks.join('');
 					if (deferredJsonText !== undefined) {
 						deferredJsonText += rawContent;
-					} else if (!emittedVisibleText && /^[\\s]*[\\[{]/.test(accumulated)) {
+					} else if (!emittedVisibleText && /^\s*[\[{]/.test(accumulated)) {
 						// Hold JSON-looking output until we know whether it is a tool payload.
 						deferredJsonText = accumulated;
 					} else {
