@@ -218,6 +218,15 @@ export function shouldPauseForRepeatedFailedToolCall(
 	return false;
 }
 
+// A successful operation that can change the workspace or process environment
+// makes a previously failed call worth retrying (for example, installing a
+// missing dependency before retrying browser:verify).
+const READ_ONLY_TOOL_CALLS = new Set(['file:read', 'file:glob', 'grep', 'git:status', 'git:log']);
+
+export function shouldClearFailedToolCalls(toolName: string, success: boolean): boolean {
+	return success && !READ_ONLY_TOOL_CALLS.has(toolName);
+}
+
 class RequestCancelledError extends Error {
 	constructor() {
 		super('Request cancelled');
@@ -439,7 +448,7 @@ function buildContinueMessage(state: TaskState): string {
 		for (const action of state.lastActions) lines.push('- ' + action);
 	}
 	if (state.failedToolCalls.size > 0) {
-		lines.push('', 'Previously failed tool calls — DO NOT repeat these exact calls. Their diagnostics are in the conversation history. Verify prerequisites or change the arguments before attempting a recovery:');
+		lines.push('', 'Previously failed tool calls (diagnostics are in the conversation history). Do not blindly repeat them: inspect the cause and verify or change prerequisites first. After a successful corrective action, retrying the same call is allowed:');
 		for (const signature of [...state.failedToolCalls].slice(-8)) lines.push('- ' + signature.slice(0, 500));
 	}
 	lines.push(
@@ -840,7 +849,10 @@ export async function runToolLoop(
 	let toolCalls = initialToolCalls;
 	let finalText = '';
 	const runStartedAt = Date.now();
-	const failedToolCalls = taskState.failedToolCalls;
+	// Failure suppression is scoped to this execution run, not the whole task.
+	// A later "continue" may follow a user/environment change and must be able
+	// to retry the same call. Persisted failures are retained for diagnostics only.
+	const failedToolCalls = new Set<string>();
 	const blockedToolCallsThisRun = new Set<string>();
 	// Same evidence gate as delegated runs (runtime/verify.ts): track what this
 	// turn actually wrote and ran, independent of direct file:write/file:edit
@@ -964,11 +976,16 @@ export async function runToolLoop(
 						const execution = executions[index]!;
 
 		const toolResult = execution.toolResult;
-		if (execution.applied) {
+		if (execution.applied || shouldClearFailedToolCalls(tc.name, toolResult.success)) {
 			failedToolCalls.clear();
+			taskState.failedToolCalls.clear();
 			blockedToolCallsThisRun.clear();
 		}
-		if (!toolResult.success) failedToolCalls.add(toolCallSignature(tc));
+		if (!toolResult.success) {
+			const signature = toolCallSignature(tc);
+			failedToolCalls.add(signature);
+			taskState.failedToolCalls.add(signature);
+		}
 						if (execution.applied) ranChecks.length = 0;
 				if (execution.applied && execution.change) changedFiles.set(execution.change.path, execution.change.proposedContent);
 					if (tc.name === 'bash:execute') {
