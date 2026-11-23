@@ -54,7 +54,7 @@ describe('browser verification action parsing', () => {
     }
   });
 
-  it('runs a real user interaction in desktop, tablet, and mobile Chromium viewports', async () => {
+  it.skipIf(!hasInstalledChromium)('runs a real user interaction in desktop, tablet, and mobile Chromium viewports', async () => {
     const server = createServer((_request, response) => {
       response.writeHead(200, { 'content-type': 'text/html' });
       response.end(`<!doctype html>
@@ -94,9 +94,6 @@ describe('browser verification action parsing', () => {
     }
   }, 30_000);
 
-  it.skipIf(!hasInstalledChromium)('skips the real browser test when Playwright Chromium is not installed', () => {
-    expect(hasInstalledChromium).toBe(true);
-  });
 
   it('allows no extra actions', () => {
     expect(parseBrowserActions(undefined)).toEqual([]);
