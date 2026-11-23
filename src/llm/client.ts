@@ -5,7 +5,7 @@
 import OpenAI from 'openai';
 import type { ToolCall, ConversationMessage, ToolDef, TokenUsage } from '../types/index.js';
 import { mergeModels, type ModelInfo } from './models.js';
-import { estimateContextTokens, resolveContextBudget } from '../runtime/context.js';
+import { estimateContextTokens, recordContextTokenUsage, resolveContextBudget } from '../runtime/context.js';
 import { getProviderDefinition, type StoredProviderConfig } from './providers.js';
 import { listSavedProviders } from '../utils/config.js';
 
@@ -224,6 +224,8 @@ export class NimClient {
 	private activeController: AbortController | null = null;
 	private usage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 	private inFlightUsage: TokenUsage | null = null;
+	private inFlightEstimatedPromptTokens = 0;
+	private inFlightModel = '';
 
   constructor(_projectRoot?: string) {
     const inferredProvider = [
@@ -321,12 +323,14 @@ export class NimClient {
 		this.usage.totalTokens = this.usage.promptTokens + this.usage.completionTokens;
 	}
 
-	private estimatePromptTokens(messages: ConversationMessage[]): number {
-		return estimateContextTokens(messages);
+	private estimatePromptTokens(messages: ConversationMessage[], tools?: NIMTool[]): number {
+		return estimateContextTokens(messages, tools, this.getModel());
 	}
 
-	private beginRequestUsage(messages: ConversationMessage[]): void {
-		const promptTokens = this.estimatePromptTokens(messages);
+	private beginRequestUsage(messages: ConversationMessage[], tools?: NIMTool[]): void {
+		const promptTokens = this.estimatePromptTokens(messages, tools);
+		this.inFlightEstimatedPromptTokens = promptTokens;
+		this.inFlightModel = this.getModel();
 		this.inFlightUsage = { promptTokens, completionTokens: 0, totalTokens: promptTokens };
 	}
 
@@ -337,8 +341,13 @@ export class NimClient {
 	}
 
 	private finishRequestUsage(promptTokens: number, completionTokens: number): void {
+		if (this.inFlightEstimatedPromptTokens > 0 && promptTokens > 0) {
+			recordContextTokenUsage(this.inFlightModel, this.inFlightEstimatedPromptTokens, promptTokens);
+		}
 		this.recordUsage(promptTokens, completionTokens);
 		this.inFlightUsage = null;
+		this.inFlightEstimatedPromptTokens = 0;
+		this.inFlightModel = '';
 	}
 
 	setThinkingCapacity(capacity: ThinkingCapacity): void {
@@ -422,7 +431,7 @@ export class NimClient {
 	): AsyncGenerator<{ content: string; toolCalls: ToolCall[] }, void, unknown> {
 		const controller = new AbortController();
 		this.activeController = controller;
-		this.beginRequestUsage(messages);
+		this.beginRequestUsage(messages, tools);
 		onChunk?.('');
 		let outputCharacters = 0;
 		try {
@@ -552,9 +561,11 @@ export class NimClient {
 		}
 		const controller = new AbortController();
 		this.activeController = controller;
-		this.beginRequestUsage(messages);
+		this.beginRequestUsage(messages, tools);
 		onChunk?.('');
 		let outputCharacters = 0;
+		let responsePromptTokens = 0;
+		let responseCompletionTokens = 0;
 		try {
 			const stream = await this.client.chat.completions.create({
 				model: this.model,
@@ -579,6 +590,7 @@ export class NimClient {
 				temperature: 0.3,
 				max_tokens: resolveContextBudget(this.getModel()).maxOutputTokens,
 				stream: true,
+				...(this.provider.id === 'nvidia' ? { stream_options: { include_usage: true } } : {}),
 			}, { signal: controller.signal });
 
 			const rawChunks: string[] = [];
@@ -622,6 +634,10 @@ export class NimClient {
 			};
 
 			for await (const chunk of stream) {
+				if (chunk.usage) {
+					responsePromptTokens = chunk.usage.prompt_tokens ?? responsePromptTokens;
+					responseCompletionTokens = chunk.usage.completion_tokens ?? responseCompletionTokens;
+				}
 				const delta = chunk.choices[0]?.delta;
 				if (!delta) continue;
 				const rawContent = delta.content ?? '';
@@ -654,7 +670,7 @@ export class NimClient {
 
 			if (!insideMarkupCall) emitVisible(pendingText);
 			const content = rawChunks.join('');
-			this.finishRequestUsage(this.estimatePromptTokens(messages), Math.ceil(outputCharacters / 4));
+			this.finishRequestUsage(responsePromptTokens || this.estimatePromptTokens(messages, tools), responseCompletionTokens || Math.ceil(outputCharacters / 4));
 			const parsedToolCalls = toolCalls.toToolCalls();
 			let visibleContent = content;
 			if (parsedToolCalls.length === 0) {
@@ -712,8 +728,13 @@ export class NimClient {
 
 		const msg = response.choices[0]?.message;
 		const responseUsage = response.usage;
-		if (responseUsage) this.recordUsage(responseUsage.prompt_tokens ?? 0, responseUsage.completion_tokens ?? 0);
-		else this.recordUsage(this.estimatePromptTokens(messages), Math.ceil((msg?.content?.length ?? 0) / 4));
+		if (responseUsage) {
+			const estimatedPromptTokens = this.estimatePromptTokens(messages, tools);
+			if (responseUsage.prompt_tokens > 0) recordContextTokenUsage(this.getModel(), estimatedPromptTokens, responseUsage.prompt_tokens);
+			this.recordUsage(responseUsage.prompt_tokens ?? 0, responseUsage.completion_tokens ?? 0);
+		} else {
+			this.recordUsage(this.estimatePromptTokens(messages, tools), Math.ceil((msg?.content?.length ?? 0) / 4));
+		}
     // Strip reasoning noise
     let content =
       msg?.content?.replace(

@@ -25,6 +25,16 @@ export interface ContextPreparation {
   warning?: string;
 }
 
+const tokenEstimateFactors = new Map<string, number>();
+
+/** Calibrate the estimate against exact prompt-token usage reported by a provider. */
+export function recordContextTokenUsage(model: string, estimatedTokens: number, actualTokens: number): void {
+  if (!model || estimatedTokens <= 0 || actualTokens <= 0) return;
+  const observed = Math.min(2, Math.max(0.5, actualTokens / estimatedTokens));
+  const previous = tokenEstimateFactors.get(model);
+  tokenEstimateFactors.set(model, previous === undefined ? observed : previous * 0.7 + observed * 0.3);
+}
+
 function positiveInteger(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(value ?? '', 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -44,17 +54,16 @@ export function resolveContextBudget(
     4_096,
     positiveInteger(env.AGENT_TERMO_CONTEXT_WINDOW, providerLimits?.contextWindowTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS),
   );
-  const outputReserveTokens = Math.min(
-    contextWindowTokens - 1_024,
-    positiveInteger(
-      env.AGENT_TERMO_OUTPUT_RESERVE_TOKENS,
-      Math.min(DEFAULT_OUTPUT_RESERVE_TOKENS, Math.floor(contextWindowTokens / 4)),
-    ),
+  const configuredOutputTokens = positiveInteger(
+    env.AGENT_TERMO_OUTPUT_RESERVE_TOKENS,
+    Math.min(DEFAULT_OUTPUT_RESERVE_TOKENS, Math.floor(contextWindowTokens / 4)),
   );
+  // Reserve the actual output limit, not a larger value the provider will reject.
   const maxOutputTokens = Math.max(
     1,
-    Math.min(outputReserveTokens, providerLimits?.maxOutputTokens ?? outputReserveTokens),
+    Math.min(contextWindowTokens - 1_024, configuredOutputTokens, providerLimits?.maxOutputTokens ?? configuredOutputTokens),
   );
+  const outputReserveTokens = maxOutputTokens;
   const safetyMarginTokens = Math.min(
     contextWindowTokens - outputReserveTokens - 512,
     positiveInteger(
@@ -71,24 +80,26 @@ export function resolveContextBudget(
   };
 }
 
-/** Approximate serialized prompt size, including tool-call JSON and tool schemas. */
-export function estimateContextTokens(messages: ConversationMessage[], tools?: unknown[]): number {
-  let characters = 0;
+/** Approximate serialized prompt size. Exact provider usage calibrates this per model. */
+export function estimateContextTokens(messages: ConversationMessage[], tools?: unknown[], model?: string): number {
+  let textCharacters = 0;
+  let structuredCharacters = 0;
   let framingTokens = 0;
   for (const message of messages) {
-    characters += message.content.length;
+    textCharacters += message.content.length;
     framingTokens += 8;
     if (message.toolCalls?.length) {
-      characters += JSON.stringify(message.toolCalls).length;
+      structuredCharacters += JSON.stringify(message.toolCalls).length;
       framingTokens += message.toolCalls.length * 8;
     }
   }
   if (tools?.length) {
-    characters += JSON.stringify(tools).length;
+    structuredCharacters += JSON.stringify(tools).length;
     framingTokens += tools.length * 8;
   }
-  // Deliberately conservative heuristic, not a tokenizer. Provider usage is authoritative.
-  return Math.ceil(characters / 3) + framingTokens;
+  // Normal prose is roughly four characters per token; code/JSON is denser.
+  const rawEstimate = Math.ceil(textCharacters / 4) + Math.ceil(structuredCharacters / 3) + framingTokens;
+  return Math.ceil(rawEstimate * (model ? tokenEstimateFactors.get(model) ?? 1 : 1));
 }
 
 function groupTurns(messages: ConversationMessage[]): ConversationMessage[][] {
@@ -195,7 +206,7 @@ export function prepareConversationForRequest(
   options: { aggressive?: boolean } = {},
 ): ContextPreparation {
   const budget = resolveContextBudget(model);
-  const estimatedBeforeTokens = estimateContextTokens(conversation, tools);
+  const estimatedBeforeTokens = estimateContextTokens(conversation, tools, model);
   const target = options.aggressive
     ? Math.floor(budget.inputBudgetTokens * 0.72)
     : budget.inputBudgetTokens;
@@ -215,13 +226,13 @@ export function prepareConversationForRequest(
     const candidate = makeCompactionSnapshot(conversation, keep);
     if (!candidate) continue;
     snapshot = candidate;
-    if (estimateContextTokens(candidate.messages, tools) <= target) break;
+    if (estimateContextTokens(candidate.messages, tools, model) <= target) break;
   }
 
   const working = snapshot?.messages ?? conversation.map((message) => ({ ...message }));
   const archivedMessages = snapshot ? [...snapshot.archivedMessages] : [];
   archivedMessages.push(...shortenToolMessages(working));
-  const estimatedAfterTokens = estimateContextTokens(working, tools);
+  const estimatedAfterTokens = estimateContextTokens(working, tools, model);
   const compacted = Boolean(snapshot || archivedMessages.length);
   if (compacted) conversation.splice(0, conversation.length, ...working);
 

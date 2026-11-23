@@ -4,6 +4,7 @@ import {
   compactConversation,
   estimateContextTokens,
   prepareConversationForRequest,
+  recordContextTokenUsage,
   resolveContextBudget,
 } from '../../src/runtime/context.js';
 
@@ -32,6 +33,15 @@ describe('context budgeting and compaction', () => {
     expect(plain).toBeGreaterThan(estimateContextTokens([message('system', 'System prompt')]));
   });
 
+  it('uses a less aggressive text estimate and calibrates it with exact provider usage', () => {
+    const messages = [message('user', 'x'.repeat(4_000))];
+    const initial = estimateContextTokens(messages, undefined, 'calibration-test-model');
+    expect(initial).toBe(1_008);
+
+    recordContextTokenUsage('calibration-test-model', initial, 1_200);
+    expect(estimateContextTokens(messages, undefined, 'calibration-test-model')).toBe(1_200);
+  });
+
   it('uses a conservative fallback and configurable model limits', () => {
     expect(resolveContextBudget('unknown', {}).contextWindowTokens).toBe(32_768);
     const configured = resolveContextBudget('unknown', {
@@ -53,15 +63,23 @@ describe('context budgeting and compaction', () => {
 
     expect(resolveContextBudget('meta/llama-3.1-8b-instruct', {})).toMatchObject({
       contextWindowTokens: 131_072,
-      outputReserveTokens: 8_192,
+      outputReserveTokens: 4_096,
       maxOutputTokens: 4_096,
       safetyMarginTokens: 2_048,
-      inputBudgetTokens: 120_832,
+      inputBudgetTokens: 124_928,
     });
 
     expect(resolveContextBudget('qwen/qwen2.5-coder-32b-instruct', {})).toMatchObject({
-      outputReserveTokens: 8_192,
+      outputReserveTokens: 4_000,
       maxOutputTokens: 4_000,
+    });
+    expect(resolveContextBudget('deepseek-ai/deepseek-v4-pro', {})).toMatchObject({
+      contextWindowTokens: 1_000_000,
+      maxOutputTokens: 8_192,
+    });
+    expect(resolveContextBudget('qwen/qwq-32b', {})).toMatchObject({
+      contextWindowTokens: 131_072,
+      maxOutputTokens: 4_096,
     });
   });
 
