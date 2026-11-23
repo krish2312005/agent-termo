@@ -31,6 +31,9 @@ Vitest configuration lives in `vitest.config.ts`. Tests live in `tests/unit/` an
   state, transient provider errors, retry gate helpers, and delegation fan-out.
 - **Tool-loop safety budget** (`tests/unit/tool-loop-budget.test.ts`): wall-clock stop
   reason (no model-turn cap).
+- **UI pure helpers** (`tests/unit/context-meter.test.ts`, `tests/unit/secret-paste.test.ts`):
+  context-meter formatting plus masked secret-paste application (draft append, UTF-8
+  `Uint8Array` decode, empty no-op, 60+ char key preserved intact).
 - **Tool-loop orchestration** (`tests/integration/tool-loop.test.ts`): real
   tool execution through `runToolLoop`, including failing-call recovery, completion
   gate blocking, duplicate-call suppression, repeated-failure pause, and corrective
@@ -47,3 +50,6 @@ Vitest configuration lives in `vitest.config.ts`. Tests live in `tests/unit/` an
 - Integration tests exercise the real tool executor (file I/O, `bash:execute`, git)
   inside temporary directories; they intentionally print the agent UI output.
 - Provider/API tests use mocks and do not make real NIM network calls.
+- Interactive TUI input handling (the `usePaste`/`useKeyboard` subscriptions and a real
+  terminal paste) is not automated; `secret-paste.test.ts` covers only the extracted
+  pure helper `applySecretPaste`.
