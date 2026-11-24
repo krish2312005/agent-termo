@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   shouldUseTools,
   shouldRequireInitialToolCall,
+  shouldLoadProjectContext,
+  shouldLoadSessionHistory,
+  getExecutableToolCalls,
   isToolRequestTimeoutError,
   isToolProtocolUnsupportedError,
   getMissingRequiredToolArguments,
@@ -19,9 +22,42 @@ describe('software-generation tool routing', () => {
     expect(shouldRequireInitialToolCall('Make a simple software like a Kanban board')).toBe(true);
   });
 
-  it('does not force tool execution for ordinary questions', () => {
+  it('does not mistake first-person descriptions or general conversation for coding requests', () => {
+    const introduction = 'I am Krish Patel, creator of Agent-Termo, and I am making this agent-termo an efficient software.';
+    expect(shouldUseTools(introduction)).toBe(false);
+    expect(shouldRequireInitialToolCall(introduction)).toBe(false);
+    expect(shouldLoadProjectContext(introduction)).toBe(false);
+
+    expect(shouldUseTools('I am building a Kanban app for my class.')).toBe(false);
+    expect(shouldUseTools('I am creating a website for a personal project.')).toBe(false);
     expect(shouldUseTools('What is a Kanban board?')).toBe(false);
+    expect(shouldUseTools('Explain how context windows work.')).toBe(false);
+    expect(shouldUseTools('Hello', '', false, true, true)).toBe(false);
     expect(shouldRequireInitialToolCall('What is a Kanban board?')).toBe(false);
+  });
+
+  it('activates tools and project context for explicit work requests', () => {
+    expect(shouldUseTools('Build a simple Kanban application')).toBe(true);
+    expect(shouldUseTools('Can you please fix the login bug?')).toBe(true);
+    expect(shouldUseTools('Can you please go ahead and fix this issue completely?')).toBe(true);
+    expect(shouldUseTools('I want you to implement drag and drop')).toBe(true);
+    expect(shouldUseTools('do coding changes on this branch')).toBe(true);
+    expect(shouldRequireInitialToolCall('Can you please fix the login bug?')).toBe(true);
+    expect(shouldLoadProjectContext('Build a simple Kanban application')).toBe(true);
+  });
+
+  it('loads project context for repository questions and previous-work questions', () => {
+    expect(shouldUseTools('How does authentication work in this project?')).toBe(true);
+    expect(shouldLoadProjectContext('How does authentication work in this project?')).toBe(true);
+    expect(shouldLoadProjectContext('What did we implement previously?')).toBe(false);
+    expect(shouldLoadSessionHistory('What did we implement previously?')).toBe(true);
+    expect(shouldLoadSessionHistory('Hello there')).toBe(false);
+  });
+
+  it('does not execute model-generated tool calls when tool mode was not enabled', () => {
+    const calls = [{ id: 'call-1', name: 'file:read', arguments: { path: 'README.md' } }];
+    expect(getExecutableToolCalls(calls, false)).toEqual([]);
+    expect(getExecutableToolCalls(calls, true)).toEqual(calls);
   });
 
   it('recognizes tool request timeouts separately from other provider failures', () => {
