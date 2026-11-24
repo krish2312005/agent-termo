@@ -10,6 +10,7 @@ export interface ModelInfo {
 export interface ProviderModelLimits {
   contextWindowTokens: number;
   maxOutputTokens?: number;
+  defaultOutputTokens?: number;
   source: string;
 }
 
@@ -90,6 +91,12 @@ export const NVIDIA_NIM_MODEL_LIMITS: Record<string, ProviderModelLimits> = {
     contextWindowTokens: 128_000,
     maxOutputTokens: 4_096,
     source: 'https://docs.api.nvidia.com/nim/reference/openai-gpt-oss-120b',
+  },
+  'nvidia/nemotron-3-ultra-550b-a55b': {
+    contextWindowTokens: 1_000_000,
+    maxOutputTokens: 32_768,
+    defaultOutputTokens: 32_768,
+    source: 'https://docs.api.nvidia.com/nim/reference/nvidia-nemotron-3-ultra-550b-a55b',
   },
   'nvidia/nemotron-3.5-super-vl-120b-a12b': {
     contextWindowTokens: 262_144,

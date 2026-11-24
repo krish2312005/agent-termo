@@ -14,6 +14,27 @@ type NIMFunctionTool = Extract<NIMTool, { type: 'function' }>;
 
 export type ThinkingCapacity = 'off' | 'auto' | 'low' | 'medium' | 'high';
 
+export interface CompletionRequestOptions {
+  requireToolCall?: boolean;
+}
+
+const NEMOTRON_3_ULTRA_MODEL = 'nvidia/nemotron-3-ultra-550b-a55b';
+
+/** NVIDIA's documented chat-template settings for Nemotron 3 Ultra tool use. */
+export function buildNemotronRequestOverrides(model: string, hasTools: boolean, options: CompletionRequestOptions = {}): Record<string, unknown> {
+  if (!hasTools || model.toLowerCase() !== NEMOTRON_3_ULTRA_MODEL) return {};
+  return {
+    ...(options.requireToolCall ? { tool_choice: 'required' } : {}),
+    chat_template_kwargs: { enable_thinking: true, force_nonempty_content: true },
+  };
+}
+
+function resolveToolRequestTimeoutMs(messages: ConversationMessage[], tools: NIMTool[], model: string): number {
+  const configured = Number.parseInt(process.env.AGENT_TERMO_TOOL_TIMEOUT_MS ?? '', 10);
+  if (Number.isFinite(configured) && configured > 0) return Math.min(300_000, Math.max(15_000, configured));
+  return Math.min(180_000, 60_000 + Math.ceil(estimateContextTokens(messages, tools, model) / 100_000) * 15_000);
+}
+
 const TOOL_NAME_ALIASES: Record<string, string> = {
 	'skill:read': 'skill_read',
 	'memory:remember': 'memory_remember',
@@ -747,6 +768,7 @@ export class NimClient {
 		tools?: NIMTool[],
 		onChunk?: (text: string) => void,
 		onToolCallDelta?: (delta: { index: number; name: string; arguments: string; validJson: boolean }) => void,
+		requestOptions: CompletionRequestOptions = {},
 	): AsyncGenerator<{ content: string; toolCalls: ToolCall[] }, void, unknown> {
 		if (this.provider.protocol === 'anthropic') {
 			yield* this.streamAnthropicComplete(messages, tools, onChunk, onToolCallDelta);
@@ -784,7 +806,11 @@ export class NimClient {
 				max_tokens: resolveContextBudget(this.getModel()).maxOutputTokens,
 				stream: true,
 				...(this.provider.id === 'nvidia' ? { stream_options: { include_usage: true } } : {}),
-			}, { signal: controller.signal });
+				...buildNemotronRequestOverrides(this.getModel(), Boolean(tools?.length), requestOptions),
+			}, {
+				signal: controller.signal,
+				...(tools?.length ? { timeout: resolveToolRequestTimeoutMs(messages, tools, this.getModel()), maxRetries: 0 } : {}),
+			});
 
 			const rawChunks: string[] = [];
 			const textFilter = new ToolCallTextFilter();
@@ -890,6 +916,7 @@ export class NimClient {
 	async complete(
 		messages: ConversationMessage[],
 		tools?: NIMTool[],
+		requestOptions: CompletionRequestOptions = {},
 	): Promise<{ content: string; toolCalls: ToolCall[] }> {
 		if (this.provider.protocol === 'anthropic') {
 			let result = { content: '', toolCalls: [] as ToolCall[] };
@@ -921,7 +948,11 @@ export class NimClient {
       temperature: 0.3,
 		max_tokens: resolveContextBudget(this.getModel()).maxOutputTokens,
 			stream: false,
-		}, { signal: controller.signal });
+			...buildNemotronRequestOverrides(this.getModel(), Boolean(tools?.length), requestOptions),
+		}, {
+			signal: controller.signal,
+			...(tools?.length ? { timeout: resolveToolRequestTimeoutMs(messages, tools, this.getModel()), maxRetries: 0 } : {}),
+		});
 
 		const msg = response.choices[0]?.message;
 		const responseUsage = response.usage;
