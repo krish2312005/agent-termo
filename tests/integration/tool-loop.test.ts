@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createCheckpoint } from '../../src/runtime/checkpoints.js';
@@ -78,6 +78,53 @@ describe('agent tool-loop orchestration', () => {
 		}
 	});
 
+
+	it('rejects missing required arguments before execution and accepts the corrected call', async () => {
+		const projectRoot = mkdtempSync(join(tmpdir(), 'agent-termo-loop-invalid-args-'));
+		const marker = 'corrected-command-ran.txt';
+		const command = `node -e "require('node:fs').writeFileSync('${marker}', 'ran')"`;
+		const responses: Array<{ content: string; toolCalls: ToolCall[] }> = [
+			{ content: '', toolCalls: [{ id: 'corrected-call', name: 'bash:execute', arguments: { command } }] },
+			{ content: 'The corrected command ran successfully.', toolCalls: [] },
+		];
+		const fakeClient = {
+			buildToolDefs: () => [],
+			async *streamComplete() {
+				const response = responses.shift();
+				if (!response) throw new Error('Unexpected extra provider request');
+				yield response;
+			},
+			complete: async () => ({ content: '', toolCalls: [] }),
+			formatUsage: () => '0 tokens',
+			getUsage: () => ({ promptTokens: 0, completionTokens: 0, totalTokens: 0 }),
+			getModel: () => 'test-model',
+		} as unknown as NimClient;
+		const conversation: ConversationMessage[] = [
+			{ id: 'system', role: 'system', content: 'You are a coding agent.', timestamp: new Date() },
+		];
+		const taskState = { goal: 'Run the required command.', status: 'running' as const, reason: '', lastActions: [] as string[] };
+
+		try {
+			const finalText = await runToolLoop(
+				conversation,
+				projectRoot,
+				[{ id: 'missing-command', name: 'bash:execute', arguments: {} }],
+				{ close() {}, showPrompt() {} },
+				fakeClient,
+				'auto',
+				new Set(),
+				taskState,
+				() => '',
+				() => undefined,
+			);
+			expect(finalText).toContain('corrected command ran successfully');
+			expect(existsSync(join(projectRoot, marker))).toBe(true);
+			expect(conversation.find((message) => message.role === 'tool')?.content).toContain('missing required argument(s): command');
+			expect(responses).toHaveLength(0);
+		} finally {
+			rmSync(projectRoot, { recursive: true, force: true });
+		}
+	});
 
 	it('blocks root completion when a check command actually fails', async () => {
 		const projectRoot = mkdtempSync(join(tmpdir(), 'agent-termo-loop-gate-'));

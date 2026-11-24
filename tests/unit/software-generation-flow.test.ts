@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { shouldUseTools, shouldRequireInitialToolCall, isToolRequestTimeoutError } from '../../src/main.js';
+import {
+  shouldUseTools,
+  shouldRequireInitialToolCall,
+  isToolRequestTimeoutError,
+  isToolProtocolUnsupportedError,
+  getMissingRequiredToolArguments,
+} from '../../src/main.js';
 import { buildNemotronRequestOverrides } from '../../src/llm/client.js';
+import { TOOL_DEFINITIONS } from '../../src/llm/tools.js';
 
 describe('software-generation tool routing', () => {
   it('enables tools for natural software-creation requests', () => {
@@ -29,13 +36,33 @@ describe('Nemotron 3 Ultra tool request configuration', () => {
   it('uses the documented template options and requires the first action when requested', () => {
     expect(buildNemotronRequestOverrides(model, true, { requireToolCall: true })).toEqual({
       tool_choice: 'required',
-      extra_body: {
-        chat_template_kwargs: {
-          enable_thinking: true,
-          force_nonempty_content: true,
-        },
+      chat_template_kwargs: {
+        enable_thinking: true,
+        force_nonempty_content: true,
       },
     });
+  });
+
+  it('does not treat an unrelated unsupported parameter as a tool-protocol failure', () => {
+    expect(isToolProtocolUnsupportedError({
+      status: 400,
+      message: '400 Validation: Unsupported parameter(s): extra_body',
+    })).toBe(false);
+    expect(isToolProtocolUnsupportedError({
+      status: 400,
+      message: 'Unsupported parameter(s): tools',
+    })).toBe(true);
+    expect(isToolProtocolUnsupportedError({
+      status: 503,
+      message: 'Tools are not supported',
+    })).toBe(false);
+  });
+
+  it('detects missing required tool arguments before execution', () => {
+    expect(getMissingRequiredToolArguments('bash:execute', {}, TOOL_DEFINITIONS)).toEqual(['command']);
+    expect(getMissingRequiredToolArguments('bash:execute', { command: '  ' }, TOOL_DEFINITIONS)).toEqual(['command']);
+    expect(getMissingRequiredToolArguments('file:write', { path: 'app.ts' }, TOOL_DEFINITIONS)).toEqual(['content']);
+    expect(getMissingRequiredToolArguments('bash:execute', { command: 'npm test' }, TOOL_DEFINITIONS)).toEqual([]);
   });
 
   it('does not alter other models or requests without tools', () => {

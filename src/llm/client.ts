@@ -25,7 +25,7 @@ export function buildNemotronRequestOverrides(model: string, hasTools: boolean, 
   if (!hasTools || model.toLowerCase() !== NEMOTRON_3_ULTRA_MODEL) return {};
   return {
     ...(options.requireToolCall ? { tool_choice: 'required' } : {}),
-    extra_body: { chat_template_kwargs: { enable_thinking: true, force_nonempty_content: true } },
+    chat_template_kwargs: { enable_thinking: true, force_nonempty_content: true },
   };
 }
 

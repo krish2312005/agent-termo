@@ -481,7 +481,38 @@ export function isToolRequestTimeoutError(error: unknown): boolean {
 	return /timeout|timed\s*out|ETIMEDOUT|APITimeoutError/i.test([value.name, value.message, value.code].map(String).join(' '));
 }
 
-function appendToolExecutionDirective(conversation: ConversationMessage[], reason: string): void {
+export function isToolProtocolUnsupportedError(error: unknown): boolean {
+	if (!error || typeof error !== 'object') return false;
+	const value = error as { status?: unknown; statusCode?: unknown; message?: unknown; error?: unknown; code?: unknown };
+	const status = Number(value.status ?? value.statusCode);
+	if (status !== 400 && status !== 422) return false;
+	const detail = value.error && typeof value.error === 'object'
+		? (value.error as { message?: unknown }).message
+		: value.error;
+	const message = [value.message, detail, value.code].map(String).join(' ');
+	return /(?:unsupported|unknown|unrecognized|not\\s+supported).{0,80}\\b(?:tools?|tool_choice)\\b|\\b(?:tools?|tool_choice)\\b.{0,80}(?:unsupported|unknown|unrecognized|not\\s+supported)|function[- ]calling.{0,60}(?:unsupported|not\\s+supported)/i.test(message);
+}
+
+export function getMissingRequiredToolArguments(
+	toolName: string,
+	args: Record<string, unknown>,
+	definitions: ToolDef[],
+): string[] {
+	const definition = definitions.find((tool) => tool.name === toolName);
+	return (definition?.parameters.required ?? []).filter((name) => {
+		const value = args?.[name];
+		return value === undefined || value === null ||
+			(typeof value === 'string' && value.trim().length === 0) ||
+			(Array.isArray(value) && value.length === 0);
+	});
+}
+
+function appendToolExecutionDirective(
+	conversation: ConversationMessage[],
+	reason: string,
+	toolDefinitions: ToolDef[] = [],
+): void {
+	const schema = toolDefinitions.map(({ name, description, parameters }) => ({ name, description, parameters }));
 	conversation.push({
 		id: crypto.randomUUID(),
 		role: 'user',
@@ -491,7 +522,9 @@ function appendToolExecutionDirective(conversation: ConversationMessage[], reaso
 			'Resume implementation now. Do not give another acknowledgement, plan, or progress sentence.',
 			'Return only valid JSON using this exact shape, with real tool arguments:',
 			'{"tool_calls":[{"id":"call_1","name":"file:glob","arguments":{"pattern":"**/*"}}]}',
-			'Use canonical tool names and arguments from the system instructions. Inspect the project, create or edit the necessary files, and run relevant checks. Do not claim completion until the work is done.',
+			'Available tool schemas (use only these names and include every required argument):',
+			JSON.stringify(schema),
+			'Use canonical tool names. Inspect the project, create or edit the necessary files, and run relevant checks. Do not claim completion until the work is done.',
 		].join('\n'),
 		timestamp: new Date(),
 	});
@@ -1249,6 +1282,10 @@ export async function runToolLoop(
 	// tool calls made without going through agent:delegate at all.
 	const changedFiles = new Map<string, string>();
 	const ranChecks: RanCheck[] = [];
+	const availableToolDefinitions = [
+		...(agentToolDefinitions ?? [...TOOL_DEFINITIONS, ...getMcpToolDefinitions()]),
+		...(taskPlan?.status === 'in_progress' ? [PLAN_PROGRESS_TOOL] : []),
+	];
 
 	// Continue looping while the LLM keeps issuing tool calls
 	while (toolCalls.length > 0) {
@@ -1337,6 +1374,16 @@ export async function runToolLoop(
 				const blocked = blockedResult(tc);
 				if (blocked) return blocked;
 				events.publish({ type: 'tool.started', sessionId, turnId, toolCallId: tc.id, name: tc.name, args: tc.arguments, at: Date.now() });
+				const missing = getMissingRequiredToolArguments(tc.name, tc.arguments, availableToolDefinitions);
+				if (missing.length > 0) {
+					const toolResult = {
+						name: tc.name,
+						success: false,
+						error: 'Not executed: missing required argument(s): ' + missing.join(', ') + '. Return a corrected tool call with each required value.',
+					};
+					events.publish({ type: 'tool.completed', sessionId, turnId, toolCallId: tc.id, name: tc.name, success: false, at: Date.now() });
+					return { toolResult, applied: false };
+				}
 				const toolResult = await runDelegatedAgent(projectRoot, tc, nimClient, input, permissionMode, allowedCommands, taskState, getCheckpointId, parentContextExcerpt(conversation));
 				events.publish({ type: 'tool.completed', sessionId, turnId, toolCallId: tc.id, name: tc.name, success: toolResult.success, at: Date.now() });
 				return { toolResult, applied: false };
@@ -1360,7 +1407,17 @@ export async function runToolLoop(
 				}
 				events.publish({ type: 'tool.started', sessionId, turnId, toolCallId: tc.id, name: tc.name, args: tc.arguments, at: Date.now() });
 				let execution: (typeof executions)[number];
-				if (tc.name === 'plan:update') {
+				const missingRequiredArguments = getMissingRequiredToolArguments(tc.name, tc.arguments, availableToolDefinitions);
+				if (missingRequiredArguments.length > 0) {
+					execution = {
+						toolResult: {
+							name: tc.name,
+							success: false,
+							error: 'Not executed: missing required argument(s): ' + missingRequiredArguments.join(', ') + '. Return a corrected tool call with each required value.',
+						},
+						applied: false,
+					};
+				} else if (tc.name === 'plan:update') {
 					let result: { success: boolean; output?: string; error?: string };
 					try {
 						if (!taskPlan) throw new Error('No execution plan is active.');
@@ -2998,6 +3055,10 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				const activeAgentToolDefinitions = selectedAgent
 					? filterAgentTools(selectedAgent, [...TOOL_DEFINITIONS, ...getMcpToolDefinitions()], true)
 					: [...TOOL_DEFINITIONS, ...getMcpToolDefinitions()];
+				const recoveryToolDefinitions = [
+					...activeAgentToolDefinitions,
+					...(activePlan?.status === 'in_progress' ? [PLAN_PROGRESS_TOOL] : []),
+				];
 				const tools = shouldUseTools(userInput, activeAgentName, continuing, getMcpToolDefinitions().length > 0, skillInvocation || hasRelevantSkill(userInput, listSkills(projectRoot))) || activePlan?.status === 'in_progress'
 					? nimClient.buildToolDefs([...activeAgentToolDefinitions, ...(activePlan?.status === 'in_progress' ? [PLAN_PROGRESS_TOOL] : [])])
 					: undefined;
@@ -3029,7 +3090,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 							rememberChat(projectRoot, 'Assistant', cleanText);
 							if (!streamed.printed) printAssistantMessage(cleanText);
 						}
-						appendToolExecutionDirective(conversation, 'The model returned no executable tool calls.');
+						appendToolExecutionDirective(conversation, 'The model returned no executable tool calls.', recoveryToolDefinitions);
 						persistSession();
 						printInfo('No executable action was returned. Retrying once with the text-based tool protocol…');
 						try {
@@ -3094,7 +3155,9 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 								stopBackgroundCommands();
 									continue mainLoop;
 							}
-							if (!tools || (isTransientError(err) && !isToolRequestTimeoutError(err)) || (isPartialStreamFailure(err) && !isToolRequestTimeoutError(err))) {
+							const canUseTextToolFallback = Boolean(tools) &&
+								(isToolRequestTimeoutError(err) || isToolProtocolUnsupportedError(err));
+							if (!canUseTextToolFallback || (isTransientError(err) && !isToolRequestTimeoutError(err)) || (isPartialStreamFailure(err) && !isToolRequestTimeoutError(err))) {
 								printError(nimClient.getProviderName() + ' provider error: ' + providerError(err), 'Try /providers to switch providers or /model to select another model.');
 								if (taskState.status === 'running') {
 									taskState.status = 'interrupted';
@@ -3107,7 +3170,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					// support the `tools` parameter). Retry without tools and parse
 					// any JSON tool calls the model may have emitted as plain text.
 						printInfo(nimClient.getProviderName() + ' tool request failed: ' + providerError(err) + ' — retrying once with the text-based tool protocol.');
-						appendToolExecutionDirective(conversation, providerError(err));
+						appendToolExecutionDirective(conversation, providerError(err), recoveryToolDefinitions);
 						persistSession();
 						try {
 								const fallbackStream = new MarkdownPrinter();
