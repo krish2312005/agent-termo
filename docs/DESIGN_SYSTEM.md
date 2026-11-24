@@ -1032,15 +1032,17 @@ echo -e "${SURFACE}┌─[${MUTED}typescript${SURFACE}]${RESET}"
 
 ## 10. MULTI-AGENT WORKSPACE (LIVE TUI)
 
-**Status:** visual specification for the workspace contract in `docs/architecture.md` §21. The architecture is authoritative for behavior, data flow, selection, routing, retention, and keyboard dispatch; this section covers only what the user sees. No workspace product code exists yet at the time of writing (2026-11-23). Every existing value below was verified in the live renderer (`src/ui/tui.tsx`, `@opentui/solid` 0.9.7), not in the legacy ANSI design.
+**Status:** visual specification for the workspace contract in `docs/architecture.md` §21. The architecture is authoritative for behavior, data flow, selection, routing, retention, and keyboard dispatch; this section covers only what the user sees. Workspace product code landed on `feat/subagent-workspace`; the live renderer is `src/ui/tui.tsx` (`@opentui/solid` 0.9.7). **The live colors are now Carbon Forge:** `src/ui/theme.ts` is the single source of truth and §11 is the current visual authority. The pre-Carbon Forge palette in 10.1 is retained as history only; 10.3–10.9 use Carbon Forge roles.
 
-### 10.1 Palette reality, live tokens, and constraints
+### 10.1 Palette reality, live tokens, and constraints (superseded by §11)
 
-**The live TUI has no theme/token module and no light mode.** Colors are hardcoded hex literals at call sites in `src/ui/tui.tsx`; the root box sets `backgroundColor="#11100F"`. There is no `ThemeProvider`, no `createTheme`, no theme preference, and no light variant. This feature must not invent one. A token module or light mode would be a separate refactor with its own contrast validation.
+> **Superseded (Carbon Forge, 2026-11-23).** This subsection records the pre-theme live state. The live TUI must consume `COLORS`/`ROLES` from `src/ui/theme.ts` (frontend-expert implementation); the authoritative palette, derivations, contrast ratios, and semantic rules are in §11. Do not use any hex value in this 10.1 table at a call site.
 
-**The legacy ANSI table above is historical.** Sections 1–9 describe the retired blessed/ANSI 256 renderer (purple `#7C3AED`, slate `#0F172A`, ANSI 93/75, boxed message bubbles). That is not the live UI. For the live TUI, the palette below **supersedes** the legacy ANSI table. Do not use legacy `primary`/`info` purple/blue tokens or ANSI 93/75 for the workspace.
+**Historical state:** at the workspace build there was no theme/token module and no light mode. Colors were hardcoded hex literals at call sites in `src/ui/tui.tsx`; the root box set `backgroundColor="#11100F"`. There was no `ThemeProvider`, no `createTheme`, no theme preference, and no light variant. **Current state:** a flat, dependency-free token module exists (`src/ui/theme.ts`, export `COLORS` and `ROLES`); there is still no provider and no light mode, by design.
 
-#### Live tokens used by the workspace
+**The legacy ANSI table above is historical.** Sections 1–9 describe the retired blessed/ANSI 256 renderer (purple `#7C3AED`, slate `#0F172A`, ANSI 93/75, boxed message bubbles). That is not the live UI. For the live TUI, Carbon Forge (§11) **supersedes** both the legacy ANSI table and the pre-theme table below. Do not use legacy `primary`/`info` purple/blue tokens or ANSI 93/75 for the workspace.
+
+#### Pre-Carbon Forge live tokens (superseded; do not use)
 
 | Token | Hex | Verified live usage | Contrast on `#11100F` |
 |---|---|---|---|
@@ -1063,7 +1065,7 @@ echo -e "${SURFACE}┌─[${MUTED}typescript${SURFACE}]${RESET}"
 | `error` | `#E47D76` | errors, failed status | 6.8:1 (AA) |
 | `autoPermission` | `#FF5555` | existing auto-permission composer border | 6.1:1 as text; border is paired with the `auto` text label |
 
-Ratios are WCAG 2.x relative-luminance ratios against `#11100F`, rounded to one decimal. `#6D625A` is a divider/label token, not a body-text token. Existing diff colors (`#B7E4C7` on `#17351F`, `#F0B4AE` on `#3A1D1D`, `#BDB6AE` context) are unchanged.
+Ratios are WCAG 2.x relative-luminance ratios against `#11100F`, rounded to one decimal. `#6D625A` is a divider/label token, not a body-text token. Pre-theme diff colors (`#B7E4C7` on `#17351F`, `#F0B4AE` on `#3A1D1D`, `#BDB6AE` context) are also superseded by §11.2. This table is historical; never add a new call-site hex from it.
 
 #### Type, spacing, and chrome tokens
 
@@ -1072,11 +1074,11 @@ Ratios are WCAG 2.x relative-luminance ratios against `#11100F`, rounded to one 
 | font | terminal monospace; no font family or size change |
 | horizontal unit | 1 cell; page `paddingX=1`; content entries `paddingX=1` |
 | vertical rhythm | 1 line; no blank spacer rows inside the workspace |
-| content separator | one `─` row in `#6D625A` |
-| borders | `single` for panels/composer/terminal; `rounded` only for the header and picker; the navigator has no border |
+| content separator | one `─` row in `border` (`#27332C`) |
+| borders | `single` for panels/composer/terminal; `rounded` only for the header and picker; the navigator has no border. Structural borders use `border`; the picker border uses `brand` copper (§11.3) |
 | radius/shadow | none (terminal) |
 | motion | existing spinner/streaming only; no new animation |
-| focus fill | none; focus is cursor/text/marker based (10.9) |
+| focus fill | none; focus is the lime composer border + native cursor + footer text + `▸` marker (§11.4) |
 
 ### 10.2 Layout and density
 
@@ -1084,24 +1086,24 @@ Top to bottom, one column, `gap=0`:
 
 | # | Region | Height / flex | Notes |
 |---|---|---|---|
-| 1 | Existing header | existing, `flexShrink=0` | keep the existing rounded `#6D625A` border; no workspace changes |
+| 1 | Existing header | existing, `flexShrink=0` | keep the existing rounded border, now `border` (`#27332C`) on `surface`; no workspace changes |
 | 2 | Selected-agent content | `flexGrow=1`, `minHeight=0` | contains the status row, separator, and scrollbox below |
 | 2a | Content status row | 1 line, non-scrolling | selected agent's real status, never boxed |
-| 2b | Thin separator | 1 line | `─` in `#6D625A`, spans the content inner width |
+| 2b | Thin separator | 1 line | `─` in `border` (`#27332C`), spans the content inner width |
 | 2c | Scrollbox | remainder | existing entry rendering; per-agent scroll (10.6) |
-| 3 | Terminal panel | existing, `flexShrink=0` | existing position and 8-row compact / ~60% expanded heights |
-| 4 | Picker / completion overlays | existing, `flexShrink=0` | existing order above the composer; picker remains rounded `#D99168` |
+| 3 | Terminal panel | existing, `flexShrink=0` | existing position and 8-row compact / ~60% expanded heights; `surface` fill |
+| 4 | Picker / completion overlays | existing, `flexShrink=0` | existing order above the composer; picker remains rounded `brand` copper (`#D69B69`) |
 | 5 | Composer | existing single-border box; 3–8 textarea rows, `flexShrink=0` | 10.3 |
-| 6 | Agent navigator | `flexShrink=0`; up to 7 agent rows + up to 2 overflow lines + 1 hint line | directly below the composer; no border, no box |
-| 7 | Existing status line | 1 line, `flexShrink=0` | existing left status and right shortcut hint; unchanged |
+| 6 | Agent navigator | `flexShrink=0`; up to 7 agent rows + up to 2 overflow lines (no hint row) | directly below the composer; no border, no box |
+| 7 | Carbon Forge footer | 1 line, `flexShrink=0` | the only shortcut/status surface; replaces the old navigator hint row and bottom status line (§11.5) |
 
 Density rules:
 
-- The navigator sits directly below the composer and above the existing status line. It is never a sidebar, float, or boxed panel.
+- The navigator sits directly below the composer and above the Carbon Forge footer. It is never a sidebar, float, or boxed panel.
 - No blank spacer rows. The only new separator is the one-line rule under the content status row; the composer's existing border remains the divider above the navigator.
-- The navigator never squeezes the content area; content shrinks first, then overlays/textarea budgets. `overlayAvailableRows` and `promptInputHeight` must subtract the navigator's rendered rows per §21.6 (plus any approval banner/notice row, 10.3).
-- The agent list region is at most 7 agent rows plus at most 2 overflow indicator lines; the hint row is additional (absolute maximum 10 navigator lines). The selected row is always present. On short terminals reduce the visible agent rows first so the content area keeps usable height.
-- Minimum supported terminal is the existing 40 columns × 12 rows (`layoutSupported`). At 80 × 24 the two-sub-agent example shows header (3) + content status row (2) + content (9) + composer (5) + navigator (4: main + two agents + hint) + status line (1) = 24.
+- The navigator never squeezes the content area; content shrinks first, then overlays/textarea budgets. `overlayAvailableRows` and `promptInputHeight` must subtract the navigator's rendered rows per §21.6 (plus any approval banner/notice row, 10.3) and the fixed 1-row footer.
+- The agent list region is at most 7 agent rows plus at most 2 overflow indicator lines (absolute maximum 9 navigator lines). The selected row is always present. On short terminals reduce the visible agent rows first so the content area keeps usable height.
+- Minimum supported terminal is the existing 40 columns × 12 rows (`layoutSupported`). At 80 × 24 the two-sub-agent example shows header (3) + content status row (2) + content (10) + composer (5) + navigator (3: main + two agents) + footer (1) = 24.
 - Every row is exactly one line. No row wraps and no horizontal scrolling is introduced; overflow is clipped with `…` (10.4).
 
 ### 10.3 Composer
@@ -1114,7 +1116,7 @@ Structure (existing single border, unchanged chrome):
 └────────────────────────────────────────────────────┘
 ```
 
-- Prefix: exactly `@<name> ❯` followed by one space before the textarea, in `#D99168`. The target updates immediately on selection; the prefix and placeholder never lag the selected row.
+- Prefix: exactly `@<name> ❯` followed by one space before the textarea, in `brand` copper (`#D69B69`). The target updates immediately on selection; the prefix and placeholder never lag the selected row.
 - Placeholder: exactly `Message @<name>…` (U+2026), only while the draft is empty.
 - Prefix budget is the visible `@<name> ❯` (excluding the single trailing space before the textarea):
 
@@ -1127,32 +1129,32 @@ Structure (existing single border, unchanged chrome):
   If the name is longer, clip only the name with `…`; `@` and ` ❯` always remain. Example at 24 cells: `@backend-architecture… ❯` (the real 29-character agent name is clipped, the target is still identifiable).
 - Textarea keeps `flexGrow=1`, `flexBasis=0`, `minWidth=0`; no horizontal overflow.
 - Multiline: existing `promptInputHeight` behavior, 3–8 rows, grows upward; the navigator stays fixed and content shrinks. Drafts are per-agent; switching saves the old draft and loads the target's draft.
-- Border style stays `single`. Border color keeps the existing `permissionBarColor` behavior when input is active (`ask` `#6D625A`, `files` `#D99168`, `auto` `#FF5555`) and `#6D625A` when input is inactive. Do not add a new focus color or permission color.
+- Border style stays `single`. **Carbon Forge border rule:** unfocused/inactive composer border = `border` (`#27332C`); focused composer border = `accent` lime (`#B5D98A`). Permission mode no longer changes the border color. The bright red auto-mode border (`#FF5555`) is removed; `ask`/`files`/`auto` remains stated as text in the footer (§11.5) and is never color-only.
 
 #### Composer states
 
-| State | Border | Prefix / body | Cursor | Banner / notice | Hint row |
+| State | Border | Prefix / body | Cursor | Banner / notice | Footer (§11.5) |
 |---|---|---|---|---|---|
-| Composer focused (default) | existing permission color above | `@<name> ❯`; placeholder or draft | visible (native textarea cursor) | none | default hint (10.8) |
-| Navigator focused | `#6D625A` (input inactive, existing) | same; draft preserved | absent | none | navigator hint (10.8) |
-| Modal-owned: approval | `#6D625A` | same; draft preserved, unfocused | absent | `◔ Approval required from @<name>` above composer | paused hint |
-| Modal-owned: picker | existing behavior; textarea unfocused because the picker owns keys | same; draft preserved | absent | no extra banner; the picker title is the owner indicator | paused hint |
-| Modal-owned: secret | existing permission color (the composer itself owns keys) | prefix + masked `•` bullets in `#D0C9C2`; no placeholder | absent (masked input) | no extra banner; the masked field is the owner indicator | paused hint |
-| Rejected notice | focused border | same; **draft retained**, nothing sent | visible | `✗ <message>` in `#E47D76`, auto-clears after 4,000 ms | default hint |
-| Empty submit | focused border | placeholder remains | visible | none (empty is suppressed by the UI) | default hint |
-| Multiline | focused border | 2+ draft lines | visible | none | default hint |
+| Composer focused (default) | `accent` lime `#B5D98A` | `@<name> ❯`; placeholder or draft | visible (native textarea cursor) | none | canonical shortcut cluster |
+| Navigator focused | `border` `#27332C` (input inactive) | same; draft preserved | absent | none | navigator shortcut cluster |
+| Modal-owned: approval | `border` `#27332C` | same; draft preserved, unfocused | absent | `◔ Approval required from @<name>` above composer | paused cluster |
+| Modal-owned: picker | `border` `#27332C`; textarea unfocused because the picker owns keys | same; draft preserved | absent | no extra banner; the picker title is the owner indicator | paused cluster |
+| Modal-owned: secret | `accent` lime (the composer itself owns keys) | prefix + masked `•` bullets in `mutedText` `#A5ACA6`; no placeholder | absent (masked input) | no extra banner; the masked field is the owner indicator | paused cluster |
+| Rejected notice | `accent` lime (focused) | same; **draft retained**, nothing sent | visible | `✗ <message>` in `error` `#E17D75`, auto-clears after 4,000 ms | canonical cluster |
+| Empty submit | `accent` lime | placeholder remains | visible | none (empty is suppressed by the UI) | canonical cluster |
+| Multiline | `accent` lime | 2+ draft lines | visible | none | canonical cluster |
 
 Banner/notice rules:
 
-- The approval banner is one line, no box, directly above the composer: `◔ Approval required from @<name>` in `#79B8D1`. The name is the requesting agent, not necessarily the composer target.
-- A rejection notice replaces the banner slot: `✗ <message>` in `#E47D76`, auto-clears after 4,000 ms. A new rejection restarts the timer. The draft is never cleared or redirected on rejection.
+- The approval banner is one line, no box, directly above the composer: `◔ Approval required from @<name>` in `info` teal (`#83B9A2`). The name is the requesting agent, not necessarily the composer target.
+- A rejection notice replaces the banner slot: `✗ <message>` in `error` (`#E17D75`), auto-clears after 4,000 ms. A new rejection restarts the timer. The draft is never cleared or redirected on rejection.
 - At most one banner/notice row is visible. The modal banner wins over a stale notice; a notice never appears while a modal owns the keyboard.
 - The banner/notice row is outside the composer border, consumes 1 line, and must be included in the height budgets mentioned in 10.2.
 
 Focus indication never relies on color alone:
 
-- The native textarea cursor is present only when the composer owns keys.
-- The hint row text changes between composer, navigator, and paused states (10.8).
+- The native textarea cursor is present only when the composer owns keys; the composer border switches from `border` to `accent` lime.
+- The footer shortcut cluster changes between composer, navigator, and paused states (§11.5); the context cluster stays.
 - Approval has an explicit owner banner; rejection has an explicit notice.
 - The `@<name> ❯` prefix identifies the dispatch target at all times; it is not a focus indicator.
 
@@ -1166,13 +1168,13 @@ One line per row; never wrap; no horizontal overflow:
 [marker 2][tree prefix][glyph 1][space 1][name][metadata]
 ```
 
-- Marker: `▸ ` in `#F0B38D` when selected; `  ` (two spaces) otherwise. Selection is independent of keyboard focus and persists when the composer is focused.
+- Marker: `▸ ` in `selection` lime (`#B5D98A`) when selected; `  ` (two spaces) otherwise. Selection is independent of keyboard focus and persists when the composer is focused.
 - Tree prefix: depth 0 has none. Depth `d > 0` uses `(d - 1) × 2` spaces followed by `├ ` when a later sibling exists in DFS order, or `└ ` for the last sibling. No vertical `│` guides are used (not in the contract). Depth 1 therefore starts at the connector; depth 2 indents by two spaces before its connector.
 - Status glyph: exactly `○` idle, `◐` running, `◔` waiting, `✓` completed, `✗` failed, `!` stopped, followed by one space.
 - Name: `main` for the main row; the sub-agent display name otherwise. No `@` in the navigator. Append `#<first 6 id chars>` with no space, only when the runtime marks `duplicateName` (for example `review-agent#a1b2c3`).
 - Metadata: segments separated by ` · ` (space, U+00B7, space). Never render an absent segment, a placeholder dash, or a fabricated value.
-- Selected styling: marker `▸` and the name are bold `#F0B38D`; the glyph keeps its status color; metadata uses its normal color. No row background, inversion, or rounded box.
-- Normal name color: `#E6E1DC`. The selected row is the only accented row.
+- Selected styling: marker `▸` and the name are bold `selection` lime; the glyph keeps its status color; metadata uses its normal color. No row background, inversion, or rounded box.
+- Normal name color: `text` (`#E5EDE6`) for `main`; `subagent` teal (`#83B9A2`) for sub-agent names. The selected row is the only lime row.
 
 Layout examples:
 
@@ -1218,7 +1220,7 @@ Sub-agent row metadata, in display order:
 1. status label (`Idle`, `Running`, `Waiting`, `Completed`, `Failed`, `Stopped`)
 2. live detail: `activity` while running/waiting
 3. completed detail: clipped task
-4. failed detail: first error line, in `#E47D76`
+4. failed detail: first error line, in `error` (`#E17D75`)
 5. stopped: no detail segment (the status label already says `Stopped`; see 10.10 item 3)
 6. `since HH:MM` while live, or the existing `formatDuration(endedAt - startedAt)` when terminal
 7. `N tok` when usage exists
@@ -1233,15 +1235,15 @@ Drop order when narrow — first dropped first:
 
 Always kept: marker, tree prefix, glyph, name, status label, live activity, failed error line, `waiting on N`, and `N queued`. Times use local `toLocaleTimeString` with hour and minute only; elapsed is wall-clock, not compute time, and is labelled `since` while live. The 1,000 ms `now` tick updates only duration text; it does not reorder rows or trigger transcript re-renders.
 
-Status text color: the label uses its status color (10.5); live activity uses `#C9C1BA`; the failed error line uses `#E47D76`; all other metadata uses `#88827C`.
+Status text color: the label uses its status color (10.5 / §11.3); live activity uses `mutedText` (`#A5ACA6`); the failed error line uses `error` (`#E17D75`); all other metadata uses `dimText` (`#858C87`). Sub-agent names use `subagent` teal; the selected name is lime.
 
 #### Window and overflow
 
-- List region: at most 7 agent rows, plus up to two overflow lines when agents are hidden; the hint row is additional. Absolute navigator maximum is 10 lines. The window always contains the selected row and slides to keep it visible; there is no scrollbar and no mouse scrolling.
+- List region: at most 7 agent rows, plus up to two overflow lines when agents are hidden. The hint row is removed; the footer is a separate fixed row. Absolute navigator maximum is 9 lines. The window always contains the selected row and slides to keep it visible; there is no scrollbar and no mouse scrolling.
 - Hidden agents are represented by dim overflow rows, aligned in the marker column:
-  `… 3 above` / `… 2 below`, `#88827C`, one line each, not selectable.
+  `… 3 above` / `… 2 below`, `dimText` (`#858C87`), one line each, not selectable.
 - Overflow lines appear only when needed; with 7 or fewer agents there are none.
-- With no sub-agents the navigator is exactly two lines: one `main` row and the hint.
+- With no sub-agents the navigator is exactly one `main` row; the footer is separate and always present.
 - New sub-agents append a row without changing selection. Completed, failed, and stopped rows remain for the session; no fading, strike-through, or auto-removal.
 - Rows keep the tree builder's DFS order `(startedAt, id)`; live status changes update in place and never reorder.
 
@@ -1249,35 +1251,37 @@ Status text color: the label uses its status color (10.5); live activity uses `#
 
 Every state uses **glyph + label + color**. Color is never the only carrier of meaning.
 
-| Status | Glyph | Label | Live token | Contrast | Additional signal |
+| Status | Glyph | Label | Carbon Forge role | Contrast on `#101512` | Additional signal |
 |---|---|---|---|---|---|
-| idle | `○` | `Idle` | `#8D857D` | 5.2:1 | glyph + label |
-| running | `◐` | `Running` | `#E2A078` | 8.6:1 | glyph + label + live activity |
-| waiting | `◔` | `Waiting` | `#79B8D1` | 8.7:1 | glyph + label + approval banner/`waiting` detail |
-| completed | `✓` | `Completed` | `#8FCB9B` | 10.1:1 | glyph + label + task |
-| failed | `✗` | `Failed` | `#E47D76` | 6.8:1 | glyph + label + error line |
-| stopped | `!` | `Stopped` | `#88827C` | 5.0:1 | glyph + label |
+| idle | `○` | `Idle` | `statusIdle` = `dimText` `#858C87` | 5.4:1 | glyph + label |
+| running | `◐` | `Running` | `statusRunning` = copper `#D69B69` | 7.7:1 | glyph + label + live activity |
+| waiting | `◔` | `Waiting` | `statusWaiting` = teal `#83B9A2` | 8.3:1 | glyph + label + approval banner/`waiting` detail |
+| completed | `✓` | `Completed` | `statusCompleted` = accent `#B5D98A` | 11.7:1 | glyph + label + task |
+| failed | `✗` | `Failed` | `statusFailed` = error `#E17D75` | 6.5:1 | glyph + label + error line |
+| stopped | `!` | `Stopped` | `statusStopped` = `dimText` `#858C87` | 5.4:1 | glyph + label |
 
 Row and content semantics:
 
-| Element | Color | Notes |
+| Element | Carbon Forge role | Notes |
 |---|---|---|
-| selected marker + name | `#F0B38D`, bold | 10.4:1; `▸` also marks selection |
-| normal row name | `#E6E1DC` | 14.6:1 |
-| status label/glyph | status token above | glyph + word always present |
-| live activity | `#C9C1BA` | 10.7:1 |
-| failed error detail | `#E47D76` | 6.8:1 |
-| other metadata | `#88827C` | 5.0:1 |
-| separators / border | `#6D625A` | 3.2:1, passes 3:1 non-text |
-| hint row | `#8D857D` | 5.2:1 |
-| content status `@name` | `#D99168` | 7.4:1 |
-| content status activity | `#C9C1BA` | 10.7:1 |
-| content status elapsed/tokens | `#88827C` | 5.0:1 |
+| selected marker + name | `selection` lime `#B5D98A`, bold | 11.7:1; `▸` also marks selection |
+| normal main row name | `text` `#E5EDE6` | 15.5:1 |
+| normal sub-agent row name | `subagent` teal `#83B9A2` | 8.3:1; teal identifies sub-agents |
+| status label/glyph | status role above | glyph + word always present |
+| live activity | `mutedText` `#A5ACA6` | 8.0:1 |
+| failed error detail | `error` `#E17D75` | 6.5:1 |
+| other metadata | `dimText` `#858C87` | 5.4:1 |
+| separators / structural border | `border` `#27332C` | 1.4:1; decorative/non-text; focus never relies on it |
+| footer / hint text | `mutedText` `#A5ACA6` | 8.0:1 |
+| content status `@name` (main) | `brand` copper `#D69B69` | 7.7:1 |
+| content status `@name` (sub-agent) | `subagent` teal `#83B9A2` | 8.3:1 |
+| content status activity | `mutedText` `#A5ACA6` | 8.0:1 |
+| content status elapsed/tokens | `dimText` `#858C87` | 5.4:1 |
 
 - Running and waiting differ by glyph (`◐`/`◔`), word, and color; no spinner or "Thinking" state is invented.
 - The selected row's status glyph keeps the status color so status remains readable even when the row is selected.
-- The live palette supersedes the legacy ANSI table for the live TUI. Do not use `#7C3AED`, `#6D28D9`, `#3B82F6`, `#22C55E`, or ANSI 93/75 here. `#79B8D1` is the live tool/waiting blue, not the legacy `info` blue.
-- The existing permission semantics are untouched: `ask` border `#6D625A`, `files` `#D99168`, `auto` `#FF5555`, always paired with the `ask`/`files`/`auto` text label in the bottom status line.
+- The live palette supersedes the legacy ANSI table for the live TUI. Do not use `#7C3AED`, `#6D28D9`, `#3B82F6`, `#22C55E`, or ANSI 93/75 here. `#79B8D1` is retired; the live tool role is copper and the waiting/info role is teal.
+- **Permission semantics are text-only now.** `ask`/`files`/`auto` remain displayed as text in the footer (§11.5). The composer border no longer encodes permission: unfocused = `border`, focused = `accent`. `#FF5555` is banned from the live UI.
 
 ### 10.6 Content area
 
@@ -1289,7 +1293,7 @@ Exactly one non-scrolling line at the top of the content area, followed by the o
 @<name> · <Status> · <activity|task|error> · <elapsed> · <N> tok
 ```
 
-- `@<name>` in `#D99168`; separators ` · ` in `#6D625A`; status label in its status color; detail in `#C9C1BA` (failed detail in `#E47D76`); elapsed/tokens in `#88827C`.
+- `@<name>` in `brand` copper (`#D69B69`) for main or `subagent` teal (`#83B9A2`) for a sub-agent; separators ` · ` in `dimText`; status label in its status color; detail in `mutedText` (`#A5ACA6`), failed detail in `error` (`#E17D75`); elapsed/tokens in `dimText` (`#858C87`).
 - Only real values are shown. Omit absent segments without leaving double or trailing separators. Tokens are cumulative per agent (§21.10) and are omitted until the runtime reports usage.
 - Main: detail is the real `activity` (`ready`, `working`, `waiting for your approval`); elapsed is shown only while running/waiting and means session-start elapsed.
 - Sub-agent: live detail is `activity`; completed detail is the clipped task; failed detail is the first error line; stopped has no detail. Elapsed is `since HH:MM` while live and the existing duration format when terminal.
@@ -1300,25 +1304,25 @@ Exactly one non-scrolling line at the top of the content area, followed by the o
 
 Render the existing `entries` exactly as today:
 
-- `❯ You` in `#8FCB9B`
-- `⏺ Agent-Termo` in `#6D625A` (existing, unchanged)
-- tool calls/results in the existing grammar and colors (`● tool(args)` `#79B8D1`; `⎿ ✓ …` `#8FCB9B`; `⎿ ✗ …` `#E47D76`; bash output dim `#88827C`)
-- markdown via the existing `<markdown>` component; streaming via its existing `streaming` prop
-- info `#8BB7D8`, success `#8FCB9B`, error `#E47D76`, dim `#88827C`
-- diffs exactly as today (`#17351F`/`#3A1D1D` backgrounds, `#B7E4C7`/`#F0B4AE` text)
+- `❯ You` label in `userLabel` lime (`#B5D98A`); user body text in `userText` (`#E5EDE6`)
+- `⏺ Agent-Termo` in `assistantLabel` (`#A5ACA6`, 8.0:1; the old 3.2:1 `#6D625A` is retired)
+- tool calls/results in the existing grammar and colors (`● tool(args)` `tool` copper `#D69B69`; `⎿ ✓ …` `success` lime `#B5D98A`; `⎿ ✗ …` `error` `#E17D75`; bash output `dimText` `#858C87`)
+- markdown via the existing `<markdown>` component; streaming via its existing `streaming` prop; markdown roles per §11.3
+- info `teal` `#83B9A2`, success `accent` `#B5D98A`, error `#E17D75`, dim `#858C87`
+- diffs with §11.2 derivations: add text `#B5D98A` on `#293224`; remove text `#E17D75` on `#2F2521`; context text `#A5ACA6` on the page background
 
 #### Sub-agent selected
 
 Render only the selected agent's stored transcript (`transcriptToUiEntries`), never the main `entries` and never another agent's transcript:
 
-- User entry: `❯ You → @<name>` in `#8FCB9B`. The first such entry is the delegated task plus optional context; it is not a duplicate of the parent's user message.
-- Assistant entry: `⏺ <name>` in `#8D857D` (5.2:1; the main label's existing `#6D625A` is left untouched), followed by streamed markdown in `#E6E1DC` via the existing component.
-- Tool call: `● <name>(<args summary>)` in `#79B8D1`.
-- Tool result: `⎿ ✓ <summary>` in `#8FCB9B`; failure `⎿ ✗ <summary>` in `#E47D76`; multi-line bash output indented and dim `#88827C`.
-- Lifecycle/status entry: `— <Status>` plus an optional ` · <detail>` when the transcript provides one, in `#88827C`. Do not invent a status line for every iteration.
-- Error entry: `✗ <first line>` in `#E47D76`; the full capped text stays in the transcript.
+- User entry: `❯ You` in `userLabel` lime, followed by `→ @<name>` in `subagent` teal. The first such entry is the delegated task plus optional context; it is not a duplicate of the parent's user message.
+- Assistant entry: `⏺ <name>` in `subagentLabel` teal (`#83B9A2`; the main label is `assistantLabel` `#A5ACA6`), followed by streamed markdown in `text` via the existing component.
+- Tool call: `● <name>(<args summary>)` in `tool` copper (`#D69B69`).
+- Tool result: `⎿ ✓ <summary>` in `success` lime (`#B5D98A`); failure `⎿ ✗ <summary>` in `error` (`#E17D75`); multi-line bash output indented and `dimText` (`#858C87`).
+- Lifecycle/status entry: `— <Status>` plus an optional ` · <detail>` when the transcript provides one, in `dimText` (`#858C87`). Do not invent a status line for every iteration.
+- Error entry: `✗ <first line>` in `error` (`#E17D75`); the full capped text stays in the transcript.
 - Streaming: the existing `<markdown streaming>` output is the only streaming visual. The navigator's `◐` + activity and the content status row's `Running` are the working indicators. There is no "Thinking" state, spinner, or fabricated progress.
-- Empty transcript: exactly `No activity yet for @<name>.` in `#88827C`, one line at the top of the content area, no box. The composer remains enabled.
+- Empty transcript: exactly `No activity yet for @<name>.` in `dimText` (`#858C87`), one line at the top of the content area, no box. The composer remains enabled.
 - Parent/child separation: the main transcript's `agent:delegate` call/result and the original parent user message stay in main only. The sub-agent sees its delegated task and its own work only. No duplicated parent history.
 
 #### Scroll behavior
@@ -1332,10 +1336,10 @@ Render only the selected agent's stored transcript (`transcriptToUiEntries`), ne
 
 | Case | Visual result |
 |---|---|
-| No sub-agents | navigator is two lines: `main` row + hint; no overflow lines |
+| No sub-agents | navigator is one `main` row (plus the separate footer); no overflow lines |
 | New sub-agent | row appears in DFS order; `▸` does not jump; no toast or flash; content is unchanged |
 | Completed | `✓` row retained; detail task + terminal duration; transcript retained; composer enabled |
-| Failed | `✗` row with first error line; red error at transcript end; conversation retained; composer enabled for follow-up |
+| Failed | `✗` row with first error line; `error` `#E17D75` at transcript end; conversation retained; composer enabled for follow-up |
 | Stopped | `!` row in dim; status label only; transcript retained; composer enabled for follow-up |
 | Main waiting on children | main row `Waiting · waiting on N subagents`; each child keeps its own status; no fake parent node |
 | Multiple active | each row shows its own `◐`/`◔`; selection is independent; only the selected transcript renders |
@@ -1343,10 +1347,10 @@ Render only the selected agent's stored transcript (`transcriptToUiEntries`), ne
 | Selected agent finishes | stays selected; id remains valid; status updates in place; no selection jump |
 | Long name | clipped with `…`; duplicate `#id6` retained; composer prefix also clips the name |
 | Long task/error | row detail clipped with `…`; the transcript holds the full capped text |
-| Narrow < 80 | drop usage, then since, then goal/task, then active-agent name; hint clips with `…` |
+| Narrow < 80 | drop usage, then since, then goal/task, then active-agent name; the footer drops whole segments per §11.5 (never wraps) |
 | Narrow < 60 | names/details clip to the minimum 8 cells; composer prefix max 14 cells; every row stays one line |
 | Resize | recompute row widths and overlay budgets; selected row stays visible; saved scroll position restored; order unchanged |
-| Dark palette reality | only `#11100F`; no light mode; terminal theme changes are not an app light mode |
+| Dark palette reality | Carbon Forge dark-only (`background` `#101512`); no light mode; terminal theme changes are not an app light mode |
 | Streaming | existing markdown streaming; navigator `◐` + activity; no "Thinking" |
 
 Illustrative mockups are plain text and are not drawn to exact column width; the clipping and color rules above are authoritative. Color is described beneath each block.
@@ -1373,11 +1377,10 @@ Delegating the review to frontend-expert.
 ▸ ○ main · Idle · project-manager · 12k tok
   ├ ◐ frontend-expert · Running · editing src/ui/App.tsx
   └ ✓ test-agent · Completed · auth tests · 1.2k tok
-Ctrl+X navigate · ↑↓ select · Enter message · Esc parent · Ctrl+X Ctrl+K stop all
-context ▰▰▱▱▱▱▱ 28% · 12k/43k · auto · ask · session 34k tokens
+Ctrl+X navigate · ↑/↓ select · Enter send · Esc parent · Ctrl+X Ctrl+K stop all · context ▰▰▱▱▱▱▱ 28% · 12k/43k · low · auto · session ~34,000
 ```
 
-Colors: selected `▸ main` in `#F0B38D` bold; `◐` `#E2A078`; `✓` `#8FCB9B`; metadata `#88827C`; hint and bottom status `#8D857D`; composer prefix `#D99168`. The frontend row's usage and since were dropped by the narrow-row priority (illustrative), not omitted by the runtime.
+Colors: selected `▸ main` in `selection` lime `#B5D98A` bold; `◐` `statusRunning` copper `#D69B69`; `✓` `statusCompleted` lime `#B5D98A`; sub-agent names `subagent` teal `#83B9A2`; metadata `dimText` `#858C87`; footer `mutedText` `#A5ACA6`; composer prefix `brand` copper `#D69B69`. The frontend row's usage and since were dropped by the narrow-row priority (illustrative), not omitted by the runtime.
 
 **B. Failed sub-agent selected**
 
@@ -1399,10 +1402,10 @@ Review the auth changes.
   ○ main · Idle · 12k tok
 ▸ ├ ✗ review-agent · Failed · typecheck failed: TS2345 · 2m 14s
   └ ✓ test-agent · Completed · auth tests · 1.2k tok
-Ctrl+X navigate · ↑↓ select · Enter message · Esc parent · Ctrl+X Ctrl+K stop all
+Ctrl+X navigate · ↑/↓ select · Enter send · Esc parent · Ctrl+X Ctrl+K stop all · context ▰▱▱▱▱▱▱ 7% · 3.1k/43k · low · auto · session ~51,000
 ```
 
-Colors: `✗` and error lines `#E47D76`; assistant label `#8D857D`; tool line `#79B8D1`; dim status `#88827C`; selected name `#F0B38D`. The failed row remains selected and the composer still targets `@review-agent`.
+Colors: `✗` and error lines `error` `#E17D75`; assistant label `subagentLabel` teal `#83B9A2`; tool line `tool` copper `#D69B69`; dim status `dimText` `#858C87`; selected name `selection` lime `#B5D98A`. The failed row remains selected and the composer still targets `@review-agent`.
 
 **C. Empty sub-agent selected**
 
@@ -1417,7 +1420,7 @@ No activity yet for @frontend-expert.
   ○ main · Idle · 12k tok
 ▸ ├ ◐ frontend-expert · Running · starting · since 14:05
   └ ✓ test-agent · Completed · auth tests · 1.2k tok
-Ctrl+X navigate · ↑↓ select · Enter message · Esc parent · Ctrl+X Ctrl+K stop all
+Ctrl+X navigate · ↑/↓ select · Enter send · Esc parent · Ctrl+X Ctrl+K stop all · context ▰▱▱▱▱▱▱ 7% · 3.1k/43k · low · auto · session ~35,000
 ```
 
 The empty state is one dim line, not a box; the composer placeholder and prefix update immediately to `@frontend-expert`.
@@ -1433,7 +1436,7 @@ Composer focused:
 ▸ ○ main · Idle · 12k tok
   ├ ◐ frontend-expert · Running · editing App.tsx
   └ ✓ test-agent · Completed
-Ctrl+X navigate · ↑↓ select · Enter message · Esc parent · Ctrl+X Ctrl+K stop all
+Ctrl+X navigate · ↑/↓ select · Enter send · Esc parent · Ctrl+X Ctrl+K stop all · context ▰▰▱▱▱▱▱ 28% · 12k/43k · low · auto · session ~34,000
 ```
 
 Navigator focused:
@@ -1445,10 +1448,10 @@ Navigator focused:
 ▸ ○ main · Idle · 12k tok
   ├ ◐ frontend-expert · Running · editing App.tsx
   └ ✓ test-agent · Completed
-↑↓ select · Enter message · Esc parent · Ctrl+K stop terminal · Ctrl+X Ctrl+K stop all
+↑/↓ select · Enter focus composer · Esc parent · Ctrl+K stop terminal · Ctrl+X Ctrl+K stop all · context ▰▰▱▱▱▱▱ 28% · 12k/43k · low · auto · session ~34,000
 ```
 
-Focus cues are non-color: the native cursor disappears, the hint text changes to the navigator variant, and the composer border returns to `#6D625A` because input is inactive. The `▸` selection marker is present in both states; selection is not focus.
+Focus cues are non-color: the native cursor disappears, the footer shortcut cluster changes to the navigator variant, and the composer border returns to `border` `#27332C` because input is inactive. The `▸` selection marker is present in both states; selection is not focus.
 
 **E. Modal-owned composer (background sub-agent approval)**
 
@@ -1464,10 +1467,10 @@ Focus cues are non-color: the native cursor disappears, the hint text changes to
 ▸ ○ main · Idle · 12k tok
   ├ ◔ frontend-expert · Waiting · waiting for your approval
   └ ✓ test-agent · Completed
-Navigator paused · finish the prompt to continue
+Navigator paused · finish the prompt to continue · context ▰▰▱▱▱▱▱ 28% · 12k/43k · low · auto · session ~34,000
 ```
 
-The banner names the requester even though the composer targets `@main`. The draft is preserved; the navigator is frozen.
+The banner names the requester even though the composer targets `@main`. The banner uses `info` teal; the composer border is `border` because input is inactive. The draft is preserved; the navigator is frozen.
 
 **F. Narrow terminal (under 60 columns, navigator focused)**
 
@@ -1485,11 +1488,10 @@ Editing src/ui/App.tsx.
   ○ main · Idle · 12k
 ▸ ├ ◐ frontend-expe… · Running · editing…
   └ ✓ test-… · Completed
-↑↓ select · Enter message · Esc parent · Ctrl+X Ctrl+K stop…
-context ▰▰▱▱▱▱▱ 28% · 12k/43k · auto
+Ctrl+X Ctrl+K stop all · 12k/43k · auto
 ```
 
-Usage and since are dropped first; names and details clip with `…`; the hint clips at the terminal edge; no row wraps.
+Usage, thinking, the meter, and the least-critical shortcut hints are dropped whole by the footer priority; names and details clip with `…`; no row wraps and no second shortcut row appears.
 
 **G. Nested indentation (visual only; runtime depth is 1 today)**
 
@@ -1503,39 +1505,257 @@ Usage and since are dropped first; names and details clip with `…`; the hint c
 
 Depth is conveyed by two spaces per level plus `├ `/`└ `; no vertical guides.
 
-### 10.8 Keyboard hint
+### 10.8 Keyboard hint (Carbon Forge footer)
 
-The hint row is the last line of the navigator, always visible, one line, not selectable, no border.
+The navigator no longer has a hint row, and the old bottom status line is gone. Both are replaced by **one** footer row below the navigator (§11.5). The footer is always exactly one line, not selectable, no border, `mutedText` (`#A5ACA6`) with `dimText` separators; key chords may be bold. It never wraps and never adds a row.
 
-| State | Exact text |
+Default (composer focused) shortcut cluster, in order:
+
+`Ctrl+X navigate · ↑/↓ select · Enter send · Esc parent · Ctrl+X Ctrl+K stop all`
+
+| State | Shortcut cluster (context cluster appended unchanged) |
 |---|---|
-| Composer focused (default) | `Ctrl+X navigate · ↑↓ select · Enter message · Esc parent · Ctrl+X Ctrl+K stop all` |
-| Navigator focused | `↑↓ select · Enter message · Esc parent · Ctrl+K stop terminal · Ctrl+X Ctrl+K stop all` |
+| Composer focused (default) | `Ctrl+X navigate · ↑/↓ select · Enter send · Esc parent · Ctrl+X Ctrl+K stop all` |
+| Navigator focused | `↑/↓ select · Enter focus composer · Esc parent · Ctrl+K stop terminal · Ctrl+X Ctrl+K stop all` |
 | Modal open | `Navigator paused · finish the prompt to continue` |
+| Transient status active | `status()` replaces the shortcut cluster until it clears (max 4,000 ms) |
 
-- Style: `#8D857D`; key names may be bold; no background; clip the right edge with `…`; never wrap.
-- The default order is deliberate: `Ctrl+X navigate` precedes the arrow actions, so the hint does not imply that arrows navigate while the composer is typing. The composer's existing bottom-right hint (`Enter send · Shift+Enter newline · Tab complete · Select text to copy · Ctrl+C quit`) remains unchanged and authoritative for text editing.
-- The navigator variant removes the now-redundant `Ctrl+X navigate` and adds the truthful navigator-only `Ctrl+K stop terminal`. All existing shortcuts are preserved per §21.2 D4 (`Ctrl+O`, `Ctrl+T`, `Tab`, `Shift+Enter`, history, completion, picker, secret, approval, `/subagents`); this section changes no binding.
-- The modal variant prevents the hint from claiming navigation works while a modal owns the keyboard.
+- The context cluster from left to right is `context <meter> <pct> · <used>/<budget> · <thinking> · <permissionMode> · session <usage>`, populated from `ScreenState` as specified in §11.5.
+- The default order is deliberate: `Ctrl+X navigate` precedes the arrow actions, so the footer does not imply that arrows navigate while the composer is typing.
+- **The old composer bottom-right hint (`Enter send · Shift+Enter newline · Tab complete · Select text to copy · Ctrl+C quit`) is removed.** Its contents move into the footer and `/help`; do not keep a second hint line.
+- All existing shortcuts are preserved per §21.2 D4 (`Ctrl+O`, `Ctrl+T`, `Tab`, `Shift+Enter`, history, completion, picker, secret, approval, `/subagents`); this section changes no binding.
 
 ### 10.9 Accessibility
 
 - **Keyboard-only.** Every workspace action is reachable from the keyboard per the §21.2 D4 table. This is a terminal UI; the 44 px touch-target rule does not apply. Rows are full-width keyboard targets, and the composer remains the single text-entry surface.
-- **Visible focus.** Focus is indicated by the native cursor, the hint-row text variant, the `▸` selection marker, and bold selected name. Border color alone is never the only focus cue.
-- **No color-only meaning.** Every status carries a glyph and a word (`○ Idle`, `◐ Running`, `◔ Waiting`, `✓ Completed`, `✗ Failed`, `! Stopped`). Failed rows carry an error line; queued and waiting states are stated in words.
-- **Contrast.** All functional workspace text is at least 5.0:1 against `#11100F`, except the pre-existing main assistant label `#6D625A` (3.2:1), which is left unchanged by this feature (10.10 item 6). Status colors range from 6.8:1 to 10.1:1; selected accent is 10.4:1; dim metadata is 5.0:1; the `#6D625A` border/separator is a non-text divider at 3.2:1, passing the 3:1 non-text threshold.
+- **Visible focus.** Focus is indicated by the native cursor, the lime composer border (`#B5D98A`), the footer shortcut-cluster variant, the `▸` selection marker, and bold selected name. Border color alone is never the only focus cue.
+- **No color-only meaning.** Every status carries a glyph and a word (`○ Idle`, `◐ Running`, `◔ Waiting`, `✓ Completed`, `✗ Failed`, `! Stopped`). Failed rows carry an error line; queued and waiting states are stated in words. Permission mode is always text (`ask`/`files`/`auto`) and is never encoded by color.
+- **Contrast.** All functional text is at least 5.4:1 against `#101512` (5.4:1 is `dimText` idle/stopped/metadata; body text is 15.5:1; status colors 6.5–11.7:1; selected lime 11.7:1). The `border` token `#27332C` is 1.4:1 and is intentionally decorative/non-text; no text, status, focus, or permission meaning relies on it. The old 3.2:1 assistant label is retired in favor of `mutedText` at 8.0:1.
 - **Many agents.** The 7-agent-row window keeps the selected row visible, shows hidden counts above/below, and never shrinks text or introduces horizontal scrolling.
 - **Truncation.** Only `…` is used; no mid-character cuts, no misleading placeholder values, and no fabricated usage, elapsed time, or "Thinking" state. Absent metrics are omitted.
 - **Motion.** No new animation is introduced. Duration text updates on a 1,000 ms interval only while an agent is live; streaming uses the existing markdown component. Reduced-motion handling of the existing spinner is unchanged.
-- **Theme reality.** Contrast is validated only against the hardcoded dark background `#11100F`. There is no light mode. If one is added later, every token must be revalidated.
+- **Theme reality.** Carbon Forge is dark-only; contrast is validated against `#101512` and `#19211D`. There is no light mode by design. If one is added later, every token must be revalidated.
 
 ### 10.10 Open items for project-manager
 
-1. **Light-mode acceptance criterion conflict.** §21.8 says "Dark/light themes work", but the live TUI has no theme system and no light mode; `#11100F` is hardcoded. This design follows the real dark-only state. Either amend the acceptance criterion to "dark palette unchanged; no theme regression" or schedule a separate theme refactor. Do not treat this feature as delivering light mode.
-2. **Navigator height cap.** This spec allows 7 agent rows + up to 2 overflow lines + 1 hint (max 10 lines), matching §21.6. On short terminals reduce the visible agent rows first to preserve content height; confirm the cap if a stricter 7-line navigator block was intended.
+1. **Light-mode acceptance criterion conflict (partially resolved).** §21.8 says "Dark/light themes work". Carbon Forge delivers a real theme module and a validated dark palette, but still no light mode. Amend the acceptance criterion to "Carbon Forge dark palette applied; no light mode required" or schedule a separate light variant with its own contrast validation.
+2. **Navigator height cap.** This spec allows 7 agent rows + up to 2 overflow lines (max 9 navigator lines; the hint row is removed) and a fixed 1-row footer. On short terminals reduce the visible agent rows first to preserve content height; confirm the cap if a stricter 7-line navigator block was intended.
 3. **Stopped metadata duplication.** §21.6 lists a `· stopped` detail segment in addition to the `Stopped` status label. This spec omits the duplicate segment; the `!` glyph + `Stopped` label carry the state. Confirm or require the literal duplicate.
 4. **Naming/case decisions.** Status labels are Title case (`Idle`, `Running`, ...), `@main` is used in the composer and content status row while the navigator name is `main`, and the navigator omits `@` for all names per §21.6. Confirm these display conventions.
-5. **Banner row budget.** The approval banner / rejection notice consumes one row above the composer. `overlayAvailableRows` and `promptInputHeight` must subtract the navigator rows (§21.6) and this extra row. This is a UI height requirement, not a runtime behavior change.
-6. **Pre-existing assistant-label contrast.** `#6D625A` is 3.2:1 on `#11100F`, below the 4.5:1 text threshold. It is the existing main label color and is left unchanged for surgical scope; the new sub-agent label uses `#8D857D` (5.2:1). If AA for every label is required, that is a separate change.
+5. **Banner row budget.** The approval banner / rejection notice consumes one row above the composer. `overlayAvailableRows` and `promptInputHeight` must subtract the navigator rows (§21.6), this extra row, and the fixed 1-row footer. This is a UI height requirement, not a runtime behavior change.
+6. **Assistant-label contrast (resolved).** The old main label `#6D625A` (3.2:1) is replaced by `assistantLabel` `#A5ACA6` (8.0:1); sub-agent labels use teal `#83B9A2` (8.3:1). Both meet AA.
 7. **No scroll "new activity" indicator.** When the user is scrolled up, background activity continues without a visual cue. Adding one would be a new behavior beyond §21.6; this spec intentionally does not add it. Flag if product wants it.
-8. **No theme/config file was written.** Per the live code, no theme/token module exists; this section documents the actual hardcoded tokens instead of creating a new theme system. A future token module should preserve these hex values and contrast notes.
+8. **Theme/config file (resolved).** `src/ui/theme.ts` now exists and exports `COLORS` and `ROLES`; §11 is the authoritative spec. It is a flat token module, not a ThemeProvider, and it is dark-only.
+
+---
+
+## 11. CARBON FORGE (LIVE TUI THEME)
+
+**Status:** current visual authority for the live TUI (2026-11-23). Carbon Forge supersedes the pre-theme palette in §10.1 and every legacy hex in §10.3–§10.9. Sections 1–9 remain the historical design of the retired ANSI renderer; they are intentionally not rewritten. The theme source of truth is `src/ui/theme.ts` (`COLORS`, `ROLES`). No ThemeProvider, light mode, runtime theme switching, or new dependency is introduced.
+
+### 11.1 Foundation palette
+
+These eight values are exact and must not be adjusted at call sites.
+
+| Token | Hex | Contrast on `#101512` | Contrast on `#19211D` | Primary use |
+|---|---|---|---|---|
+| `background` | `#101512` | — | — | page/content/root background |
+| `surface` | `#19211D` | 1.1:1 (elevation only) | — | header box, terminal panel, picker/approval panel fill |
+| `border` | `#27332C` | 1.4:1 | 1.3:1 | structural borders, separators, unfocused composer border |
+| `text` | `#E5EDE6` | 15.5:1 | 13.8:1 | primary text, assistant body, default markdown |
+| `accent` | `#B5D98A` | 11.7:1 | 10.4:1 | active selection, focus, success/completed |
+| `copper` | `#D69B69` | 7.7:1 | 6.9:1 | branding and tool execution |
+| `teal` | `#83B9A2` | 8.3:1 | 7.4:1 | informational states, links, sub-agents |
+| `error` | `#E17D75` | 6.5:1 | 5.8:1 | errors/failed/destructive feedback |
+
+`border` is intentionally subtle. It is a decorative/non-text divider at 1.4:1, below the 3:1 non-text threshold; **no text, status, selection, focus, or permission meaning may rely on it.** Focus is lime plus the native cursor plus the footer/selection cues. `surface` is a low-contrast elevation (1.1:1 on background) and must not be the only way to distinguish an interactive region.
+
+### 11.2 Derived tokens (documented; only where the eight colors cannot express the role)
+
+| Token | Hex | Derivation (sRGB channel mix) | Contrast | Use |
+|---|---|---|---|---|
+| `textMuted` | `#A5ACA6` | 70% `text` + 30% `background` | 8.0:1 on bg; 7.1:1 on surface | secondary text, activity, terminal output, picker rows, footer |
+| `textDim` | `#858C87` | 55% `text` + 45% `background` | 5.4:1 on bg; 4.8:1 on surface | metadata, placeholders, aliases, idle/stopped, separators |
+| `diffAddSurface` | `#293224` | 15% `accent` + 85% `background` | accent text 8.4:1 | diff add row fill |
+| `diffRemoveSurface` | `#2F2521` | 15% `error` + 85% `background` | error text 5.3:1 | diff remove row fill |
+
+There is no `surfaceAlt` token: the live UI does not need a second elevated fill. Diff row text uses the foundation `accent`/`error` (not new text colors); diff context text uses `textMuted` on the page background.
+
+### 11.3 Semantic rules
+
+| Meaning | Role | Rule |
+|---|---|---|
+| Branding | `brand` = copper `#D69B69` | header title, composer `@name ❯` prefix, terminal title, picker border/title |
+| Tool execution | `tool` = copper `#D69B69` | `● tool(...)` call lines, tool labels |
+| Informational | `info` = teal `#83B9A2` | info entries, links, approval banner, waiting state |
+| Sub-agents | `subagent` = teal `#83B9A2` | sub-agent navigator names, `⏺ <name>` labels, `→ @<name>` targets, sub-agent content-status `@name` |
+| Active selection | `selection` = accent lime `#B5D98A` | selected navigator marker/name, selected picker/completion row |
+| Focus | `focus` = accent lime `#B5D98A` | focused composer border |
+| Success/completed | `success` = accent lime `#B5D98A` | completed status, `✓` results, success entries |
+| Errors/failed | `error` = `#E17D75` | error entries, failed status, rejection notices |
+| Idle/stopped/dim | `dimText` `#858C87` | idle/stopped status, metadata, empty states |
+| Permission mode | text only | `ask`/`files`/`auto` in the footer; never a border color |
+
+**Hard ban:** `#FF5555` and every legacy live hex in §10.1 must disappear from `src/ui` call sites. The composer border no longer encodes permission. Errors use `#E17D75`.
+
+Status colors (glyph + word always present):
+
+| Status | Glyph/label | Role |
+|---|---|---|
+| idle | `○ Idle` | `textDim` `#858C87` |
+| running | `◐ Running` | copper `#D69B69` |
+| waiting | `◔ Waiting` | teal `#83B9A2` |
+| completed | `✓ Completed` | accent `#B5D98A` |
+| failed | `✗ Failed` | error `#E17D75` |
+| stopped | `! Stopped` | `textDim` `#858C87` |
+
+Markdown / `SyntaxStyle` roles:
+
+| Scope | Role |
+|---|---|
+| default text | `text` `#E5EDE6` |
+| heading 1 | `accent` `#B5D98A`, bold |
+| heading 2 | `teal` `#83B9A2`, bold |
+| links | `teal` `#83B9A2` |
+| inline code / raw | `copper` `#D69B69` |
+| list markers | `copper` `#D69B69` |
+
+In the non-TUI Chalk fallback, use the same hexes via `Chalk.hex` for headings, links, inline code, dim rules, errors, and success. Do not use legacy `cyan`/`magenta`/`red`. ANSI is stripped in the live renderer; the `<markdown>` `SyntaxStyle` is what colors the live transcript and `/help`.
+
+`UiKind` mapping (the live transcript `colors` record):
+
+| `UiKind` | Role |
+|---|---|
+| `user` | `userText` `#E5EDE6`; the `❯ You` marker uses `userLabel` lime |
+| `assistant` | `text` `#E5EDE6`; the `⏺` label uses `assistantLabel` |
+| `tool` | `tool` copper `#D69B69` |
+| `info` | `info` teal `#83B9A2` |
+| `success` | `success` accent `#B5D98A` |
+| `error` | `error` `#E17D75` |
+| `dim` | `dimText` `#858C87` |
+| `markdown` | `text` `#E5EDE6` (syntax scopes per the table above) |
+| `diff-add` | `diffAddText` `#B5D98A` on `diffAddSurface` `#293224` |
+| `diff-remove` | `diffRemoveText` `#E17D75` on `diffRemoveSurface` `#2F2521` |
+| `diff-context` | `diffContextText` `#A5ACA6` on the page background |
+
+Surface usage: `background` for the root/content/composer; `surface` for the header box, terminal panel, picker, and approval panel. No navigator row backgrounds, shadows, gradients, or new animation.
+
+Pre-theme live token mapping (every value in §10.1 must land on one of these):
+
+| Pre-theme token/hex (usage) | Carbon Forge role |
+|---|---|
+| `background` `#11100F` | `background` `#101512` |
+| `accent` `#D99168` (header title, composer prefix, terminal title, picker) | `brand` copper `#D69B69` |
+| `accentSelected` `#F0B38D` (selected picker/completion/navigator) | `selection` accent `#B5D98A` |
+| `border` `#6D625A` (structural) | `border` `#27332C` |
+| `border` `#6D625A` (main assistant label) | `assistantLabel` `#A5ACA6` |
+| `textPrimary` `#E6E1DC` | `text` `#E5EDE6` |
+| `textSecondary` `#C9C1BA` | `mutedText` `#A5ACA6` |
+| `textSecondaryAlt` `#D0C9C2` | `mutedText` `#A5ACA6` |
+| `muted` `#8D857D` (footer/status/hint/terminal command) | `mutedText` for the footer, `dimText` for metadata/terminal command |
+| `mutedHeader` `#89827C`, `dim` `#88827C`, `mutedPicker` `#8F8982` | `dimText` `#858C87` |
+| `mutedCompletion` `#8EAAA8` | `mutedText` `#A5ACA6` |
+| `userSuccess` `#8FCB9B` | `userLabel`/`success` accent `#B5D98A`; user body `text` |
+| `info` `#8BB7D8` | `info` teal `#83B9A2` |
+| `toolWaiting` `#79B8D1` | `tool` copper for tool lines; `info`/`subagent` teal for waiting, links, sub-agents, approval banner |
+| `running` `#E2A078` | `statusRunning` copper; markdown heading 1 `accent` |
+| `error` `#E47D76` | `error` `#E17D75` |
+| `autoPermission` `#FF5555` | removed; composer border is `border`/`accent`; permission is text |
+| markdown heading2/list `#D7A27C` | heading 2 `teal`; list marker `copper` |
+| markdown raw `#9CCB9C` | `markdownRaw` copper |
+| diff add text `#B7E4C7` / bg `#17351F` | `accent` `#B5D98A` / `diffAddSurface` `#293224` |
+| diff remove text `#F0B4AE` / bg `#3A1D1D` | `error` `#E17D75` / `diffRemoveSurface` `#2F2521` |
+| diff context text `#BDB6AE` | `diffContextText` `#A5ACA6` |
+
+### 11.4 Composer focus
+
+| Composer state | Border |
+|---|---|
+| Unfocused (navigator focus, approval, picker) | `border` `#27332C` |
+| Focused (composer owns keys, including secret mode) | `accent` `#B5D98A` |
+
+- `single` border, 1 cell, unchanged layout.
+- Permission mode is not a border color. The bright red auto border is removed; the mode is stated as text in the footer and `/help`.
+- Focus is never indicated by color alone: the native cursor is present only when the composer owns keys, the footer shortcut cluster changes, and the selected navigator row uses `▸`.
+- Approval banner: `info` teal; rejection notice: `error` `#E17D75`. Approval/picker keep the composer unfocused at `border`.
+
+### 11.5 The one-line footer
+
+The footer is the **last row of the screen**, below the navigator (which is below the composer). It replaces the old navigator hint row and the old two-part bottom status line. It is exactly one row (`height=1`, `flexShrink=0`, `wrapMode="none"`), never wraps, never scrolls, and never adds a second shortcut row. The footer replaces the old one-row bottom status line at the same one-row cost, and removing the now-gone navigator hint row returns one row to the `flexGrow` content area — net one row less chrome, matching the 80 × 24 example in §10.2.
+
+**Canonical default (composer focused), exact:**
+
+```
+Ctrl+X navigate · ↑/↓ select · Enter send · Esc parent · Ctrl+X Ctrl+K stop all · context ▰▰▰▰▱▱▱ 51% · 12k/23k · low · auto · session ~130,851
+```
+
+Segment order is fixed; the separator is exactly ` · ` (U+00B7 with one space each side), with no leading or trailing separator and no other punctuation. The numbers in the canonical line are illustrative; every numeric segment is computed from runtime state (the meter/percent and `12k/23k` must agree for real state).
+
+| # | Segment | Dynamic source / format |
+|---|---|---|
+| 1 | `Ctrl+X navigate` | literal keyboard hint |
+| 2 | `↑/↓ select` | literal |
+| 3 | `Enter send` | literal |
+| 4 | `Esc parent` | literal |
+| 5 | `Ctrl+X Ctrl+K stop all` | literal |
+| 6 | `context ▰▰▰▰▱▱▱ 51%` | `"context " + formatContextMeter(ScreenState.context.usedTokens, .budgetTokens)`; 7 cells, rounded percent |
+| 7 | `12k/23k` | `formatTokenCount(usedTokens) + "/" + formatTokenCount(budgetTokens)` |
+| 8 | `low` | `ScreenState.thinking` verbatim (`off`/`auto`/`low`/`medium`/`high`) |
+| 9 | `auto` | `ScreenState.permissionMode` verbatim (`ask`/`files`/`auto`), always text |
+| 10 | `session ~130,851` | `"session " + ScreenState.usage` with one trailing ` tokens` removed; `~` (in-flight) is retained |
+
+- If `ScreenState.context` is absent, omit segments 6 and 7 (no placeholder). If `thinking` is empty, omit segment 8. If `usage` is empty, omit segment 10. Segment 9 is always present. Show only real values; never fabricate a meter, percent, or token count. Render `thinking` and `permissionMode` verbatim; do not merge equal values (for example `auto · auto`) or add labels.
+- Styling: base `mutedText`; separators `dimText`; key chords may be `text` bold; the permission value uses `text` (not color-coded); meter filled `▰` uses `mutedText`, empty `▱` uses `dimText`. No color-only meaning.
+- **Width:** available cells = `max(1, terminalColumns - 2)` (page `paddingX=1`). If the joined line exceeds it, drop whole segments in this exact order, recomputing separators after each drop, until it fits:
+  1. `session …`
+  2. `thinking`
+  3. `↑/↓ select`
+  4. `context <meter> <pct>` (keep `12k/23k`)
+  5. `Esc parent`
+  6. `Enter send`
+  7. `Ctrl+X navigate`
+  8. `Ctrl+X Ctrl+K stop all`
+  9. `12k/23k`
+  - `permissionMode` is never dropped. If an unsupported-width line still overflows, clip the remaining text with `…`; never wrap, never move a segment to a new row.
+  - Never abbreviate segment text; drop whole segments only.
+- **State variants** keep the context cluster and swap only the shortcut cluster:
+  - Navigator focused: `↑/↓ select · Enter focus composer · Esc parent · Ctrl+K stop terminal · Ctrl+X Ctrl+K stop all`.
+  - Modal owns keys: `Navigator paused · finish the prompt to continue`.
+  - The drop order applies to the analogous slots; `Ctrl+K stop terminal` drops before `Ctrl+X Ctrl+K stop all`.
+- **Transient status:** when `status()` is non-empty (spinner, "Stopped N agents.", "Stopping terminal…", copied/notice messages), it replaces the entire shortcut cluster; the context cluster remains. It is shown until the existing code clears or overwrites it (4,000 ms for transient/notice messages, spinner until stopped); do not add a new timer. If the line still overflows, the status text is clipped with `…` after `12k/23k` is dropped, and never causes a second row. The permission value is never displaced by a transient message.
+- No additional shortcut rows anywhere: remove the current `navigatorHint()` row and the right-hand `status() || "Enter send · ..."` hint. `/help` is the complete reference.
+
+### 11.6 `/help` reference
+
+`/help` (and its `/` alias) renders **one** transcript entry of kind `markdown` through `appendLog`, so the existing transcript scrollbox scrolls it. Do not add a pager, modal, or separate screen. The existing `/clear` behavior still clears it.
+
+**Structure (two separate top-level sections, in this order):**
+
+1. `Commands` — every live registered command with its aliases and description.
+   - Source of truth: the same registry used by command completion at runtime, i.e. `COMMANDS` + `/mcp` + project commands loaded from `.agent-termo/commands`. Do not maintain a second hand-written command list. Suggested seam: expose the live list already held by the TUI (`getCommands()`) and have `printHelp()` consume it. `/mcp` is currently appended by `refreshCommandCompletion`; keep that behavior. Adding `/mcp` to `COMMANDS` and removing the ad-hoc append is acceptable if the implementer prefers one constant, but it is not required.
+   - Aliases displayed beside the canonical name: `/help` (`/`), `/clear` (`/cls`), `/timeline` (`/tl`), `/history` (`/hist`), `/exit` (`/quit`). These mirror the real dispatch branches; do not invent aliases.
+   - Correct stale descriptions while touching help: `/help` = "show commands and keyboard shortcuts"; `/agents` = "list agents and choose one"; `/history` = "list recent conversation messages (default 12, max 50)" (not "show message count"); `/context` = "show estimated context usage and budget" (not "runtime paths"); `/mcp` = "list MCP servers and available tools" (missing from `COMMANDS` today).
+   - Project commands are included and marked with a `project` hint. Plain `exit` / `quit` also quit; state this once under Commands.
+   - Render each row as a markdown list item: command + aliases in inline code (copper), description in `mutedText`. Descriptions may wrap in the scrollbox; command names are not clipped.
+2. `Shortcuts` — every implemented binding, grouped by context. This is content derived from the real handlers, not from the old hand-written "Keys" list. It must include:
+   - Composer: `Enter` send (accepts a highlighted completion first); `Shift+Enter` (also `Ctrl+Enter`/`Alt+Enter`) newline; `Tab` complete `/command` or `@mention`; `Esc` dismiss completion; `↑/↓` completion selection, otherwise cursor movement, otherwise history at the first/last line; `Ctrl+A`/`Ctrl+E` line start/end; `Ctrl+W`/`Ctrl+U` delete word / to line start; `Ctrl+K` delete to line end while typing (and stop the terminal when the composer is empty/navigator-focused/prompt inactive); `Ctrl+O` show/hide the terminal panel; `Ctrl+T` expand/shrink the terminal panel (both when a terminal command exists); `Ctrl+C` copy selection, clear the draft, or quit when empty and no agent is live.
+   - Workspace: `Ctrl+X` focus the navigator and arm stop-all; `↑/↓` select an agent; `Enter` focus the composer; `Esc` select the parent (composer at main); `Ctrl+X` then `Ctrl+K` within 1.5 s stops all agents.
+   - Response: `Esc` or `Ctrl+C` cancels an in-flight model response while no modal owns the keys.
+   - Approval: `Y`/`Enter` allow once; `A` allow always for this exact terminal command; `N`/`Esc`/`Ctrl+C` reject.
+   - Picker: `↑/↓` move, type to filter, `Backspace` edit the filter, `Enter` select, `Esc`/`Ctrl+C` cancel.
+   - Secret input: `Enter` submit, `Esc`/`Ctrl+C` cancel, `Backspace` delete, bracketed paste supported.
+   - The navigator hint row is gone; these shortcuts are documented here and in the footer, never in a second row.
+- **Theming:** section headings use markdown heading 1 (lime, bold); context group headings use heading 2 (teal, bold); command/key tokens use inline code (copper); descriptions use `mutedText`; aliases use `dimText`. The live `<markdown>` `SyntaxStyle` applies these roles. The non-TUI fallback uses the same hexes through Chalk; no legacy cyan/magenta/red.
+- **Accuracy check:** every `CommandInfo` in the live registry appears exactly once (canonical name; aliases on the same row), and every binding above is backed by an existing handler. Do not list speculative or removed features.
+
+### 11.7 Verification and implementation notes
+
+- `src/ui/theme.ts` is the only color source for the live TUI. Replace every hex in `src/ui/tui.tsx` with `ROLES`/`COLORS`; do not edit runtime behavior, agent execution, tool calling, model communication, or session logic.
+- Specific call sites frontend-expert must not miss: root background; header border/title/version/model; content status row; separator; user/assistant labels; tool/success/error/dim/info kinds; diff fills/text/context; terminal panel border/title/command/hint/output; picker border/title/filter/headers/rows/hint; completion rows; approval banner/panel; rejection notice; composer border/prefix/secret bullets; navigator marker/connector/glyph/name/segments/overflow; the old `permissionBarColor()` (remove its permission-color behavior); markdown `SyntaxStyle`; footer. Also retheme the non-TUI Chalk paths (`MarkdownPrinter` in `src/ui/index.ts` and `statusIcon`/`renderStrip`/`buildInspector`/`renderPanel` in `src/ui/subagent-view.ts`) with the same hexes; do not leave legacy cyan/magenta/red in user-visible fallback output.
+- At the composer call site, replace the permission color with `inputActive() ? ROLES.composerBorderFocused : ROLES.composerBorder`. Do not add a new permission-color helper.
+- `src/utils/ansi.ts` is pre-existing, unused legacy ANSI code (nothing imports it). It is outside this change: do not refactor or delete it as part of the theme; flag it to project-manager if cleanup is wanted.
+- Update `tests/unit/permission-colors.test.ts`: it currently asserts `permissionBarColor("auto") === "#FF5555"`. The new contract is composer border = `#27332C` unfocused / `#B5D98A` focused, with permission as text.
+- Grep gate: `#FF5555`, `#11100F`, `#D99168`, `#F0B38D`, `#6D625A`, `#E6E1DC`, `#C9C1BA`, `#D0C9C2`, `#8D857D`, `#89827C`, `#88827C`, `#8F8982`, `#8EAAA8`, `#8FCB9B`, `#8BB7D8`, `#79B8D1`, `#E2A078`, `#E47D76`, `#D7A27C`, `#9CCB9C`, `#17351F`, `#3A1D1D`, `#B7E4C7`, `#F0B4AE`, `#BDB6AE` must be absent from `src/ui` call sites (theme.ts contains only the new Carbon Forge hexes; historical docs are exempt).
+- Visual checks at 40/80/120 columns: the footer stays one line, drops in the specified order, never wraps; the composer border is subtle unfocused and lime focused; no bright red appears; `/help` scrolls in the transcript and shows Commands and Shortcuts separately.
+- Suggested automated coverage (for test-agent): pure footer formatter at 40/60/80/120 with all values present, absent context/thinking/usage, transient status, and the invariant that permission is never dropped; `/help` includes every live registry command, `/mcp`, project commands, and all five aliases; theme token/role completeness.
+- Expected verification after implementation: `bun run typecheck`, `bun run test`, `bun run build`. This design change does not alter keyboard behavior or runtime/session semantics.

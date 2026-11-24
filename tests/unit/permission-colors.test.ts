@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { permissionBarColor, terminalPanelHeight } from "../../src/ui/tui.js";
+import { terminalPanelHeight } from "../../src/ui/tui.js";
+import { ROLES } from "../../src/ui/theme.js";
 
 describe("terminal panel height", () => {
   it("stays compact while collapsed", () => {
@@ -12,16 +13,18 @@ describe("terminal panel height", () => {
   });
 });
 
-describe("permission bar color mapping", () => {
-  it("returns default color for normal (ask) mode", () => {
-    expect(permissionBarColor("ask")).toBe("#6D625A");
+describe("composer border roles", () => {
+  it("uses the subtle structural border when the composer is unfocused", () => {
+    expect(ROLES.composerBorder).toBe("#27332C");
   });
 
-  it("returns orange color for file accept mode", () => {
-    expect(permissionBarColor("files")).toBe("#D99168");
+  it("uses the lime accent when the composer is focused", () => {
+    expect(ROLES.composerBorderFocused).toBe("#B5D98A");
   });
 
-  it("returns red color for accept all auto mode", () => {
-    expect(permissionBarColor("auto")).toBe("#FF5555");
+  it("never encodes the permission mode in the composer border", () => {
+    // The bright-red auto-mode border is banned; permission is footer text.
+    expect(ROLES.composerBorder).not.toBe("#FF5555");
+    expect(ROLES.composerBorderFocused).not.toBe("#FF5555");
   });
 });

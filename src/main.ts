@@ -58,6 +58,7 @@ import {
 	type AgentMessageResult,
 } from './runtime/agent-workspace.js';
 import { getSelectedAgentId } from './runtime/agent-selection.js';
+import { installTerminalTitle, restoreTerminalTitle } from './ui/terminal-title.js';
 import {
 	printWelcome,
 	printUserMessage,
@@ -1813,6 +1814,9 @@ async function handleThinkingCommand(arg: string, nimClient: NimClient, projectR
 }
 
 export async function runRepl(projectRoot?: string): Promise<void> {
+	// Show Agent-Termo in the terminal/tab title before any TUI output (idempotent
+	// when cli.ts already installed it for the API-key prompt).
+	installTerminalTitle();
 	projectRoot = resolve(resolveProjectRoot(projectRoot ?? process.cwd()));
 
 	// One canonical layout: shared project docs live in docs/, while agents,
@@ -1850,7 +1854,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 	});
 	let customCommands: AgentCommand[] = loadAgentCommands(projectRoot);
 	const refreshCommandCompletion = (): void => {
-		setCommands([...COMMANDS, { name: '/mcp', description: 'list MCP servers and available tools' }, ...customCommands.filter((command) => !['skill', 'sessions', 'resume', 'fork', 'plan', 'checkpoint', 'checkpoints', 'undo', 'redo'].includes(command.name.toLowerCase())).map((command) => ({ name: '/' + command.name, description: command.description || 'project command' }))]);
+		setCommands([...COMMANDS, ...customCommands.filter((command) => !['skill', 'sessions', 'resume', 'fork', 'plan', 'checkpoint', 'checkpoints', 'undo', 'redo'].includes(command.name.toLowerCase())).map((command) => ({ name: '/' + command.name, description: command.description || 'project command', project: true }))]);
 	};
 	refreshCommandCompletion();
 	let activeAgentName = '';
@@ -2116,6 +2120,8 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 			const terminals = await killRunningTerminal();
 			for (const failure of terminals.failed) printError('Could not confirm termination of ' + failure + '.');
 			await Promise.allSettled([teardownScreen(), shutdownMcpServers()]);
+			// Restore the terminal/tab title after the TUI has released the screen.
+			restoreTerminalTitle();
 			process.stdout.write('\n');
 			console.log(
 				'Session complete. ' +
