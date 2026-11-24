@@ -12,8 +12,9 @@ import type { AgentTreeNode, WorkspaceStatus } from '../runtime/agent-tree.js';
 import { moveAgentSelection, parentAgentId, reconcileSelection } from '../runtime/agent-tree.js';
 import type { AgentTranscriptEntry } from '../runtime/agent-transcript.js';
 import { MAIN_AGENT_ID } from '../runtime/subagents.js';
+import { sanitizeDisplayLine, sanitizeDisplayText } from './display-text.js';
 import { formatDuration } from './subagent-view.js';
-import type { UiEntry } from './tui.js';
+import type { ApprovalPromptState, UiEntry } from './tui.js';
 
 export type AgentColorRole = WorkspaceStatus;
 export type AgentMetaRole = 'status' | 'detail' | 'error' | 'muted';
@@ -96,14 +97,41 @@ function clipText(value: string, max: number): string {
 	return chars.length <= max ? value : chars.slice(0, Math.max(0, max - 1)).join('') + '…';
 }
 
-const flat = (text: string): string => text.replace(/\s+/g, ' ').trim();
-const oneLine = (text: string, max: number): string => clipText(flat(text), max);
-const firstLine = (text: string): string => text.split(/\r?\n/, 1)[0] ?? '';
+const oneLine = (text: string, max: number): string => clipText(sanitizeDisplayLine(text), max);
+const firstLine = (text: string): string => sanitizeDisplayLine(text.split(/\r?\n/, 1)[0] ?? '');
 const isLive = (status: WorkspaceStatus): boolean => status === 'running' || status === 'waiting';
 
 /** Local wall-clock `HH:MM` (hour and minute only, 24-hour). */
 function formatClock(at: number): string {
 	return new Date(at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
+/** Fields needed for a spoof-resistant display label; routing never uses them. */
+export interface AgentDisplayNode {
+	id: string;
+	name: string;
+	kind: 'main' | 'subagent';
+	/** A sibling has the same display name. */
+	duplicateName?: boolean;
+}
+
+const sanitizedAgentName = (node: AgentDisplayNode): string => sanitizeDisplayLine(node.name) || 'agent';
+const isMainSpoof = (label: string): boolean => label.toLowerCase() === MAIN_AGENT_ID;
+
+/** `#<first 6 id chars>`; the id is display-only and sanitized too. */
+function agentIdSuffix(id: string): string {
+	const clean = sanitizeDisplayLine(String(id)).replace(/\s+/g, '');
+	return clean ? '#' + clean.slice(0, 6) : '';
+}
+
+/**
+ * Content-status and composer label. A sub-agent named `main` (any case) is
+ * always id-disambiguated so it cannot be mistaken for the real main agent.
+ */
+export function displayAgentLabel(node: AgentDisplayNode): string {
+	if (node.kind === 'main') return MAIN_AGENT_ID;
+	const name = sanitizedAgentName(node);
+	return isMainSpoof(name) ? name + agentIdSuffix(node.id) : name;
 }
 
 const waitingText = (count: number): string => `waiting on ${count} subagent${count === 1 ? '' : 's'}`;
@@ -168,14 +196,17 @@ export function formatAgentRow(node: AgentTreeNode, opts: AgentRowOptions): Agen
 	const prefix = marker + connector;
 	const glyph = agentStatusGlyph(node.status);
 	const glyphPart = glyph + ' ';
-	const baseName = node.kind === 'main' ? 'main' : node.name;
-	const suffix = node.kind === 'subagent' && node.duplicateName ? '#' + node.id.slice(0, 6) : '';
+	const baseName = node.kind === 'main' ? MAIN_AGENT_ID : sanitizedAgentName(node);
+	// A sibling duplicate or a sub-agent impersonating `main` keeps an id suffix.
+	const suffix = node.kind === 'subagent' && (node.duplicateName === true || isMainSpoof(baseName))
+		? agentIdSuffix(node.id)
+		: '';
 	const segments = metaSegments(node, opts);
 	const nameCap = width >= 78 ? 32 : width >= 58 ? 22 : 14;
 
-	// The duplicate `#id6` suffix is part of the retained identity while the
-	// label field is at least its 8-cell minimum; below that it goes before the
-	// name itself is clipped.
+	// The identity `#id6` suffix is part of the retained label while the label
+	// field is at least its 8-cell minimum; below that it goes before the name
+	// itself is clipped.
 	const formatLabel = (max: number, withSuffix: boolean): string => {
 		if (!withSuffix || !suffix) return clipText(baseName, max);
 		const suffixCells = cellLength(suffix);
@@ -295,7 +326,7 @@ export function formatContentStatus(
 ): ContentStatusSegment[] {
 	const width = Math.max(1, Math.floor(opts.width) || 1);
 	const live = isLive(node.status);
-	const parts: ContentPart[] = [{ text: '@' + node.name, role: 'accent' }, { text: agentStatusLabel(node.status), role: 'status' }];
+	const parts: ContentPart[] = [{ text: '@' + displayAgentLabel(node), role: 'accent' }, { text: agentStatusLabel(node.status), role: 'status' }];
 
 	if (node.kind === 'main') {
 		if (node.activity) parts.push({ text: oneLine(node.activity, 100), role: 'detail' });
@@ -399,20 +430,53 @@ export function routeComposerInput(input: ComposerRouteInput): ComposerRoute {
 
 /** `@<name> ❯`, clipped only in the name (24/20/14 cells by terminal width). */
 export function formatComposerPrefix(name: string, columns: number): string {
-	const safeName = name || MAIN_AGENT_ID;
+	const safeName = sanitizeDisplayLine(name) || MAIN_AGENT_ID;
 	const cap = columns >= 80 ? 24 : columns >= 60 ? 20 : 14;
 	return '@' + clipText(safeName, Math.max(1, cap - 3)) + ' ❯';
 }
 
 /** `Message @<name>…`, clipped to the space left after the composer prefix. */
 export function formatComposerPlaceholder(name: string, columns: number, prefixCells: number): string {
-	const safeName = name || MAIN_AGENT_ID;
+	const safeName = sanitizeDisplayLine(name) || MAIN_AGENT_ID;
 	const full = 'Message @' + safeName + '…';
 	const available = Math.max(8, columns - 6 - prefixCells - 1);
 	if ([...full].length <= available) return full;
 	const room = available - 'Message @'.length;
 	if (room < 2) return clipText(full, available);
 	return 'Message @' + clipText(safeName, room);
+}
+
+// -----------------------------------------------------------------------------
+// Approval panel
+// -----------------------------------------------------------------------------
+
+export const MAX_APPROVAL_DETAIL_LINES = 6;
+
+/**
+ * Sanitized approval panel lines: one owner line plus at most `maxDetailLines`
+ * detail lines. The backend supplies real facts only (a command, or
+ * `NEW/MODIFY/DELETE path +N −M` followed by up to four diff preview lines);
+ * their leading diff prefixes are preserved and every line is clipped to the
+ * terminal width. A missing detail renders the owner line only.
+ */
+export function formatApprovalPanel(
+	state: ApprovalPromptState | null | undefined,
+	width: number,
+	maxDetailLines = MAX_APPROVAL_DETAIL_LINES,
+): string[] {
+	if (!state) return [];
+	const cells = Math.max(1, Math.floor(width) || 1);
+	const label = sanitizeDisplayLine(state.label ?? '') || MAIN_AGENT_ID;
+	const lines = [clipText('◔ Approval required from @' + label, cells)];
+	if (!state.detail) return lines;
+	const detail = sanitizeDisplayText(state.detail, { keepNewlines: true }).split('\n');
+	const limit = Math.max(0, Math.min(MAX_APPROVAL_DETAIL_LINES, Math.floor(maxDetailLines) || 0));
+	let start = 0;
+	while (start < detail.length && !detail[start]!.trim()) start++;
+	for (let index = start; index < detail.length && index - start < limit; index++) {
+		lines.push(clipText(detail[index]!, cells));
+	}
+	return lines;
 }
 
 // -----------------------------------------------------------------------------
@@ -500,13 +564,20 @@ function displayStatusText(text: string): string {
 	return [label ?? word, ...rest].join(' ');
 }
 
+/** Continuation lines rendered per tool result before the single `… N more` entry. */
+export const TOOL_RESULT_CONTINUATION_LINES = 40;
+
 /**
  * Map one agent's stored transcript to the TUI's generic entries. Labels are
  * agent-specific (`❯ You → @name`, `⏺ name`); tool results become success /
- * error lines with dim continuation output. Never mixes in another agent.
+ * error lines with dim continuation output. Every string is sanitized here at
+ * the render boundary, and a tool result renders at most its first line, 40
+ * continuation lines, and one `… N more line(s)` marker so a line-heavy result
+ * cannot explode into thousands of UI entries. Never mixes in another agent.
  */
 export function transcriptToUiEntries(entries: readonly AgentTranscriptEntry[], agentName: string): UiEntry[] {
 	const mapped: UiEntry[] = [];
+	const safeAgentName = sanitizeDisplayLine(agentName) || MAIN_AGENT_ID;
 	let nextId = 1;
 	const push = (kind: UiEntry['kind'], content: string, extra: Partial<UiEntry> = {}): void => {
 		mapped.push({ id: nextId++, kind, content, ...extra });
@@ -515,36 +586,42 @@ export function transcriptToUiEntries(entries: readonly AgentTranscriptEntry[], 
 	for (const entry of entries) {
 		switch (entry.kind) {
 			case 'user':
-				push('user', entry.text, { agentLabel: agentName });
+				push('user', sanitizeDisplayText(entry.text, { keepNewlines: true }), { agentLabel: safeAgentName });
 				break;
 			case 'assistant':
-				push('markdown', entry.text, { streaming: entry.streaming, agentLabel: agentName });
+				// Assistant markdown keeps its legitimate newlines and structure.
+				push('markdown', sanitizeDisplayText(entry.text, { keepNewlines: true }), { streaming: entry.streaming, agentLabel: safeAgentName });
 				break;
 			case 'tool': {
 				const tool = entry.tool;
 				if (!tool) {
-					push('tool', '● ' + entry.text);
+					push('tool', '● ' + sanitizeDisplayLine(entry.text));
 					break;
 				}
-				push('tool', '● ' + tool.name + (tool.args ? '(' + tool.args + ')' : ''));
+				push('tool', '● ' + sanitizeDisplayLine(tool.name) + (tool.args ? '(' + sanitizeDisplayLine(tool.args) + ')' : ''));
 				if (tool.state === 'running' || tool.result === undefined) break;
-				const lines = tool.result.split(/\r?\n/);
+				const lines = sanitizeDisplayText(tool.result, { keepNewlines: true }).split('\n');
 				let start = 0;
 				while (start < lines.length && !lines[start]!.trim()) start++;
 				if (start >= lines.length) break;
 				const ok = tool.state === 'ok';
 				push(ok ? 'success' : 'error', '⎿ ' + (ok ? '✓' : '✗') + ' ' + lines[start]!.trim());
-				for (let index = start + 1; index < lines.length; index++) push('dim', '     ' + lines[index]);
+				let shown = 0;
+				for (let index = start + 1; index < lines.length && shown < TOOL_RESULT_CONTINUATION_LINES; index++, shown++) {
+					push('dim', '     ' + lines[index]);
+				}
+				const remaining = lines.length - (start + 1) - shown;
+				if (remaining > 0) push('dim', '     … ' + remaining + ' more line' + (remaining === 1 ? '' : 's'));
 				break;
 			}
 			case 'status':
-				push('dim', '— ' + displayStatusText(entry.text));
+				push('dim', '— ' + displayStatusText(sanitizeDisplayLine(entry.text)));
 				break;
 			case 'error':
-				push('error', '✗ ' + firstLine(entry.text).trim());
+				push('error', '✗ ' + firstLine(entry.text));
 				break;
 			case 'truncated':
-				push('dim', '— ' + entry.text);
+				push('dim', '— ' + sanitizeDisplayLine(entry.text));
 				break;
 		}
 	}

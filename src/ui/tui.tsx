@@ -17,6 +17,7 @@ import { For, Index, Show, createEffect, createMemo, createSignal, onCleanup, ty
 import { createInterface } from "node:readline";
 import packageJson from "../../package.json" with { type: "json" };
 import { copySelectedText } from "./selection-copy.js";
+import { sanitizeDisplayLine, sanitizeDisplayText } from "./display-text.js";
 import type { PermissionMode } from "../types/index.js";
 import { MAIN_AGENT_ID, listSubAgents } from "../runtime/subagents.js";
 import { buildAgentTree, reconcileSelection, visibleAgentRows, type AgentTreeNode, type WorkspaceStatus } from "../runtime/agent-tree.js";
@@ -24,11 +25,14 @@ import { agentTranscripts } from "../runtime/agent-transcript.js";
 import { getSelectedAgentId, setSelectedAgentId, subscribeAgentSelection } from "../runtime/agent-selection.js";
 import { getMainAgentState, sendAgentMessage, stopAllAgents, subscribeWorkspace } from "../runtime/agent-workspace.js";
 import {
+  displayAgentLabel,
   formatAgentRow,
+  formatApprovalPanel,
   formatComposerPlaceholder,
   formatComposerPrefix,
   formatContentStatus,
   lastSiblingFlags,
+  MAX_APPROVAL_DETAIL_LINES,
   reduceWorkspaceKey,
   routeComposerInput,
   transcriptToUiEntries,
@@ -336,10 +340,9 @@ export function applySecretPaste(current: string, pasted: string | Uint8Array): 
 }
 
 function cleanAnsi(value: string): string {
-  return value
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
-    .replace(/\r/g, "");
+  // One shared sanitizer for the main log, the terminal panel and every
+  // workspace surface; control/escape sequences are removed at the render boundary.
+  return sanitizeDisplayText(value, { keepNewlines: true });
 }
 
 function addEntry(content: string, kind: UiKind): void {
@@ -551,7 +554,16 @@ function App() {
     setWorkspaceRevision((revision) => revision + 1);
     const nodes = currentNodes();
     const reconciled = reconcileSelection(nodes, getSelectedAgentId());
+    // Reconcile first: the selection listener saves the outgoing draft, so the
+    // stale-id cleanup below must run after it or the draft would reappear.
     if (reconciled !== getSelectedAgentId()) setSelectedAgentId(reconciled);
+    // SEC-08: forget drafts for ids that no longer exist (always keep main), so
+    // a reused id starts empty. Ordinary agent switching never clears a draft.
+    const present = new Set(nodes.map((node) => node.id));
+    present.add(MAIN_AGENT_ID);
+    for (const id of [...drafts.keys()]) {
+      if (!present.has(id)) drafts.delete(id);
+    }
     syncLiveTicker(nodes);
   });
   onCleanup(offWorkspace);
@@ -595,9 +607,25 @@ function App() {
     const id = selectedAgentIdSignal();
     return tree().find((node) => node.id === id) ?? tree()[0];
   };
-  const selectedName = (): string => selectedNode()?.name ?? MAIN_AGENT_ID;
+  const selectedName = (): string => {
+    const node = selectedNode();
+    return node ? displayAgentLabel(node) : MAIN_AGENT_ID;
+  };
 
-  const navigatorCap = (): number => Math.max(1, Math.min(7, terminalRows() - 17));
+  const approvalDetailLines = (): number =>
+    Math.max(1, Math.min(MAX_APPROVAL_DETAIL_LINES, terminalRows() - 18));
+  const approvalPanelLines = createMemo(() => {
+    const approval = approvalPromptState();
+    return approval ? formatApprovalPanel(approval, Math.max(1, terminalColumns() - 2), approvalDetailLines()) : [];
+  });
+  // On short terminals (<= 14 rows) the modal keeps the owner, one detail line
+  // and the composer; the selected-agent status row, overflow counts and
+  // navigator hint give up their rows.
+  const compactApprovalChrome = (): boolean => approvalPromptState() !== null && terminalRows() <= 14;
+  const navigatorCap = (): number => Math.max(
+    1,
+    Math.min(7, terminalRows() - 17 - approvalPanelLines().length),
+  );
   const navigatorView = createMemo(() => {
     nowTick();
     const all = tree();
@@ -610,26 +638,34 @@ function App() {
       hiddenBelow: window.hiddenBelow,
     };
   });
+  const navigatorHintVisible = (): boolean => !compactApprovalChrome();
   const navigatorLineCount = (): number => {
     const view = navigatorView();
-    return view.rows.length + (view.hiddenAbove > 0 ? 1 : 0) + (view.hiddenBelow > 0 ? 1 : 0) + 1;
+    // Compact approval mode keeps only the selected row; overflow counts and
+    // the hint yield their rows to the approval panel and composer.
+    const overflow = !compactApprovalChrome();
+    return view.rows.length
+      + (overflow && view.hiddenAbove > 0 ? 1 : 0)
+      + (overflow && view.hiddenBelow > 0 ? 1 : 0)
+      + (navigatorHintVisible() ? 1 : 0);
   };
 
+  // The approval panel replaces the one-row banner: owner line plus real
+  // detail, visible regardless of the selected agent. A rejection notice keeps
+  // the single row and never shows while a modal owns the keyboard.
   const bannerText = (): string | null => {
-    const approval = approvalPromptState();
-    if (approval) return "◔ Approval required from @" + (approval.label ?? MAIN_AGENT_ID);
-    // A picker/secret prompt owns the keyboard; a stale notice never shows then.
-    if (picker() || secretMode()) return null;
+    if (approvalPromptState() || picker() || secretMode()) return null;
     const rejection = notice();
-    return rejection ? "✗ " + rejection : null;
+    return rejection ? "✗ " + sanitizeDisplayLine(rejection) : null;
   };
-  const bannerRows = (): number => (bannerText() ? 1 : 0);
+  const bannerRows = (): number => approvalPanelLines().length + (bannerText() ? 1 : 0);
 
   const terminalPanelRows = (): number => terminalVisible() && terminal()
     ? terminalPanelHeight(terminalExpanded(), terminalRows())
     : 0;
   const overlayAvailableRows = (reservedRows = 0): number =>
-    Math.max(1, terminalRows() - 9 - 2 - terminalPanelRows() - navigatorLineCount() - bannerRows() - reservedRows);
+    Math.max(1, terminalRows() - 9 - 2 - terminalPanelRows() - navigatorLineCount() - bannerRows() - reservedRows
+      - (compactApprovalChrome() ? 1 : 0));
   const visiblePickerItems = () => {
     const current = picker();
     if (!current) return [];
@@ -718,8 +754,17 @@ function App() {
     return "Ctrl+X navigate · ↑↓ select · Enter message · Esc parent · Ctrl+X Ctrl+K stop all";
   };
 
-  const promptMaxRows = (): number =>
-    Math.max(3, Math.min(8, terminalRows() - 11 - 2 - navigatorLineCount() - bannerRows()));
+  const promptMaxRows = (): number => {
+    const panelRows = approvalPanelLines().length;
+    if (panelRows > 0) {
+      // The panel owns extra rows; reserve four for content and let the textarea
+      // shrink to one row on the 12-row minimum terminal so nothing overflows.
+      const base = compactApprovalChrome() ? 7 : 8;
+      const available = terminalRows() - base - navigatorLineCount() - panelRows - 4;
+      return Math.max(1, Math.min(8, available));
+    }
+    return Math.max(3, Math.min(8, terminalRows() - 11 - 2 - navigatorLineCount() - bannerRows()));
+  };
 
   useKeyboard((event) => {
     const sequence = event.sequence ?? "";
@@ -978,13 +1023,15 @@ function App() {
         <text fg="#89827C">{screen().model} · {screen().project}</text>
       </box>
       <box flexDirection="column" flexGrow={1} flexBasis={0} minHeight={0}>
-        <box height={1} flexDirection="row" flexShrink={0} paddingX={1}>
-          <For each={contentStatusSegments()}>
-            {(segment) => (
-              <text fg={contentStatusColor(segment.role, selectedNode()?.status ?? "idle")} wrapMode="none">{segment.text}</text>
-            )}
-          </For>
-        </box>
+        <Show when={!compactApprovalChrome()} fallback={<box height={0} />}>
+          <box height={1} flexDirection="row" flexShrink={0} paddingX={1}>
+            <For each={contentStatusSegments()}>
+              {(segment) => (
+                <text fg={contentStatusColor(segment.role, selectedNode()?.status ?? "idle")} wrapMode="none">{segment.text}</text>
+              )}
+            </For>
+          </box>
+        </Show>
         <text fg="#6D625A" flexShrink={0} wrapMode="none">{"─".repeat(Math.max(1, terminalColumns() - 2))}</text>
         <scrollbox
           ref={(element) => {
@@ -1080,10 +1127,18 @@ function App() {
           </For>
         </box>
       </Show>
-      <Show when={bannerText()} fallback={<box height={0} />}>
-        <text fg={approvalPromptState() ? "#79B8D1" : "#E47D76"} wrapMode="none">
-          {clipText(bannerText() ?? "", Math.max(1, terminalColumns() - 2))}
-        </text>
+      <Show when={approvalPromptState()} fallback={
+        <Show when={bannerText()} fallback={<box height={0} />}>
+          <text fg="#E47D76" wrapMode="none">
+            {clipText(bannerText() ?? "", Math.max(1, terminalColumns() - 2))}
+          </text>
+        </Show>
+      }>
+        <box flexDirection="column" flexShrink={0}>
+          <Index each={approvalPanelLines()}>
+            {(line) => <text fg="#79B8D1" wrapMode="none">{line()}</text>}
+          </Index>
+        </box>
       </Show>
       <box border borderStyle="single" borderColor={inputActive() ? permissionBarColor(screen().permissionMode) : "#6D625A"} paddingX={1} flexDirection="row" alignItems="flex-start" flexShrink={0}>
         <text fg="#D99168" wrapMode="none">{composerPrefix() + " "}</text>
@@ -1117,7 +1172,7 @@ function App() {
         </Show>
       </box>
       <box flexDirection="column" width="100%" flexShrink={0}>
-        <Show when={navigatorView().hiddenAbove > 0}>
+        <Show when={navigatorView().hiddenAbove > 0 && !compactApprovalChrome()}>
           <text fg="#88827C" wrapMode="none">{"  … " + navigatorView().hiddenAbove + " above"}</text>
         </Show>
         <For each={navigatorView().rows}>
@@ -1147,10 +1202,12 @@ function App() {
             );
           }}
         </For>
-        <Show when={navigatorView().hiddenBelow > 0}>
+        <Show when={navigatorView().hiddenBelow > 0 && !compactApprovalChrome()}>
           <text fg="#88827C" wrapMode="none">{"  … " + navigatorView().hiddenBelow + " below"}</text>
         </Show>
-        <text fg="#8D857D" wrapMode="none">{clipText(navigatorHint(), Math.max(1, terminalColumns() - 2))}</text>
+        <Show when={navigatorHintVisible()} fallback={<box height={0} />}>
+          <text fg="#8D857D" wrapMode="none">{clipText(navigatorHint(), Math.max(1, terminalColumns() - 2))}</text>
+        </Show>
       </box>
       <box height={1} flexDirection="row" justifyContent="space-between">
         <text fg="#8D857D">{statusLine()}</text>
@@ -1286,11 +1343,12 @@ export function promptInputKeyBindings(_legacyAppleTerminal: boolean) {
 
 export function promptInputHeight(value: string, width: number, maxRows = 8): number {
   const columns = Math.max(1, Math.floor(width));
+  const cap = Math.max(1, Math.floor(maxRows) || 1);
   const requestedRows = value.split("\n").reduce(
     (rows, line) => rows + Math.max(1, Math.ceil([...line].length / columns)),
     0,
   );
-  return Math.min(Math.max(3, maxRows), Math.max(3, requestedRows));
+  return Math.min(cap, Math.max(Math.min(3, cap), requestedRows));
 }
 
 export function terminalWidth(): number { return process.stdout.columns || 80; }

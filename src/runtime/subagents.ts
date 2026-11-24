@@ -28,7 +28,7 @@ export function sanitizeAgentLabel(name: string, max = 40): string {
 /** Approval label for a sub-agent; a sub-agent can never present itself as `main`. */
 export function approvalRequesterLabel(id: string, agentName: string): string {
 	const label = sanitizeAgentLabel(agentName) || 'agent';
-	return label === MAIN_AGENT_ID ? `${label}#${String(id).slice(0, 6)}` : label;
+	return label.toLowerCase() === MAIN_AGENT_ID ? `${label}#${String(id).slice(0, 6)}` : label;
 }
 
 export type SubAgentStatus = 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled';
