@@ -21,6 +21,7 @@ export const TITLE_STACK_RESTORE = "\x1b[23;2t";
 
 /** OSC 2: set the window/tab title. Control characters are stripped defensively. */
 export function setTitleSequence(title: string = APP_TITLE): string {
+  // eslint-disable-next-line no-control-regex
   return "\x1b]2;" + title.replace(/[\u0000-\u001f\u007f]/g, "") + "\x07";
 }
 
