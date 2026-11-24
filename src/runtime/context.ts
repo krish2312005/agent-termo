@@ -65,9 +65,10 @@ export function resolveContextBudget(
       ? Math.min(configuredContextWindow, providerLimits.contextWindowTokens)
       : configuredContextWindow,
   );
-  const defaultOutputTokens = providerLimits?.maxOutputTokens !== undefined
-    ? Math.min(providerLimits.maxOutputTokens, Math.floor(contextWindowTokens / 4))
-    : Math.min(DEFAULT_OUTPUT_RESERVE_TOKENS, Math.floor(contextWindowTokens / 4));
+  const defaultOutputTokens = Math.min(
+    providerLimits?.defaultOutputTokens ?? DEFAULT_OUTPUT_RESERVE_TOKENS,
+    Math.floor(contextWindowTokens / 4),
+  );
   const configuredOutputTokens = positiveInteger(
     env.AGENT_TERMO_OUTPUT_RESERVE_TOKENS,
     defaultOutputTokens,
