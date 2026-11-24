@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  MAX_APPROVAL_DETAIL_LINES,
+  TOOL_RESULT_CONTINUATION_LINES,
   agentStatusGlyph,
   agentStatusLabel,
+  displayAgentLabel,
   formatAgentRow,
+  formatApprovalPanel,
   formatComposerPlaceholder,
   formatComposerPrefix,
   formatContentStatus,
@@ -830,5 +834,280 @@ describe('composer prefix and placeholder', () => {
     expect(cellLength(placeholder)).toBeLessThanOrEqual(40);
 
     expect(formatComposerPlaceholder('frontend-expert', 30, 15)).toBe('Message…');
+  });
+});
+
+describe('formatApprovalPanel', () => {
+  it('returns no lines when no approval is active', () => {
+    expect(formatApprovalPanel(null, 60)).toEqual([]);
+    expect(formatApprovalPanel(undefined, 60)).toEqual([]);
+  });
+
+  it('renders the owner and the real detail lines', () => {
+    expect(formatApprovalPanel({ label: 'frontend-expert', detail: 'bash:execute(bun test)' }, 60)).toEqual([
+      '◔ Approval required from @frontend-expert',
+      'bash:execute(bun test)',
+    ]);
+  });
+
+  it('sanitizes the owner label, falls back to main and strips escapes from the detail', () => {
+    expect(
+      formatApprovalPanel(
+        { label: '\x1b]0;pwn\x07\x1b[31mfrontend\x1b[0m', detail: 'a\x1b[2Jb\x1b]0;t\x07c\rd' },
+        60,
+      ),
+    ).toEqual(['◔ Approval required from @frontend', 'abcd']);
+    expect(formatApprovalPanel({ detail: 'x' }, 60)).toEqual(['◔ Approval required from @main', 'x']);
+  });
+
+  it('shows at most six detail lines by default', () => {
+    const detail = Array.from({ length: 8 }, (_, index) => `line ${index}`).join('\n');
+    expect(MAX_APPROVAL_DETAIL_LINES).toBe(6);
+
+    const lines = formatApprovalPanel({ label: 'agent', detail }, 40);
+    expect(lines).toHaveLength(1 + MAX_APPROVAL_DETAIL_LINES);
+    expect(lines.slice(1)).toEqual(['line 0', 'line 1', 'line 2', 'line 3', 'line 4', 'line 5']);
+
+    expect(formatApprovalPanel({ label: 'agent', detail }, 40, 99)).toHaveLength(1 + MAX_APPROVAL_DETAIL_LINES);
+    expect(formatApprovalPanel({ label: 'agent', detail }, 40, 2)).toEqual([
+      '◔ Approval required from @agent',
+      'line 0',
+      'line 1',
+    ]);
+    expect(formatApprovalPanel({ label: 'agent', detail }, 40, 0)).toEqual(['◔ Approval required from @agent']);
+  });
+
+  it('preserves diff kind, +/−/space prefixes and real leading indentation', () => {
+    const lines = formatApprovalPanel(
+      {
+        label: 'frontend-expert',
+        detail: 'MODIFY src/a.ts +2 −1\n+added line\n-removed line\n context line',
+      },
+      60,
+    );
+
+    expect(lines).toEqual([
+      '◔ Approval required from @frontend-expert',
+      'MODIFY src/a.ts +2 −1',
+      '+added line',
+      '-removed line',
+      ' context line',
+    ]);
+    expect(lines[2]!.startsWith('+')).toBe(true);
+    expect(lines[3]!.startsWith('-')).toBe(true);
+    expect(lines[4]!.startsWith(' ')).toBe(true);
+  });
+
+  it('skips leading blank detail lines and never fabricates content', () => {
+    expect(formatApprovalPanel({ label: 'agent', detail: '\n\n+real' }, 40)).toEqual([
+      '◔ Approval required from @agent',
+      '+real',
+    ]);
+
+    for (const detail of [undefined, '', '\n\n  \n']) {
+      expect(formatApprovalPanel({ label: 'agent', detail }, 40)).toEqual(['◔ Approval required from @agent']);
+    }
+  });
+
+  it('clips every line to the available width after sanitization', () => {
+    const detail = ['+' + 'a'.repeat(100), '-' + 'b'.repeat(100), ' ' + 'c'.repeat(100)].join('\n');
+    for (const width of [12, 20, 38, 60]) {
+      const lines = formatApprovalPanel({ label: 'a-very-long-agent-name-indeed', detail }, width);
+      for (const line of lines) {
+        expect(cellLength(line), `width ${width}: ${JSON.stringify(line)}`).toBeLessThanOrEqual(width);
+      }
+    }
+  });
+});
+
+describe('workspace display sanitization', () => {
+  const controlPattern = /[\u0000-\u001f\u007f-\u009f]/;
+
+  it('strips escapes and controls from agent row identity and metadata', () => {
+    const row = formatAgentRow(
+      node({
+        name: 'evil\x1b[2J\x1b]0;t\x07\r\nagent',
+        activity: 'do\x1b]0;x\x07ing',
+        task: 't\x1b[31m<x>',
+        error: 'e\x1b[0m!',
+      }),
+      { width: 100, now, selected: false },
+    );
+
+    expect(row.label).toBe('evil agent');
+    expect(row.label).not.toMatch(controlPattern);
+    expect(row.meta).not.toMatch(controlPattern);
+    expect(row.meta).toContain('doing');
+    expect(row.segments.every((segment) => !controlPattern.test(segment.text))).toBe(true);
+  });
+
+  it('sanitizes content status, composer prefix and placeholder but preserves CJK and emoji', () => {
+    const hostile = '前端🚀\x1b]0;t\x07\x1b[31m专家\x1b[0m';
+    const status = formatContentStatus(node({ name: hostile, activity: '编辑\x1b[2J中' }), { now, width: 200 })
+      .map((segment) => segment.text)
+      .join('');
+
+    expect(status).toContain('@前端🚀专家');
+    expect(status).toContain('编辑中');
+    expect(status).not.toMatch(controlPattern);
+
+    const prefix = formatComposerPrefix(hostile, 80);
+    expect(prefix).toBe('@前端🚀专家 ❯');
+    expect(prefix).not.toMatch(controlPattern);
+
+    const placeholder = formatComposerPlaceholder(hostile, 80, [...prefix].length + 1);
+    expect(placeholder).toBe('Message @前端🚀专家…');
+    expect(placeholder).not.toMatch(controlPattern);
+  });
+
+  it('id-disambiguates any case variant of main in rows, status and composer labels', () => {
+    for (const name of ['main', 'MAIN', 'Main']) {
+      const spoof = node({ id: 'req-abcdef123456', name });
+      const expected = name + '#req-ab';
+
+      expect(displayAgentLabel({ id: 'req-abcdef123456', name, kind: 'subagent' })).toBe(expected);
+      expect(formatAgentRow(spoof, { width: 100, now, selected: false }).label).toBe(expected);
+
+      const status = formatContentStatus(spoof, { now, width: 200 });
+      expect(status[0]).toMatchObject({ text: '@' + expected, role: 'accent' });
+
+      const label = displayAgentLabel({ id: 'req-abcdef123456', name, kind: 'subagent' });
+      const prefix = formatComposerPrefix(label, 80);
+      expect(prefix).toBe('@' + expected + ' ❯');
+      expect(formatComposerPlaceholder(label, 80, [...prefix].length + 1)).toBe('Message @' + expected + '…');
+    }
+
+    const realMain = mainNode({ name: 'main' });
+    expect(displayAgentLabel({ id: MAIN_AGENT_ID, name: 'main', kind: 'main' })).toBe('main');
+    expect(displayAgentLabel({ id: 'x', name: 'frontend-expert', kind: 'subagent' })).toBe('frontend-expert');
+    expect(displayAgentLabel({ id: 'x', name: '', kind: 'subagent' })).toBe('agent');
+    expect(formatAgentRow(realMain, { width: 100, now, selected: true }).label).toBe('main');
+    expect(formatContentStatus(realMain, { now, width: 200 })[0]).toMatchObject({ text: '@main' });
+    expect(formatComposerPrefix('main', 80)).toBe('@main ❯');
+  });
+
+  it('keeps the row width invariant with hostile names and details', () => {
+    const hostileName = '名字\x1b[31m' + 'x'.repeat(60) + '\x1b]0;t\x07\r\n🚀';
+    const hostileDetail = 'doing\x1b[2J' + 'a'.repeat(120);
+    const hostile = node({
+      name: hostileName,
+      duplicateName: true,
+      queued: 42,
+      activity: hostileDetail,
+      task: hostileDetail,
+      error: hostileDetail,
+      usage,
+    });
+
+    for (const width of [20, 24, 38, 80]) {
+      for (const status of ['idle', 'running', 'waiting', 'completed', 'failed', 'stopped'] as WorkspaceStatus[]) {
+        const row = formatAgentRow({ ...hostile, status }, { width, now, selected: true });
+        const line = rowLine(row);
+        const id = `${status}/width=${width}`;
+
+        expect(cellLength(line), id).toBeLessThanOrEqual(width);
+        expect(line, id).not.toMatch(controlPattern);
+        expect(row.label.length, id).toBeGreaterThan(0);
+      }
+    }
+  });
+});
+
+describe('transcriptToUiEntries security bounds', () => {
+  const toolTranscript = (result: string, state: 'ok' | 'failed' = 'ok'): AgentTranscriptEntry[] => [
+    {
+      id: '1:agent',
+      agentId: 'agent',
+      kind: 'tool',
+      at: 1,
+      text: 'bash:execute(seq)',
+      tool: { callId: 'c1', name: 'bash:execute', args: 'seq', state, result, startedAt: 1, endedAt: 2 },
+    },
+  ];
+
+  it('caps a line-heavy tool result to one status line, 40 continuations and one overflow marker', () => {
+    const lines = Array.from({ length: 4000 }, (_, index) => `line ${index}`);
+    const mapped = transcriptToUiEntries(toolTranscript(lines.join('\n')), 'frontend-expert');
+
+    expect(TOOL_RESULT_CONTINUATION_LINES).toBe(40);
+    expect(mapped).toHaveLength(1 + 1 + TOOL_RESULT_CONTINUATION_LINES + 1);
+    expect(mapped[0]).toMatchObject({ kind: 'tool', content: '● bash:execute(seq)' });
+    expect(mapped[1]).toMatchObject({ kind: 'success', content: '⎿ ✓ line 0' });
+    expect(mapped[2]).toMatchObject({ kind: 'dim', content: '     line 1' });
+    expect(mapped[41]).toMatchObject({ kind: 'dim', content: '     line 40' });
+    expect(mapped[42]).toMatchObject({ kind: 'dim', content: '     … 3959 more lines' });
+    expect(mapped.every((item) => !item.content.includes('\n'))).toBe(true);
+  });
+
+  it('adds the overflow marker only when lines were dropped, with singular/plural wording', () => {
+    const atLimit = transcriptToUiEntries(
+      toolTranscript(Array.from({ length: 41 }, (_, index) => `l${index}`).join('\n')),
+      'agent',
+    );
+    expect(atLimit).toHaveLength(42);
+    expect(atLimit.some((item) => item.content.includes('more line'))).toBe(false);
+
+    const oneOver = transcriptToUiEntries(
+      toolTranscript(Array.from({ length: 42 }, (_, index) => `l${index}`).join('\n')),
+      'agent',
+    );
+    expect(oneOver).toHaveLength(43);
+    expect(oneOver.at(-1)).toMatchObject({ kind: 'dim', content: '     … 1 more line' });
+
+    const twoOver = transcriptToUiEntries(
+      toolTranscript(Array.from({ length: 43 }, (_, index) => `l${index}`).join('\n')),
+      'agent',
+    );
+    expect(twoOver.at(-1)).toMatchObject({ kind: 'dim', content: '     … 2 more lines' });
+  });
+
+  it('retains ok/error state and strips ESC/OSC/CR from every rendered line', () => {
+    const result = '\x1b[31mERR\x1b[0m\n\x1b]0;title\x07detail\r\nmore';
+    const controlPattern = /[\u0000-\u001f\u007f-\u009f]/;
+
+    const failed = transcriptToUiEntries(toolTranscript(result, 'failed'), 'agent');
+    expect(failed.map((item) => item.kind)).toEqual(['tool', 'error', 'dim', 'dim']);
+    expect(failed[1]).toMatchObject({ kind: 'error', content: '⎿ ✗ ERR' });
+    expect(failed[2]).toMatchObject({ kind: 'dim', content: '     detail' });
+    expect(failed[3]).toMatchObject({ kind: 'dim', content: '     more' });
+    for (const item of failed) {
+      expect(item.content).not.toContain('\x1b');
+      expect(item.content).not.toContain('\x07');
+      expect(item.content).not.toContain('\r');
+      expect(item.content).not.toMatch(controlPattern);
+    }
+
+    const ok = transcriptToUiEntries(toolTranscript(result, 'ok'), 'agent');
+    expect(ok[1]).toMatchObject({ kind: 'success', content: '⎿ ✓ ERR' });
+  });
+
+  it('preserves assistant and user newlines while sanitizing the label and content', () => {
+    const entries: AgentTranscriptEntry[] = [
+      { id: '1:a', agentId: 'a', kind: 'user', at: 1, text: 'user line 1\nuser line 2\x1b[2J' },
+      { id: '2:a', agentId: 'a', kind: 'assistant', at: 2, text: '## plan\n1. step\x1b]0;x\x07' },
+      ...toolTranscript('ok'),
+    ];
+
+    const mapped = transcriptToUiEntries(entries, '\x1b]0;spoof\x07frontend');
+    expect(mapped[0]).toMatchObject({ kind: 'user', content: 'user line 1\nuser line 2', agentLabel: 'frontend' });
+    expect(mapped[1]).toMatchObject({ kind: 'markdown', content: '## plan\n1. step', agentLabel: 'frontend' });
+    expect(mapped[2].kind).toBe('tool');
+    expect(mapped.slice(0, 2).every((item) => item.agentLabel === 'frontend')).toBe(true);
+  });
+
+  it('never mixes two agents transcripts while bounding a hostile tool result', () => {
+    const store = createAgentTranscriptStore();
+    const lines = Array.from({ length: 4000 }, (_, index) => `a line ${index}\x1b[31m`);
+    store.append({ type: 'tool.start', agentId: 'agent-a', callId: 'c1', name: 'bash:execute', args: 'seq', at: 1 });
+    store.append({ type: 'tool.end', agentId: 'agent-a', callId: 'c1', ok: true, result: lines.join('\n'), at: 2 });
+    store.append({ type: 'user', agentId: 'agent-b', text: 'for agent b', at: 3 });
+
+    const a = transcriptToUiEntries(store.get('agent-a'), 'agent-a');
+    const b = transcriptToUiEntries(store.get('agent-b'), 'agent-b');
+
+    expect(a).toHaveLength(43);
+    expect(a.map((item) => item.content).join(' ')).not.toContain('for agent b');
+    expect(a.every((item) => !item.content.includes('\x1b'))).toBe(true);
+    expect(b.map((item) => item.content)).toEqual(['for agent b']);
   });
 });

@@ -34,6 +34,20 @@ Vitest configuration lives in `vitest.config.ts`. Tests live in `tests/unit/` an
 - **UI pure helpers** (`tests/unit/context-meter.test.ts`, `tests/unit/secret-paste.test.ts`):
   context-meter formatting plus masked secret-paste application (draft append, UTF-8
   `Uint8Array` decode, empty no-op, 60+ char key preserved intact).
+- **Display sanitizer** (`tests/unit/display-text.test.ts`): 7- and 8-bit
+  CSI/OSC, 7- and 8-bit DCS/SOS/PM/APC, other two-character ESC sequences and
+  lone ESC, BEL/C0/C1/DEL/CR removal, ASCII/CJK/emoji/punctuation preservation,
+  newline opt-in (`keepNewlines`), single-line flattening, unterminated control
+  strings dropped without leaking the payload or hanging, and 8k linear input
+  (plain, mixed and unterminated).
+- **Command approval policy** (`tests/unit/permissions.test.ts`):
+  `isCommandApprovalRequired` true for `mcp_*`, `bash:execute`, `bash:start`,
+  `bash:stop`, `browser:verify`, `git:commit`, `git:push` and false for
+  read-only/file/status tools; `supportsPersistentApproval` false for `mcp_*`,
+  `bash:stop`, `browser:verify`; and `commandApprovalKey` exact keys for trimmed
+  bash commands, `bash:stop` session ids, `browser:verify` base URLs, git
+  messages, and MCP JSON arguments (tool-prefixed so a key cannot be replayed
+  across tools).
 - **Provider connection grouping and fast switch** (`tests/unit/providers.test.ts`,
   `tests/unit/picker-groups.test.ts`, `tests/unit/provider-config.test.ts`):
   `isProviderConnected` rejects empty/whitespace/missing keys; `providerActivationModel`
@@ -73,7 +87,9 @@ Vitest configuration lives in `vitest.config.ts`. Tests live in `tests/unit/` an
   idle/completed/failed/stopped dispatch); id-only routing for two agents with the
   same display name; unknown ids never fall back to main/parent; `unavailable` only
   for a missing main binding; main `submitExternal` dispatch and FIFO queue drain;
-  main running/waiting queueing with a real cap; stop-all cancelling each live target
+  main running/waiting queueing with a real cap; the idle-with-no-pending-question
+  queue cap (SEC-07: ten accepted, the 11th rejected with `queue_full`, queue length
+  stays ten, drain then accepts again); stop-all cancelling each live target
   once (main + handles), clearing the queue and returning the live count; reset
   clearing handles/registry/transcripts/queues/selection while retaining main
   bindings; workspace notifications for main state, handles and registry events;
@@ -91,11 +107,24 @@ Vitest configuration lives in `vitest.config.ts`. Tests live in `tests/unit/` an
   any other key disarms, composer focus never consumes navigation keys); navigator
   row formatting (selection marker, all glyphs/labels, connectors/depth, duplicate
   `#id6` suffix, metadata drop order, no fabricated tokens/since, width/no-wrap
-  truncation); the content status row; and `transcriptToUiEntries` (user/assistant
-  agent labels, markdown/streaming, tool/success/error/dim mapping, status/error/
-  truncated lines, no cross-agent entries).
+  truncation); the content status row; the approval panel (sanitized owner label
+  with `main` fallback, at most six real detail lines with `+`/`-`/space diff
+  prefixes and leading indentation preserved, width clipping, owner-only for
+  missing/blank detail); sanitization of rows, content status, composer
+  prefix/placeholder and transcript content against ESC/OSC/CR/control payloads
+  (CJK/emoji preserved, width invariant re-checked after sanitization); the
+  `main`/`MAIN`/`Main` sub-agent spoof suffix in rows, status and composer; and
+  `transcriptToUiEntries` (user/assistant agent labels, markdown/streaming,
+  tool/success/error/dim mapping, status/error/truncated lines, no cross-agent
+  entries, the 4,000-line tool-result cap: first status line + 40 continuations +
+  one `… N more line(s)` marker with singular/plural boundaries, ok/error state
+  retained, and ESC/OSC/CR stripped from every rendered line).
 - **Sub-agent registry extensions** (`tests/unit/subagents.test.ts`): `MAIN_AGENT_ID`,
-  default/custom `parentId`, derived ids never equal to the parent, resume transitions
+  default/custom `parentId`, derived ids never equal to the parent (including a
+  `main` request id under a non-main parent, which derives `main-2`, `main-3`, …),
+  display-label sanitization (OSC/CSI/DCS/BEL/CR/C1 stripping, trim, ellipsis
+  clipping, empty/control-only fallback), approval labels that append `#<id6>` for
+  any case variant of `main` while leaving normal names unchanged, resume transitions
   (terminal -> running, cleared terminal fields, `resumed` event, live/unknown
   refusal), cumulative usage and queued counters with clamping and their events,
   unknown-id no-ops, and `clearSubAgentActivity` clearing rows while keeping
@@ -105,8 +134,8 @@ Vitest configuration lives in `vitest.config.ts`. Tests live in `tests/unit/` an
   path validation. Integration suites cover sessions, skills, browser verification,
   and the packaged runtime.
 
-Current baseline after the multi-agent workspace slice: **394 passed / 2 skipped**
-(43 test files passed, 1 skipped).
+Current baseline after the security hardening regression slice: **446 passed / 2 skipped**
+(45 test files passed, 1 skipped).
 
 ## Known gaps
 
@@ -164,3 +193,22 @@ Current baseline after the multi-agent workspace slice: **394 passed / 2 skipped
 - Workspace tests create in-memory workspaces with fake handles and fake main
   bindings; they never call a provider, start a terminal, or touch
   `~/.agent-termo`.
+- **Security hardening, manual-only:** the real terminal interpretation of the
+  injected CSI/OSC payloads (screen clears, window-title changes, OSC 52
+  clipboard writes, forged chrome) and the approval panel's actual painting and
+  key handling (`Y`/`A`/`N`, frozen navigator, owner banner at 80x24 and 40x12)
+  require a real TTY; tests assert the pure formatter/sanitizer output, not the
+  `tui.tsx` JSX or OpenTUI rendering. SEC-01's end-to-end path (the proposal
+  recorded in the delegated transcript and the path shown in
+  `promptAcceptReject`) lives in `src/main.ts`; tests cover the approval-panel
+  formatter, not the interactive prompt flow.
+- The load-time `sanitizeAgentLabel` helper handles 7-bit CSI/OSC/DCS and strips
+  every C0/C1 control character. An 8-bit CSI introducer is removed but its
+  printable body (for example `31m`) remains as literal text. This is
+  display-only and cannot inject terminal control (the render-boundary
+  `sanitizeDisplayText` handles 8-bit sequences for the workspace surfaces it
+  sanitizes), so it is recorded as a limitation rather than a failing test.
+- Approval-panel line widths are code points, not terminal cells (the module has
+  no width library); CJK/emoji lines can occupy more terminal cells than the
+  requested budget. Asserted widths therefore match the navigator/transcript
+  convention used elsewhere in `workspace-view.ts`.

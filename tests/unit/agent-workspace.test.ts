@@ -317,6 +317,43 @@ describe('createAgentWorkspace', () => {
     });
   });
 
+  it('caps idle main messages when no REPL question is pending', () => {
+    // SEC-07: an idle main with submitExternal() returning false used to push past the cap.
+    const workspace = makeWorkspace();
+    const bindings = fakeBindings(false);
+    workspace.registerMainAgent(bindings.bindings);
+    expect(workspace.getMainState()).toMatchObject({ status: 'idle', queued: 0 });
+
+    for (let index = 0; index < MAX_QUEUED_MESSAGES_PER_AGENT; index++) {
+      expect(workspace.send(MAIN_AGENT_ID, `deferred ${index}`)).toEqual({
+        ok: true,
+        disposition: 'queued',
+        queueLength: index + 1,
+      });
+    }
+
+    const rejected = workspace.send(MAIN_AGENT_ID, 'deferred overflow');
+    expect(rejected).toMatchObject({ ok: false, reason: 'queue_full' });
+    expect((rejected as { message: string }).message).toContain('10 queued messages');
+    expect(workspace.getMainState().queued).toBe(MAX_QUEUED_MESSAGES_PER_AGENT);
+
+    // The queue cap does not change the earlier empty-input rejection order.
+    expect(workspace.send(MAIN_AGENT_ID, '   ')).toMatchObject({ ok: false, reason: 'empty' });
+    expect(workspace.getMainState().queued).toBe(MAX_QUEUED_MESSAGES_PER_AGENT);
+
+    for (let index = 0; index < MAX_QUEUED_MESSAGES_PER_AGENT; index++) {
+      expect(workspace.takeQueuedMainMessage()).toBe(`deferred ${index}`);
+    }
+    expect(workspace.takeQueuedMainMessage()).toBeUndefined();
+    expect(workspace.getMainState().queued).toBe(0);
+
+    expect(workspace.send(MAIN_AGENT_ID, 'after drain')).toEqual({
+      ok: true,
+      disposition: 'queued',
+      queueLength: 1,
+    });
+  });
+
   it('delegates a live sub-agent message to its handle and re-checks the queue cap', () => {
     const workspace = makeWorkspace();
     const id = spawnSubAgent('req-q', 'reviewer', 'task');

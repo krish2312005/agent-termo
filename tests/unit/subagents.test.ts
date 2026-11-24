@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   MAIN_AGENT_ID,
   addSubAgentProgress,
+  approvalRequesterLabel,
   beginSubAgentRun,
   clearSubAgentActivity,
   endSubAgentTool,
@@ -11,6 +12,7 @@ import {
   listSubAgents,
   resetSubAgents,
   resumeSubAgent,
+  sanitizeAgentLabel,
   setSubAgentQueued,
   setSubAgentUsage,
   setSubAgentWaiting,
@@ -109,6 +111,19 @@ describe('sub-agent workspace identity', () => {
     expect(mainNamed).not.toBe(MAIN_AGENT_ID);
     expect(mainNamed).toBe('main-2');
     expect(getSubAgent(mainNamed)!.parentId).toBe(MAIN_AGENT_ID);
+  });
+
+  it('never returns the reserved main id when a non-main parent requests it', () => {
+    // SEC-09: the reserved id must not depend on the parent being main.
+    const id = spawnSubAgent(MAIN_AGENT_ID, 'test-agent', 'run tests', 0, 'parent-agent');
+    expect(id).not.toBe(MAIN_AGENT_ID);
+    expect(id).toBe('main-2');
+    expect(getSubAgent(id)).toMatchObject({ id, parentId: 'parent-agent', status: 'running' });
+
+    const next = spawnSubAgent(MAIN_AGENT_ID, 'test-agent', 'run tests again', 0, 'parent-agent');
+    expect(next).not.toBe(MAIN_AGENT_ID);
+    expect(next).toBe('main-3');
+    expect(getSubAgent(next)!.parentId).toBe('parent-agent');
   });
 });
 
@@ -220,5 +235,61 @@ describe('clearSubAgentActivity', () => {
     const third = spawnSubAgent('call-3', 'qa', 'third');
     expect(events).toEqual([{ type: 'run' }, { type: 'spawned', id: third }]);
     expect(listSubAgents().map((activity) => activity.id)).toEqual([third]);
+  });
+});
+
+describe('agent display labels', () => {
+  it('strips OSC, CSI, DCS and control characters from display names', () => {
+    expect(sanitizeAgentLabel('\x1b]0;pwned\x07qa')).toBe('qa');
+    expect(sanitizeAgentLabel('\x1b]8;;http://evil.example\x1b\\qa')).toBe('qa');
+    expect(sanitizeAgentLabel('\x1b[31mqa\x1b[0m')).toBe('qa');
+    expect(sanitizeAgentLabel('\x1bP1;2|payload\x1b\\qa')).toBe('qa');
+    expect(sanitizeAgentLabel('q\x07a\r\n')).toBe('qa');
+    expect(sanitizeAgentLabel('q\x85a\x9fa')).toBe('qaa');
+  });
+
+  it('trims whitespace and clips with an ellipsis at the requested length', () => {
+    expect(sanitizeAgentLabel('  qa  ')).toBe('qa');
+    expect(sanitizeAgentLabel('')).toBe('');
+    expect(sanitizeAgentLabel('   ')).toBe('');
+
+    const clipped = sanitizeAgentLabel('x'.repeat(60));
+    expect(clipped).toHaveLength(40);
+    expect(clipped.endsWith('…')).toBe(true);
+    expect(sanitizeAgentLabel('x'.repeat(60), 10)).toBe('xxxxxxxxx…');
+
+    expect(sanitizeAgentLabel('前端🚀')).toBe('前端🚀');
+    expect(sanitizeAgentLabel('a'.repeat(40))).toBe('a'.repeat(40));
+  });
+
+  it('returns an empty label for control-only names so callers can fall back', () => {
+    expect(sanitizeAgentLabel('\x1b[2J\x07\r\n')).toBe('');
+    expect(sanitizeAgentLabel('\x1b]0;title\x07')).toBe('');
+    expect(sanitizeAgentLabel('\x9b\x9f\x85')).toBe('');
+  });
+});
+
+describe('approvalRequesterLabel', () => {
+  it('appends the first six id characters to every case variant of main', () => {
+    expect(approvalRequesterLabel('abc123def', 'main')).toBe('main#abc123');
+    expect(approvalRequesterLabel('abc123def', 'MAIN')).toBe('MAIN#abc123');
+    expect(approvalRequesterLabel('abc123def', 'Main')).toBe('Main#abc123');
+    expect(approvalRequesterLabel('abc', 'main')).toBe('main#abc');
+  });
+
+  it('leaves normal agent names unchanged', () => {
+    expect(approvalRequesterLabel('abc123def', 'frontend-expert')).toBe('frontend-expert');
+    expect(approvalRequesterLabel('abc123def', 'security-expert')).toBe('security-expert');
+    expect(approvalRequesterLabel('abc123def', '前端专家')).toBe('前端专家');
+  });
+
+  it('sanitizes before deciding whether the name spoofs main', () => {
+    expect(approvalRequesterLabel('abc123def', '\x1b[31mmain\x1b[0m')).toBe('main#abc123');
+    expect(approvalRequesterLabel('abc123def', '\x1b]0;x\x07MAIN')).toBe('MAIN#abc123');
+  });
+
+  it('falls back to agent for empty or control-only names', () => {
+    expect(approvalRequesterLabel('abc123def', '')).toBe('agent');
+    expect(approvalRequesterLabel('abc123def', '\x1b[2J\x07\r\n')).toBe('agent');
   });
 });
