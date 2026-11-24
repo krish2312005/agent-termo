@@ -7,11 +7,13 @@ import packageJson from "../../package.json" with { type: "json" };
 import { loadMemory, loadTimeline } from "../memory/index.js";
 import { getSubAgent, listSubAgents, subscribeSubAgents } from "../runtime/subagents.js";
 import { buildInspector, formatDuration, statusIcon } from "./subagent-view.js";
+import { COLORS } from "./theme.js";
 import {
   appendAssistantDelta,
   appendLog,
   beginAssistantStream,
   finishAssistantStream,
+  getCommands,
   isRendererActive,
   setActivityStatus,
   terminalWidth,
@@ -23,16 +25,19 @@ import {
 
 export * from "./screen.js";
 
-export { applySecretPaste, formatContextMeter, formatTokenCount } from "./tui.js";
+export { applySecretPaste, formatContextMeter, formatFooter, formatTokenCount, getCommands } from "./tui.js";
+export type { FooterOptions, FooterVariant } from "./tui.js";
 
 export interface CommandInfo {
   name: string;
   description: string;
+  aliases?: string[];
+  project?: boolean;
 }
 
 export const COMMANDS: CommandInfo[] = [
-  { name: "/help", description: "show all commands" },
-  { name: "/clear", description: "clear conversation & screen" },
+  { name: "/help", description: "show commands and keyboard shortcuts", aliases: ["/"] },
+  { name: "/clear", description: "clear conversation & screen", aliases: ["/cls"] },
   { name: "/sessions", description: "browse saved conversations" },
   { name: "/resume", description: "restore a saved conversation" },
   { name: "/fork", description: "branch a conversation from a saved session" },
@@ -44,28 +49,36 @@ export const COMMANDS: CommandInfo[] = [
   { name: "/memory", description: "view project memory (docs/MEMORY.md)" },
   { name: "/remember", description: "save a durable project fact to memory" },
   { name: "/recall", description: "search earlier saved sessions" },
-  { name: "/timeline", description: "view project timeline (docs/TIMELINE.md)" },
+  { name: "/timeline", description: "view project timeline (docs/TIMELINE.md)", aliases: ["/tl"] },
   { name: "/model", description: "switch the active provider model (or /model <id>)" },
   { name: "/providers", description: "add, switch, and configure model API providers" },
+  { name: "/mcp", description: "list MCP servers and available tools" },
   { name: "/thinking", description: "select NVIDIA reasoning capacity" },
   { name: "/permissions", description: "ask, files, or auto; terminal approvals can be remembered with A" },
-  { name: "/agents", description: "list all agents" },
+  { name: "/agents", description: "list agents and choose one" },
   { name: "/skill", description: "discover, use, create, import, and delete skills" },
   { name: "/agent", description: "select a custom agent" },
   { name: "/agent-folder", description: "create or refresh .agent-termo agents and commands" },
   { name: "/goal", description: "set or show the current goal" },
   { name: "/status", description: "show session status" },
   { name: "/terminal", description: "manage agent terminal (list, kill)" },
-  { name: "/context", description: "show context and runtime paths" },
+  { name: "/context", description: "show estimated context usage and budget" },
   { name: "/compact", description: "summarize and compact conversation context" },
   { name: "/continue", description: "resume an interrupted task from where it stopped" },
   { name: "/report", description: "analyze the project and create a report file" },
-  { name: "/history", description: "show message count" },
+  { name: "/history", description: "list recent conversation messages (default 12, max 50)", aliases: ["/hist"] },
   { name: "/subagents", description: "show running and completed sub-agent work" },
-  { name: "/exit", description: "quit" },
+  { name: "/exit", description: "quit", aliases: ["/quit"] },
 ];
 
 const c: typeof Chalk = Chalk as unknown as typeof Chalk;
+// Carbon Forge hexes for the non-TUI Chalk fallback (DESIGN_SYSTEM §11.3).
+const ink = {
+  dim: c.hex(COLORS.textDim),
+  accent: c.hex(COLORS.accent),
+  copper: c.hex(COLORS.copper),
+  teal: c.hex(COLORS.teal),
+};
 const rule = (): string => "─".repeat(Math.max(10, Math.min(terminalWidth() - 2, 100)));
 function print(content: string, kind: UiKind = "info"): void { appendLog(content, kind); }
 
@@ -81,9 +94,9 @@ function inline(text: string): string {
     .split(/(\x60[^\x60]+\x60)/)
     .map((segment) =>
       segment.length > 1 && segment.startsWith("\x60") && segment.endsWith("\x60")
-        ? c.cyan(segment.slice(1, -1))
+        ? ink.copper(segment.slice(1, -1))
         : segment
-            .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label: string, url: string) => c.cyan(label) + c.dim(" (" + url + ")"))
+            .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label: string, url: string) => ink.teal(label) + ink.dim(" (" + url + ")"))
             .replace(/\*\*(.+?)\*\*|__(.+?)__/g, (_match, boldA: string, boldB: string) => c.bold(boldA ?? boldB))
             .replace(/~~(.+?)~~/g, (_match, value: string) => c.strikethrough(value))
             .replace(/(?<!\w)\*([^*\n]+)\*|(?<!\w)_([^_\n]+)_/g, (_match, italicA: string, italicB: string) => c.italic(italicA ?? italicB))
@@ -145,7 +158,7 @@ export class MarkdownPrinter {
       this.beforeFirstOutput?.();
       appendLog("\n", "markdown");
     }
-    const prefix = this.first ? c.magenta("● ") : this.partialLine ? "" : "  ";
+    const prefix = this.first ? ink.copper("● ") : this.partialLine ? "" : "  ";
     this.first = false;
     appendLog(prefix + this.render(this.pending), "markdown");
     this.pending = "";
@@ -164,7 +177,7 @@ export class MarkdownPrinter {
       this.beforeFirstOutput?.();
       appendLog("\n", "markdown");
     }
-    const prefix = this.first ? c.magenta("● ") : this.partialLine ? "" : "  ";
+    const prefix = this.first ? ink.copper("● ") : this.partialLine ? "" : "  ";
     this.first = false;
     appendLog(blank && !this.inCode ? "\n" : prefix + this.render(line) + "\n", "markdown");
     this.partialLine = false;
@@ -174,25 +187,28 @@ export class MarkdownPrinter {
     const fence = /^\s*\x60\x60\x60\s*([\w+-]*)/.exec(line);
     if (fence) {
       this.inCode = !this.inCode;
-      return this.inCode ? c.dim("┌─ " + (fence[1] || "code")) : c.dim("└─");
+      return this.inCode ? ink.dim("┌─ " + (fence[1] || "code")) : ink.dim("└─");
     }
-    if (this.inCode) return c.dim("│ ") + c.cyan(line.replace(/\t/g, "  "));
-    const heading = /^#{1,6}\s+(.*)$/.exec(line);
-    if (heading) return c.bold.magenta(inline(heading[1] ?? ""));
-    if (/^\s*([-*_])\1{2,}\s*$/.test(line)) return c.dim("─".repeat(Math.min(40, terminalWidth() - 4)));
+    if (this.inCode) return ink.dim("│ ") + ink.copper(line.replace(/\t/g, "  "));
+    const heading = /^(#{1,6})\s+(.*)$/.exec(line);
+    if (heading) {
+      const style = (heading[1]?.length ?? 1) === 1 ? ink.accent : ink.teal;
+      return style.bold(inline(heading[2] ?? ""));
+    }
+    if (/^\s*([-*_])\1{2,}\s*$/.test(line)) return ink.dim("─".repeat(Math.min(40, terminalWidth() - 4)));
     const task = /^(\s*)[-*+]\s+\[([ xX])\]\s+(.*)$/.exec(line);
-    if (task) return (task[1] ?? "") + c.magenta(task[2]?.toLowerCase() === "x" ? "☑" : "☐") + " " + inline(task[3] ?? "");
+    if (task) return (task[1] ?? "") + ink.copper(task[2]?.toLowerCase() === "x" ? "☑" : "☐") + " " + inline(task[3] ?? "");
     const bullet = /^(\s*)[-*+]\s+(.*)$/.exec(line);
-    if (bullet) return (bullet[1] ?? "") + c.magenta("•") + " " + inline(bullet[2] ?? "");
+    if (bullet) return (bullet[1] ?? "") + ink.copper("•") + " " + inline(bullet[2] ?? "");
     const numbered = /^(\s*)(\d+)[.)]\s+(.*)$/.exec(line);
-    if (numbered) return (numbered[1] ?? "") + c.magenta(numbered[2] + ".") + " " + inline(numbered[3] ?? "");
-    if (/^\s*\|?(?:\s*:?-+:?\s*\|)+\s*$/.test(line)) return c.dim("─".repeat(Math.min(terminalWidth() - 4, 80)));
+    if (numbered) return (numbered[1] ?? "") + ink.copper(numbered[2] + ".") + " " + inline(numbered[3] ?? "");
+    if (/^\s*\|?(?:\s*:?-+:?\s*\|)+\s*$/.test(line)) return ink.dim("─".repeat(Math.min(terminalWidth() - 4, 80)));
     if (/^\s*\|.*\|\s*$/.test(line)) {
       const cells = line.trim().replace(/^\||\|$/g, "").split("|").map((cell) => inline(cell.trim()));
-      return c.dim("│ ") + cells.join(c.dim(" │ ")) + c.dim(" │");
+      return ink.dim("│ ") + cells.join(ink.dim(" │ ")) + ink.dim(" │");
     }
     const quote = /^>\s?(.*)$/.exec(line);
-    if (quote) return c.dim("▎ ") + c.italic(inline(quote[1] ?? ""));
+    if (quote) return ink.dim("▎ ") + c.italic(inline(quote[1] ?? ""));
     return inline(line);
   }
 }
@@ -351,14 +367,112 @@ export async function printTimelineFile(projectRoot: string): Promise<void> {
   const recentCount = Math.min(40, lines.length);
   print("Project timeline (docs/TIMELINE.md, recent entries)\n" + rule() + "\n" + lines.slice(-recentCount).join("\n") + "\n" + rule() + (lines.length > recentCount ? "\n… " + (lines.length - recentCount) + " earlier entries hidden" : ""), "markdown");
 }
+/** Shortcut reference derived from the live handlers (DESIGN_SYSTEM §11.6). */
+const SHORTCUTS: Array<{ title: string; items: Array<[string, string]> }> = [
+  {
+    title: "Composer",
+    items: [
+      ["Enter", "send the message (accepts a highlighted completion first)"],
+      ["Shift+Enter / Ctrl+Enter / Alt+Enter", "insert a new line"],
+      ["Tab", "complete a `/command` or `@mention`"],
+      ["Esc", "dismiss the completion list"],
+      ["↑ / ↓", "select a completion, move the cursor, or browse history at the first/last line"],
+      ["Ctrl+A / Ctrl+E", "start / end of line"],
+      ["Ctrl+W / Ctrl+U", "delete word / to line start"],
+      ["Ctrl+K", "delete to line end; stop the running terminal command when the composer is empty, the navigator is focused, or the prompt is inactive"],
+      ["Ctrl+O", "show / hide the terminal panel (when a terminal command exists)"],
+      ["Ctrl+T", "expand / shrink the terminal panel (when a terminal command exists)"],
+      ["Ctrl+C", "copy the selection; otherwise clear the draft; with an empty composer, quit when no agent is live"],
+    ],
+  },
+  {
+    title: "Workspace",
+    items: [
+      ["Ctrl+X", "focus the navigator and arm stop-all"],
+      ["↑ / ↓", "select an agent"],
+      ["Enter", "focus the composer"],
+      ["Esc", "select the parent agent; at main, focus the composer"],
+      ["Ctrl+X then Ctrl+K within 1.5 s", "stop all agents"],
+    ],
+  },
+  {
+    title: "Response",
+    items: [
+      ["Esc / Ctrl+C", "cancel an in-flight model response when the navigator and prompt modals do not own the keys; a sub-agent follow-up is cancelled only while its agent is selected"],
+    ],
+  },
+  {
+    title: "Approval",
+    items: [
+      ["Y / Enter", "allow once"],
+      ["A", "allow always for this exact terminal command"],
+      ["N / Esc / Ctrl+C", "reject"],
+    ],
+  },
+  {
+    title: "Picker",
+    items: [
+      ["↑ / ↓", "move the selection"],
+      ["type", "filter the list"],
+      ["Backspace", "edit the filter"],
+      ["Enter", "select"],
+      ["Esc / Ctrl+C", "cancel"],
+    ],
+  },
+  {
+    title: "Secret input",
+    items: [
+      ["Enter", "submit"],
+      ["Esc / Ctrl+C", "cancel"],
+      ["Backspace", "delete"],
+      ["bracketed paste", "supported"],
+    ],
+  },
+];
+
+const inlineCode = (text: string): string => "`" + text + "`";
+
+/** One markdown help document from the live registry and the real handlers. */
+export function helpMarkdown(commands: readonly CommandInfo[]): string {
+  const commandLines = commands.map((command) => {
+    const aliases = command.aliases?.length
+      ? " (" + command.aliases.map(inlineCode).join(", ") + ")"
+      : "";
+    const project = command.project ? " (`project`)" : "";
+    return "- " + inlineCode(command.name) + aliases + " — " + command.description + project;
+  });
+  const shortcutSections = SHORTCUTS.map((section) =>
+    "## " + section.title + "\n\n" + section.items
+      .map(([key, description]) => "- " + inlineCode(key) + " — " + description)
+      .join("\n"),
+  );
+  return [
+    "# Commands",
+    "",
+    commandLines.join("\n"),
+    "",
+    "Plain `exit` / `quit` also quit.",
+    "",
+    "# Shortcuts",
+    "",
+    shortcutSections.join("\n\n"),
+  ].join("\n");
+}
+
 export function printHelp(): void {
-  const keys: Array<[string, string]> = [
-    ["Enter", "send the message"], ["Shift+Enter", "insert a new line"],
-    ["Ctrl+O / Ctrl+T", "toggle terminal output"], ["↑ / ↓", "move cursor or select"],
-    ["Tab", "complete a /command or @mention"], ["Ctrl+A / Ctrl+E", "start / end of line"],
-    ["Ctrl+W / Ctrl+U", "delete word / to line start"], ["Ctrl+C", "clear the line, or quit when empty"],
-  ];
-  print("Commands\n" + rule() + "\n" + COMMANDS.map((command) => command.name.padEnd(14) + command.description).join("\n") + "\n\nKeys\n" + rule() + "\n" + keys.map(([key, description]) => key.padEnd(20) + description).join("\n"), "markdown");
+  // The live registry is the same list command completion uses; fall back to
+  // the built-in registry when no REPL has published it yet.
+  const live = getCommands();
+  const markdown = helpMarkdown(live.length > 0 ? live : COMMANDS);
+  if (isRendererActive()) {
+    // One transcript entry: the existing scrollbox makes the reference scrollable.
+    print(markdown, "markdown");
+    return;
+  }
+  // Non-TUI fallback: render the same document with the Carbon Forge Chalk hexes.
+  const printer = new MarkdownPrinter();
+  printer.push(markdown);
+  printer.end();
 }
 export function printAgentsList(agents: Array<{ name: string; description: string }>): void {
   print("Available agents\n" + rule() + "\n" + agents.map((agent) => agent.name.padEnd(30) + clipText(agent.description.replace(/\s+/g, " "), terminalWidth() - 34)).join("\n"), "markdown");

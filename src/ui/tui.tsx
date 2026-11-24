@@ -18,6 +18,7 @@ import { createInterface } from "node:readline";
 import packageJson from "../../package.json" with { type: "json" };
 import { copySelectedText } from "./selection-copy.js";
 import { sanitizeDisplayLine, sanitizeDisplayText } from "./display-text.js";
+import { ROLES } from "./theme.js";
 import type { PermissionMode } from "../types/index.js";
 import { MAIN_AGENT_ID, listSubAgents } from "../runtime/subagents.js";
 import { buildAgentTree, reconcileSelection, visibleAgentRows, type AgentTreeNode, type WorkspaceStatus } from "../runtime/agent-tree.js";
@@ -45,7 +46,14 @@ import {
 export type UiKind = "user" | "assistant" | "tool" | "info" | "success" | "error" | "dim" | "markdown" | "diff-add" | "diff-remove" | "diff-context";
 export interface UiEntry { id: number; kind: UiKind; content: string; streaming?: boolean; /** Sub-agent that produced the entry; absent for main. */ agentLabel?: string; }
 export interface Key { name: string; text?: string; }
-export interface CommandInfo { name: string; description: string; }
+export interface CommandInfo {
+  name: string;
+  description: string;
+  /** Alternate spellings handled by the same dispatch branch. */
+  aliases?: string[];
+  /** Loaded from `.agent-termo/commands` rather than the built-in registry. */
+  project?: boolean;
+}
 export interface PickItem {
   value: string;
   label: string;
@@ -152,45 +160,33 @@ export function approvalPrompt(): ApprovalPromptState | null {
   return approvalPromptState();
 }
 
-export function permissionBarColor(mode: PermissionMode): string {
-  switch (mode) {
-    case "files":
-      return "#D99168"; // orange — file accept
-    case "auto":
-      return "#FF5555"; // red — accept all auto
-    case "ask":
-    default:
-      return "#6D625A"; // default — normal
-  }
-}
-
 // -----------------------------------------------------------------------------
 // Workspace state helpers (UI-local; runtime semantics live in src/runtime)
 // -----------------------------------------------------------------------------
 
 const STATUS_COLOR: Record<AgentColorRole, string> = {
-  idle: "#8D857D",
-  running: "#E2A078",
-  waiting: "#79B8D1",
-  completed: "#8FCB9B",
-  failed: "#E47D76",
-  stopped: "#88827C",
+  idle: ROLES.statusIdle,
+  running: ROLES.statusRunning,
+  waiting: ROLES.statusWaiting,
+  completed: ROLES.statusCompleted,
+  failed: ROLES.statusFailed,
+  stopped: ROLES.statusStopped,
 };
 
 function metaColor(role: "status" | "detail" | "error" | "muted", status: AgentColorRole): string {
   if (role === "status") return STATUS_COLOR[status];
-  if (role === "detail") return "#C9C1BA";
-  if (role === "error") return "#E47D76";
-  return "#88827C";
+  if (role === "detail") return ROLES.mutedText;
+  if (role === "error") return ROLES.error;
+  return ROLES.dimText;
 }
 
-function contentStatusColor(role: ContentStatusRole, status: WorkspaceStatus): string {
-  if (role === "accent") return "#D99168";
-  if (role === "separator") return "#6D625A";
+function contentStatusColor(role: ContentStatusRole, status: WorkspaceStatus, subagent: boolean): string {
+  if (role === "accent") return subagent ? ROLES.subagent : ROLES.brand;
+  if (role === "separator") return ROLES.dimText;
   if (role === "status") return STATUS_COLOR[status];
-  if (role === "detail") return "#C9C1BA";
-  if (role === "error") return "#E47D76";
-  return "#88827C";
+  if (role === "detail") return ROLES.mutedText;
+  if (role === "error") return ROLES.error;
+  return ROLES.dimText;
 }
 
 function currentNodes(): AgentTreeNode[] {
@@ -333,6 +329,113 @@ export function formatTokenCount(tokens: number): string {
   if (value < 1_000_000) return Math.round(value / 1000) + "k";
   return (value / 1_000_000).toFixed(1).replace(/\.0$/, "") + "M";
 }
+
+export type FooterVariant = "composer" | "navigator" | "modal";
+
+export interface FooterOptions {
+  context?: ScreenContext;
+  thinking: string;
+  permissionMode: PermissionMode;
+  usage: string;
+  /** Shortcut cluster for the current focus/ownership state. Default `composer`. */
+  variant?: FooterVariant;
+  /** Transient status; replaces the shortcut cluster while non-empty. */
+  status?: string;
+  /** Available cells (terminal columns minus the two page padding cells). */
+  width: number;
+}
+
+export const FOOTER_SEPARATOR = " · ";
+
+type FooterSegmentKind = "shortcut" | "context" | "tokens" | "thinking" | "permission" | "usage" | "status" | "modal";
+
+interface FooterSegment {
+  text: string;
+  kind: FooterSegmentKind;
+  /** Lower values drop first; `Infinity` never drops (permission/status). */
+  drop: number;
+}
+
+function footerShortcuts(variant: FooterVariant): FooterSegment[] {
+  if (variant === "navigator") {
+    return [
+      { text: "↑/↓ select", kind: "shortcut", drop: 3 },
+      { text: "Enter focus composer", kind: "shortcut", drop: 6 },
+      { text: "Esc parent", kind: "shortcut", drop: 5 },
+      { text: "Ctrl+K stop terminal", kind: "shortcut", drop: 7 },
+      { text: "Ctrl+X Ctrl+K stop all", kind: "shortcut", drop: 8 },
+    ];
+  }
+  if (variant === "modal") {
+    return [{ text: "Navigator paused · finish the prompt to continue", kind: "modal", drop: Infinity }];
+  }
+  return [
+    { text: "Ctrl+X navigate", kind: "shortcut", drop: 7 },
+    { text: "↑/↓ select", kind: "shortcut", drop: 3 },
+    { text: "Enter send", kind: "shortcut", drop: 6 },
+    { text: "Esc parent", kind: "shortcut", drop: 5 },
+    { text: "Ctrl+X Ctrl+K stop all", kind: "shortcut", drop: 8 },
+  ];
+}
+
+const cellWidth = (value: string): number => [...value].length;
+
+function joinFooter(segments: readonly FooterSegment[]): string {
+  return segments.filter((segment) => segment.text).map((segment) => segment.text).join(FOOTER_SEPARATOR);
+}
+
+/**
+ * The single Carbon Forge footer line (DESIGN_SYSTEM §11.5). Pure: all state is
+ * passed in. Width adaptation drops whole segments in the documented order,
+ * then clips the transient/modal text with `…`. Permission never drops.
+ */
+export function formatFooter(options: FooterOptions): string {
+  const width = Math.max(1, Math.floor(options.width) || 1);
+  const usage = options.usage.replace(/ tokens$/, "");
+  const shortcut: FooterSegment[] = options.status
+    ? [{ text: options.status, kind: "status", drop: Infinity }]
+    : footerShortcuts(options.variant ?? "composer");
+  const context = options.context;
+  const segments: FooterSegment[] = [
+    ...shortcut,
+    ...(context ? [
+      // A transient status keeps the context cluster (DESIGN_SYSTEM §11.5): drop
+      // `12k/23k` first, then clip the status, never the meter.
+      { text: "context " + formatContextMeter(context.usedTokens, context.budgetTokens), kind: "context" as const, drop: options.status ? Infinity : 4 },
+      { text: formatTokenCount(context.usedTokens) + "/" + formatTokenCount(context.budgetTokens), kind: "tokens" as const, drop: 9 },
+    ] : []),
+    ...(options.thinking ? [{ text: options.thinking, kind: "thinking" as const, drop: 2 }] : []),
+    { text: options.permissionMode, kind: "permission", drop: Infinity },
+    ...(usage ? [{ text: "session " + usage, kind: "usage" as const, drop: 1 }] : []),
+  ];
+
+  let remaining = segments;
+  while (cellWidth(joinFooter(remaining)) > width) {
+    const droppable = remaining.filter((segment) => Number.isFinite(segment.drop));
+    if (droppable.length === 0) break;
+    const drop = Math.min(...droppable.map((segment) => segment.drop));
+    remaining = remaining.filter((segment) => segment.drop !== drop);
+  }
+
+  let line = joinFooter(remaining);
+  if (cellWidth(line) <= width) return line;
+
+  // Final safety clip: trim the transient/modal text before the permission
+  // value, then clip the whole line only when the permission itself cannot fit.
+  const clipIndex = remaining.findIndex((segment) => segment.kind === "status" || segment.kind === "modal");
+  if (clipIndex >= 0) {
+    const others = joinFooter(remaining.filter((_, index) => index !== clipIndex));
+    const room = width - cellWidth(others) - (others ? cellWidth(FOOTER_SEPARATOR) : 0);
+    if (room >= 1) {
+      remaining = remaining.map((segment, index) => index === clipIndex ? { ...segment, text: clipText(segment.text, room) } : segment);
+      line = joinFooter(remaining);
+    }
+  }
+  return clipText(line, width);
+}
+
+/** The live command registry used by completion and `/help`. */
+export function getCommands(): CommandInfo[] { return commands(); }
 
 /** Next masked API-key draft after a paste. Pure so it is testable without a renderer. */
 export function applySecretPaste(current: string, pasted: string | Uint8Array): string {
@@ -516,12 +619,12 @@ function submitInput(): void {
 function App() {
   const activeRenderer = useRenderer();
   const syntaxStyle = SyntaxStyle.fromStyles({
-    default: { fg: RGBA.fromHex("#E6E1DC") },
-    "markup.heading.1": { fg: RGBA.fromHex("#E2A078"), bold: true },
-    "markup.heading.2": { fg: RGBA.fromHex("#D7A27C"), bold: true },
-    "markup.link.label": { fg: RGBA.fromHex("#79B8D1") },
-    "markup.raw": { fg: RGBA.fromHex("#9CCB9C") },
-    "markup.list": { fg: RGBA.fromHex("#D7A27C") },
+    default: { fg: RGBA.fromHex(ROLES.markdownText) },
+    "markup.heading.1": { fg: RGBA.fromHex(ROLES.markdownHeading1), bold: true },
+    "markup.heading.2": { fg: RGBA.fromHex(ROLES.markdownHeading2), bold: true },
+    "markup.link.label": { fg: RGBA.fromHex(ROLES.markdownLink) },
+    "markup.raw": { fg: RGBA.fromHex(ROLES.markdownRaw) },
+    "markup.list": { fg: RGBA.fromHex(ROLES.markdownList) },
   }, activeRenderer.nativeScene);
   onCleanup(() => syntaxStyle.destroy());
 
@@ -619,8 +722,8 @@ function App() {
     return approval ? formatApprovalPanel(approval, Math.max(1, terminalColumns() - 2), approvalDetailLines()) : [];
   });
   // On short terminals (<= 14 rows) the modal keeps the owner, one detail line
-  // and the composer; the selected-agent status row, overflow counts and
-  // navigator hint give up their rows.
+  // and the composer; the selected-agent status row and overflow counts give up
+  // their rows. The footer stays fixed at one row.
   const compactApprovalChrome = (): boolean => approvalPromptState() !== null && terminalRows() <= 14;
   const navigatorCap = (): number => Math.max(
     1,
@@ -638,16 +741,14 @@ function App() {
       hiddenBelow: window.hiddenBelow,
     };
   });
-  const navigatorHintVisible = (): boolean => !compactApprovalChrome();
   const navigatorLineCount = (): number => {
     const view = navigatorView();
-    // Compact approval mode keeps only the selected row; overflow counts and
-    // the hint yield their rows to the approval panel and composer.
+    // Compact approval mode keeps only the selected row; overflow counts yield
+    // their rows to the approval panel and composer.
     const overflow = !compactApprovalChrome();
     return view.rows.length
       + (overflow && view.hiddenAbove > 0 ? 1 : 0)
-      + (overflow && view.hiddenBelow > 0 ? 1 : 0)
-      + (navigatorHintVisible() ? 1 : 0);
+      + (overflow && view.hiddenBelow > 0 ? 1 : 0);
   };
 
   // The approval panel replaces the one-row banner: owner line plus real
@@ -748,11 +849,22 @@ function App() {
   const composerPrefixCells = (): number => [...composerPrefix()].length + 1;
   const composerPlaceholder = (): string => formatComposerPlaceholder(selectedName(), terminalColumns(), composerPrefixCells());
 
-  const navigatorHint = (): string => {
-    if (approvalPromptState() || picker() || secretMode()) return "Navigator paused · finish the prompt to continue";
-    if (focusMode() === "navigator") return "↑↓ select · Enter message · Esc parent · Ctrl+K stop terminal · Ctrl+X Ctrl+K stop all";
-    return "Ctrl+X navigate · ↑↓ select · Enter message · Esc parent · Ctrl+X Ctrl+K stop all";
-  };
+  const footerVariant = (): FooterVariant => approvalPromptState() || currentPicker() || secretMode()
+    ? "modal"
+    : focusMode() === "navigator"
+      ? "navigator"
+      : "composer";
+  // The composer owns keys unless the navigator or a prompt modal does.
+  const composerFocused = (): boolean => inputActive() && !currentPicker() && !approvalPromptState();
+  const footerLine = (): string => formatFooter({
+    context: screen().context,
+    thinking: screen().thinking,
+    permissionMode: screen().permissionMode,
+    usage: screen().usage,
+    variant: footerVariant(),
+    status: status(),
+    width: Math.max(1, terminalColumns() - 2),
+  });
 
   const promptMaxRows = (): number => {
     const panelRows = approvalPanelLines().length;
@@ -972,22 +1084,9 @@ function App() {
   });
 
   const colors: Record<UiKind, string> = {
-    user: "#8FCB9B", assistant: "#E6E1DC", tool: "#79B8D1", info: "#8BB7D8",
-    success: "#8FCB9B", error: "#E47D76", dim: "#88827C", markdown: "#E6E1DC",
-    "diff-add": "#B7E4C7", "diff-remove": "#F0B4AE", "diff-context": "#BDB6AE",
-  };
-
-  const statusLine = () => {
-    const state = screen();
-    const parts: string[] = [];
-    if (state.context) {
-      parts.push(
-        "context " + formatContextMeter(state.context.usedTokens, state.context.budgetTokens) +
-        " · " + formatTokenCount(state.context.usedTokens) + "/" + formatTokenCount(state.context.budgetTokens),
-      );
-    }
-    parts.push(state.thinking, state.permissionMode, "session " + state.usage);
-    return parts.join(" · ");
+    user: ROLES.userText, assistant: ROLES.text, tool: ROLES.tool, info: ROLES.info,
+    success: ROLES.success, error: ROLES.error, dim: ROLES.dimText, markdown: ROLES.markdownText,
+    "diff-add": ROLES.diffAddText, "diff-remove": ROLES.diffRemoveText, "diff-context": ROLES.diffContextText,
   };
 
   const handleSelectionMouseUp = () => {
@@ -1000,7 +1099,7 @@ function App() {
       width="100%"
       height="100%"
       flexDirection="column"
-      backgroundColor="#11100F"
+      backgroundColor={ROLES.pageBackground}
       paddingX={1}
       gap={0}
       onMouseUp={handleSelectionMouseUp}
@@ -1009,7 +1108,8 @@ function App() {
         width="100%"
         border
         borderStyle="rounded"
-        borderColor="#6D625A"
+        borderColor={ROLES.border}
+        backgroundColor={ROLES.panelSurface}
         paddingX={1}
         flexShrink={0}
         flexDirection="row"
@@ -1017,22 +1117,25 @@ function App() {
         alignItems="center"
       >
         <box flexDirection="row" alignItems="center" gap={1}>
-          <text fg="#D99168">✻ Agent-Termo</text>
-          <text fg="#8D857D">v{packageJson.version}</text>
+          <text fg={ROLES.brand}>✻ Agent-Termo</text>
+          <text fg={ROLES.dimText}>v{packageJson.version}</text>
         </box>
-        <text fg="#89827C">{screen().model} · {screen().project}</text>
+        <text fg={ROLES.dimText}>{screen().model} · {screen().project}</text>
       </box>
       <box flexDirection="column" flexGrow={1} flexBasis={0} minHeight={0}>
         <Show when={!compactApprovalChrome()} fallback={<box height={0} />}>
           <box height={1} flexDirection="row" flexShrink={0} paddingX={1}>
             <For each={contentStatusSegments()}>
               {(segment) => (
-                <text fg={contentStatusColor(segment.role, selectedNode()?.status ?? "idle")} wrapMode="none">{segment.text}</text>
+                <text
+                  fg={contentStatusColor(segment.role, selectedNode()?.status ?? "idle", selectedNode()?.kind === "subagent")}
+                  wrapMode="none"
+                >{segment.text}</text>
               )}
             </For>
           </box>
         </Show>
-        <text fg="#6D625A" flexShrink={0} wrapMode="none">{"─".repeat(Math.max(1, terminalColumns() - 2))}</text>
+        <text fg={ROLES.border} flexShrink={0} wrapMode="none">{"─".repeat(Math.max(1, terminalColumns() - 2))}</text>
         <scrollbox
           ref={(element) => {
             scrollbox = element;
@@ -1063,7 +1166,7 @@ function App() {
           <Show when={visibleEntries().length > 0} fallback={
             <Show when={selectedAgentIdSignal() !== MAIN_AGENT_ID}>
               <box paddingX={1}>
-                <text fg="#88827C" wrapMode="none">No activity yet for @{selectedName()}.</text>
+                <text fg={ROLES.dimText} wrapMode="none">No activity yet for @{selectedName()}.</text>
               </box>
             </Show>
           }>
@@ -1071,11 +1174,18 @@ function App() {
               {(entry) => (
                 <box flexDirection="column" paddingX={1}>
                   <Show when={entry().kind === "user" || entry().kind === "markdown"}>
-                    <text fg={entry().kind === "user" ? "#8FCB9B" : entry().agentLabel ? "#8D857D" : "#6D625A"}>
-                      {entry().kind === "user"
-                        ? "❯ You" + (entry().agentLabel ? " → @" + entry().agentLabel : "")
-                        : "⏺ " + (entry().agentLabel ?? "Agent-Termo")}
-                    </text>
+                    <Show when={entry().kind === "user"} fallback={
+                      <text fg={entry().agentLabel ? ROLES.subagentLabel : ROLES.assistantLabel}>
+                        {"⏺ " + (entry().agentLabel ?? "Agent-Termo")}
+                      </text>
+                    }>
+                      <box flexDirection="row">
+                        <text fg={ROLES.userLabel}>❯ You</text>
+                        <Show when={entry().agentLabel}>
+                          <text fg={ROLES.subagentLabel}>{" → @" + entry().agentLabel}</text>
+                        </Show>
+                      </box>
+                    </Show>
                   </Show>
                   <Show when={entry().kind === "diff-add" || entry().kind === "diff-remove"} fallback={
                     <Show when={entry().kind === "markdown" || entry().kind === "diff-context"} fallback={<text fg={colors[entry().kind]}>{entry().content}</text>}>
@@ -1084,8 +1194,8 @@ function App() {
                       </Show>
                     </Show>
                   }>
-                    <box width="100%" paddingX={1} backgroundColor={entry().kind === "diff-add" ? "#17351F" : "#3A1D1D"}>
-                      <text fg={entry().kind === "diff-add" ? "#B7E4C7" : "#F0B4AE"}>{entry().content}</text>
+                    <box width="100%" paddingX={1} backgroundColor={entry().kind === "diff-add" ? ROLES.diffAddSurface : ROLES.diffRemoveSurface}>
+                      <text fg={entry().kind === "diff-add" ? ROLES.diffAddText : ROLES.diffRemoveText}>{entry().content}</text>
                     </box>
                   </Show>
                 </box>
@@ -1095,53 +1205,78 @@ function App() {
         </scrollbox>
       </box>
       <Show when={terminalVisible() && terminal()} fallback={<box height={0} />}>
-        <box height={terminalPanelRows()} border borderStyle="single" borderColor="#6D625A" paddingX={1} flexDirection="column" flexShrink={0}>
-          <text fg="#D99168">Terminal · {terminal()!.exitCode === null ? "running" : "exit " + terminal()!.exitCode}</text>
-          <text fg="#8D857D">$ {terminal()!.command}</text>
-          <text fg="#6D625A">
+        <box
+          height={terminalPanelRows()}
+          border
+          borderStyle="single"
+          borderColor={ROLES.border}
+          backgroundColor={ROLES.panelSurface}
+          paddingX={1}
+          flexDirection="column"
+          flexShrink={0}
+        >
+          <text fg={ROLES.brand}>Terminal · {terminal()!.exitCode === null ? "running" : "exit " + terminal()!.exitCode}</text>
+          <text fg={ROLES.dimText}>$ {terminal()!.command}</text>
+          <text fg={ROLES.dimText}>
             {terminal()!.exitCode === null ? "Ctrl+K stop · " : ""}Ctrl+T {terminalExpanded() ? "shrink" : "expand"} · Ctrl+O hide
           </text>
           <scrollbox flexGrow={1} minHeight={0} stickyScroll stickyStart="bottom">
-            <text fg="#C9C1BA">{terminal()!.lines.join("\n")}</text>
+            <text fg={ROLES.mutedText}>{terminal()!.lines.join("\n")}</text>
           </scrollbox>
         </box>
       </Show>
       <Show when={currentPicker()} fallback={<box height={0} />}>
         {(current: Accessor<PickerState>) => (
-          <box border borderStyle="rounded" borderColor="#D99168" paddingX={1} flexDirection="column" flexShrink={0}>
-            <text fg="#D99168">{current().title}</text>
-            <text fg="#8F8982">Filter: {current().query}</text>
+          <box
+            border
+            borderStyle="rounded"
+            borderColor={ROLES.brand}
+            backgroundColor={ROLES.panelSurface}
+            paddingX={1}
+            flexDirection="column"
+            flexShrink={0}
+          >
+            <text fg={ROLES.brand}>{current().title}</text>
+            <text fg={ROLES.dimText}>Filter: {current().query}</text>
             <For each={visiblePickerItems()}>
               {(item) => item.header
-                ? <text fg="#8F8982">{"— " + item.label + " —"}</text>
-                : <text fg={item.selected ? "#F0B38D" : "#D0C9C2"}>{item.selected ? "› " : "  "}{item.label}{item.hint ? "  " + item.hint : ""}</text>}
+                ? <text fg={ROLES.dimText}>{"— " + item.label + " —"}</text>
+                : <text fg={item.selected ? ROLES.selection : ROLES.mutedText}>{item.selected ? "› " : "  "}{item.label}{item.hint ? "  " + item.hint : ""}</text>}
             </For>
-            <text fg="#8F8982">↑ ↓ move · type to filter · Enter select · Esc cancel</text>
+            <text fg={ROLES.dimText}>↑ ↓ move · type to filter · Enter select · Esc cancel</text>
           </box>
         )}
       </Show>
       <Show when={inputActive() && completionItems().length > 0 && !currentPicker() && !secretMode()} fallback={<box height={0} />}>
         <box paddingX={2} flexDirection="column" flexShrink={0}>
           <For each={visibleCompletionItems()}>
-            {(item) => <text fg={item.selected ? "#F0B38D" : "#8EAAA8"}>{item.selected ? "› " : "  "}{item.label}{item.hint ? "  " + item.hint : ""}</text>}
+            {(item) => <text fg={item.selected ? ROLES.selection : ROLES.mutedText}>{item.selected ? "› " : "  "}{item.label}{item.hint ? "  " + item.hint : ""}</text>}
           </For>
         </box>
       </Show>
       <Show when={approvalPromptState()} fallback={
         <Show when={bannerText()} fallback={<box height={0} />}>
-          <text fg="#E47D76" wrapMode="none">
+          <text fg={ROLES.error} wrapMode="none">
             {clipText(bannerText() ?? "", Math.max(1, terminalColumns() - 2))}
           </text>
         </Show>
       }>
-        <box flexDirection="column" flexShrink={0}>
+        <box flexDirection="column" flexShrink={0} backgroundColor={ROLES.panelSurface}>
           <Index each={approvalPanelLines()}>
-            {(line) => <text fg="#79B8D1" wrapMode="none">{line()}</text>}
+            {(line) => <text fg={ROLES.info} wrapMode="none">{line()}</text>}
           </Index>
         </box>
       </Show>
-      <box border borderStyle="single" borderColor={inputActive() ? permissionBarColor(screen().permissionMode) : "#6D625A"} paddingX={1} flexDirection="row" alignItems="flex-start" flexShrink={0}>
-        <text fg="#D99168" wrapMode="none">{composerPrefix() + " "}</text>
+      <box
+        border
+        borderStyle="single"
+        borderColor={composerFocused() ? ROLES.composerBorderFocused : ROLES.composerBorder}
+        paddingX={1}
+        flexDirection="row"
+        alignItems="flex-start"
+        flexShrink={0}
+      >
+        <text fg={ROLES.brand} wrapMode="none">{composerPrefix() + " "}</text>
         <Show when={secretMode()} fallback={
           <textarea
             ref={(element) => { textarea = element; }}
@@ -1167,24 +1302,28 @@ function App() {
           />
         }>
           <box flexGrow={1} flexBasis={0} minWidth={0}>
-            <text fg="#D0C9C2">{ "•".repeat(secretDraft().length) }</text>
+            <text fg={ROLES.mutedText}>{ "•".repeat(secretDraft().length) }</text>
           </box>
         </Show>
       </box>
       <box flexDirection="column" width="100%" flexShrink={0}>
         <Show when={navigatorView().hiddenAbove > 0 && !compactApprovalChrome()}>
-          <text fg="#88827C" wrapMode="none">{"  … " + navigatorView().hiddenAbove + " above"}</text>
+          <text fg={ROLES.dimText} wrapMode="none">{"  … " + navigatorView().hiddenAbove + " above"}</text>
         </Show>
         <For each={navigatorView().rows}>
           {(row) => {
             const model = rowModel(row.node, row.lastSibling);
             return (
               <box height={1} flexDirection="row">
-                <text fg="#F0B38D" wrapMode="none">{model.marker}</text>
-                <text fg="#88827C" wrapMode="none">{model.connector}</text>
+                <text fg={ROLES.selection} wrapMode="none">{model.marker}</text>
+                <text fg={ROLES.dimText} wrapMode="none">{model.connector}</text>
                 <text fg={STATUS_COLOR[model.role]} wrapMode="none">{model.glyph + " "}</text>
                 <text
-                  fg={model.selected ? "#F0B38D" : "#E6E1DC"}
+                  fg={model.selected
+                    ? ROLES.selection
+                    : row.node.kind === "subagent"
+                      ? ROLES.subagent
+                      : ROLES.text}
                   attributes={model.selected ? TextAttributes.BOLD : TextAttributes.NONE}
                   wrapMode="none"
                 >
@@ -1193,7 +1332,7 @@ function App() {
                 <For each={model.segments}>
                   {(segment) => (
                     <>
-                      <text fg="#88827C" wrapMode="none">{" · "}</text>
+                      <text fg={ROLES.dimText} wrapMode="none">{" · "}</text>
                       <text fg={metaColor(segment.role, model.role)} wrapMode="none">{segment.text}</text>
                     </>
                   )}
@@ -1203,17 +1342,20 @@ function App() {
           }}
         </For>
         <Show when={navigatorView().hiddenBelow > 0 && !compactApprovalChrome()}>
-          <text fg="#88827C" wrapMode="none">{"  … " + navigatorView().hiddenBelow + " below"}</text>
-        </Show>
-        <Show when={navigatorHintVisible()} fallback={<box height={0} />}>
-          <text fg="#8D857D" wrapMode="none">{clipText(navigatorHint(), Math.max(1, terminalColumns() - 2))}</text>
+          <text fg={ROLES.dimText} wrapMode="none">{"  … " + navigatorView().hiddenBelow + " below"}</text>
         </Show>
       </box>
-      <box height={1} flexDirection="row" justifyContent="space-between">
-        <text fg="#8D857D">{statusLine()}</text>
-        <text fg="#8D857D">{status() || (legacyAppleTerminal
-          ? "Return send · Shift+Return newline · Tab complete · Select text to copy · Ctrl+C quit"
-          : "Enter send · Shift+Enter newline · Tab complete · Select text to copy · Ctrl+C quit")}</text>
+      <box height={1} flexDirection="row" flexShrink={0}>
+        <Index each={footerLine().split(FOOTER_SEPARATOR)}>
+          {(segment, index) => (
+            <>
+              <Show when={index > 0}>
+                <text fg={ROLES.dimText} wrapMode="none">{FOOTER_SEPARATOR}</text>
+              </Show>
+              <text fg={ROLES.mutedText} wrapMode="none">{segment()}</text>
+            </>
+          )}
+        </Index>
       </box>
     </box>
   );
