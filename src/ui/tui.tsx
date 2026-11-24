@@ -6,19 +6,40 @@ import {
   decodePasteBytes,
   RGBA,
   SyntaxStyle,
+  TextAttributes,
   type CliRenderer,
   type ClipboardService,
+  type ScrollBoxRenderable,
   type TextareaRenderable,
 } from "@opentui/core";
 import { render, useKeyboard, usePaste, useRenderer } from "@opentui/solid";
-import { For, Show, createSignal, onCleanup, type Accessor } from "solid-js";
+import { For, Index, Show, createEffect, createMemo, createSignal, onCleanup, type Accessor } from "solid-js";
 import { createInterface } from "node:readline";
 import packageJson from "../../package.json" with { type: "json" };
 import { copySelectedText } from "./selection-copy.js";
 import type { PermissionMode } from "../types/index.js";
+import { MAIN_AGENT_ID, listSubAgents } from "../runtime/subagents.js";
+import { buildAgentTree, reconcileSelection, visibleAgentRows, type AgentTreeNode, type WorkspaceStatus } from "../runtime/agent-tree.js";
+import { agentTranscripts } from "../runtime/agent-transcript.js";
+import { getSelectedAgentId, setSelectedAgentId, subscribeAgentSelection } from "../runtime/agent-selection.js";
+import { getMainAgentState, sendAgentMessage, stopAllAgents, subscribeWorkspace } from "../runtime/agent-workspace.js";
+import {
+  formatAgentRow,
+  formatComposerPlaceholder,
+  formatComposerPrefix,
+  formatContentStatus,
+  lastSiblingFlags,
+  reduceWorkspaceKey,
+  routeComposerInput,
+  transcriptToUiEntries,
+  type AgentColorRole,
+  type ContentStatusRole,
+  type WorkspaceKey,
+  type WorkspaceKeyState,
+} from "./workspace-view.js";
 
 export type UiKind = "user" | "assistant" | "tool" | "info" | "success" | "error" | "dim" | "markdown" | "diff-add" | "diff-remove" | "diff-context";
-export interface UiEntry { id: number; kind: UiKind; content: string; streaming?: boolean; }
+export interface UiEntry { id: number; kind: UiKind; content: string; streaming?: boolean; /** Sub-agent that produced the entry; absent for main. */ agentLabel?: string; }
 export interface Key { name: string; text?: string; }
 export interface CommandInfo { name: string; description: string; }
 export interface PickItem {
@@ -79,6 +100,26 @@ const [completionSelected, setCompletionSelected] = createSignal(0);
 const [secretMode, setSecretMode] = createSignal(false);
 const [secretDraft, setSecretDraft] = createSignal("");
 const [approvalPromptState, setApprovalPromptState] = createSignal<ApprovalPromptState | null>(null);
+
+// Multi-agent workspace (navigation state only; switching never touches runs).
+const [workspaceRevision, setWorkspaceRevision] = createSignal(0);
+const [selectedAgentIdSignal, setSelectedAgentIdSignal] = createSignal(getSelectedAgentId());
+const [focusMode, setFocusMode] = createSignal<"composer" | "navigator">("composer");
+const [leaderArmedAt, setLeaderArmedAt] = createSignal<number | undefined>(undefined);
+const [nowTick, setNowTick] = createSignal(Date.now());
+const [transcriptRevision, setTranscriptRevision] = createSignal(0);
+const [notice, setNotice] = createSignal<string | null>(null);
+const [terminalColumns, setTerminalColumns] = createSignal(process.stdout.columns ?? 80);
+const [terminalRows, setTerminalRows] = createSignal(process.stdout.rows ?? 24);
+const drafts = new Map<string, string>();
+const scrollPositions = new Map<string, number>();
+const atBottomByAgent = new Map<string, boolean>();
+let scrollbox: ScrollBoxRenderable | undefined;
+let liveTicker: ReturnType<typeof setInterval> | null = null;
+let leaderTimer: ReturnType<typeof setTimeout> | null = null;
+let noticeTimer: ReturnType<typeof setTimeout> | null = null;
+let statusTimer: ReturnType<typeof setTimeout> | null = null;
+
 let secretResolver: ((value: string | null) => void) | null = null;
 let nextId = 1;
 let renderer: CliRenderer | null = null;
@@ -89,7 +130,7 @@ let pickerResolver: ((value: string | null) => void) | null = null;
 let suspendedInputActive = false;
 let historyIndex = -1;
 let historyDraft = "";
-let nextInput = "";
+let pendingNextInput = "";
 let keyInterceptor: ((key: Key) => boolean) | null = null;
 // The runtime registers this so the UI can stop the command the agent is running.
 let terminalStopHandler: (() => void | Promise<void>) | null = null;
@@ -118,6 +159,157 @@ export function permissionBarColor(mode: PermissionMode): string {
       return "#6D625A"; // default — normal
   }
 }
+
+// -----------------------------------------------------------------------------
+// Workspace state helpers (UI-local; runtime semantics live in src/runtime)
+// -----------------------------------------------------------------------------
+
+const STATUS_COLOR: Record<AgentColorRole, string> = {
+  idle: "#8D857D",
+  running: "#E2A078",
+  waiting: "#79B8D1",
+  completed: "#8FCB9B",
+  failed: "#E47D76",
+  stopped: "#88827C",
+};
+
+function metaColor(role: "status" | "detail" | "error" | "muted", status: AgentColorRole): string {
+  if (role === "status") return STATUS_COLOR[status];
+  if (role === "detail") return "#C9C1BA";
+  if (role === "error") return "#E47D76";
+  return "#88827C";
+}
+
+function contentStatusColor(role: ContentStatusRole, status: WorkspaceStatus): string {
+  if (role === "accent") return "#D99168";
+  if (role === "separator") return "#6D625A";
+  if (role === "status") return STATUS_COLOR[status];
+  if (role === "detail") return "#C9C1BA";
+  if (role === "error") return "#E47D76";
+  return "#88827C";
+}
+
+function currentNodes(): AgentTreeNode[] {
+  return buildAgentTree(getMainAgentState(), listSubAgents());
+}
+
+function setTransientStatus(message: string): void {
+  setStatus(message);
+  if (statusTimer) clearTimeout(statusTimer);
+  statusTimer = setTimeout(() => setStatus(""), 4_000);
+}
+
+function showNotice(message: string): void {
+  setNotice(message);
+  if (noticeTimer) clearTimeout(noticeTimer);
+  noticeTimer = setTimeout(() => {
+    setNotice(null);
+    noticeTimer = null;
+  }, 4_000);
+}
+
+function clearNotice(): void {
+  if (noticeTimer) clearTimeout(noticeTimer);
+  noticeTimer = null;
+  setNotice(null);
+}
+
+/** Write text into the composer and record it as the selected agent's draft. */
+function applyComposerText(value: string): void {
+  setDraft(value);
+  setCompletionHiddenFor("");
+  drafts.set(getSelectedAgentId(), value);
+  textarea?.setText(value);
+  textarea?.gotoBufferEnd();
+}
+
+/** Save the current composer text under the agent it belonged to before a switch. */
+function saveComposerDraft(agentId: string): void {
+  drafts.set(agentId, textarea?.plainText ?? draft());
+}
+
+/** Load the target agent's draft (or a pending `setNextInput` value for main). */
+function loadComposerDraft(agentId: string): void {
+  const value = agentId === MAIN_AGENT_ID && pendingNextInput ? pendingNextInput : drafts.get(agentId) ?? "";
+  if (agentId === MAIN_AGENT_ID && pendingNextInput) {
+    pendingNextInput = "";
+    drafts.set(MAIN_AGENT_ID, value);
+  }
+  if (secretMode()) return;
+  setDraft(value);
+  setCompletionHiddenFor("");
+  drafts.set(agentId, value);
+  textarea?.setText(value);
+  textarea?.gotoBufferEnd();
+  historyIndex = -1;
+}
+
+function applyFocus(mode: "composer" | "navigator"): void {
+  setFocusMode(mode);
+  if (mode === "navigator") {
+    setInputActive(false);
+    textarea?.blur();
+    return;
+  }
+  if (pickerResolver || secretResolver || approvalPromptState()) return;
+  setInputActive(true);
+  textarea?.focus();
+}
+
+function isScrollAtBottom(element: ScrollBoxRenderable): boolean {
+  return element.scrollTop + element.viewport.height >= element.scrollHeight - 2;
+}
+
+function saveScrollFor(agentId: string): void {
+  if (!scrollbox) return;
+  scrollPositions.set(agentId, scrollbox.scrollTop);
+  atBottomByAgent.set(agentId, isScrollAtBottom(scrollbox));
+}
+
+function restoreScrollFor(agentId: string): void {
+  const element = scrollbox;
+  if (!element) return;
+  const saved = scrollPositions.get(agentId);
+  // First view starts at the bottom; otherwise the recorded tail-follow state
+  // survives the switch (an agent left at the bottom keeps following).
+  const follow = saved === undefined || atBottomByAgent.get(agentId) === true;
+  atBottomByAgent.set(agentId, follow);
+  const target = follow ? Infinity : saved!;
+  // Restore after the switched transcript's layout, so a saved offset cannot
+  // be clamped against the previous agent's content before the switch paints.
+  element.afterLayout(() => {
+    if (getSelectedAgentId() !== agentId) return;
+    element.scrollTo(target);
+    atBottomByAgent.set(agentId, isScrollAtBottom(element));
+  });
+}
+
+function syncLiveTicker(nodes: readonly AgentTreeNode[]): void {
+  const live = nodes.some((node) => node.status === "running" || node.status === "waiting");
+  if (live && !liveTicker) {
+    setNowTick(Date.now());
+    liveTicker = setInterval(() => {
+      setNowTick(Date.now());
+      const current = currentNodes();
+      if (!current.some((node) => node.status === "running" || node.status === "waiting")) {
+        if (liveTicker) clearInterval(liveTicker);
+        liveTicker = null;
+      }
+    }, 1_000);
+  } else if (!live && liveTicker) {
+    clearInterval(liveTicker);
+    liveTicker = null;
+  }
+}
+
+function armLeaderTimeout(): void {
+  if (leaderTimer) clearTimeout(leaderTimer);
+  leaderTimer = setTimeout(() => {
+    setLeaderArmedAt(undefined);
+    leaderTimer = null;
+  }, 1_500);
+}
+
 const keyHandlers = new Set<(key: Key) => void>();
 const history: string[] = [];
 
@@ -250,20 +442,72 @@ function choosePicker(value: string | null): void {
   resolve?.(value);
 }
 
-function submitInput(): void {
-  if (!inputResolver) return;
-  const value = textarea?.plainText ?? draft();
-  const trimmed = value.trim();
-  if (trimmed && history[0] !== trimmed) history.unshift(trimmed);
-  if (history.length > 100) history.pop();
-  const resolve = inputResolver;
-  inputResolver = null;
-  setInputActive(false);
+/** Clear the consumed draft for an agent and keep the composer focused. */
+function clearComposer(agentId: string): void {
+  drafts.set(agentId, "");
   setDraft("");
   setCompletionHiddenFor("");
   historyIndex = -1;
+  setCompletionSelected(0);
   textarea?.setText("");
+  if (focusMode() === "composer" && !pickerResolver && !secretResolver && !approvalPromptState()) {
+    setInputActive(true);
+    textarea?.focus();
+  }
+}
+
+function pushHistory(text: string): void {
+  if (text && history[0] !== text) history.unshift(text);
+  if (history.length > 100) history.pop();
+}
+
+/** Resolve the pending main REPL question and keep the composer live for the next turn. */
+function submitReplInput(): void {
+  if (!inputResolver) return;
+  const trimmed = (textarea?.plainText ?? draft()).trim();
+  pushHistory(trimmed);
+  const resolve = inputResolver;
+  inputResolver = null;
+  drafts.set(getSelectedAgentId(), "");
+  setDraft("");
+  setCompletionHiddenFor("");
+  historyIndex = -1;
+  setCompletionSelected(0);
+  textarea?.setText("");
+  if (focusMode() === "composer") {
+    setInputActive(true);
+    textarea?.focus();
+  }
   resolve(trimmed);
+}
+
+function submitInput(): void {
+  const value = textarea?.plainText ?? draft();
+  const selectedAgentId = getSelectedAgentId();
+  const route = routeComposerInput({
+    text: value,
+    selectedAgentId,
+    knownAgentIds: currentNodes().map((node) => node.id),
+    mainAwaitingInput: inputResolver !== null,
+  });
+  if (route.kind === "reject") {
+    // Empty submits are suppressed by the UI; every other rejection is explicit
+    // and keeps the draft exactly as typed.
+    if (route.reason !== "empty") showNotice(route.message);
+    return;
+  }
+  if (route.kind === "repl") {
+    submitReplInput();
+    return;
+  }
+  const result = sendAgentMessage(route.agentId, value);
+  if (!result.ok) {
+    showNotice(result.message);
+    return;
+  }
+  if (route.agentId === MAIN_AGENT_ID) pushHistory(value.trim());
+  clearNotice();
+  clearComposer(route.agentId);
 }
 
 function App() {
@@ -280,11 +524,112 @@ function App() {
 
   const legacyAppleTerminal = usesLegacyAppleTerminal();
   const currentPicker = () => picker();
+
+  const updateTerminalSize = (): void => {
+    setTerminalColumns(process.stdout.columns ?? 80);
+    setTerminalRows(process.stdout.rows ?? 24);
+  };
+  updateTerminalSize();
+  activeRenderer.on("resize", updateTerminalSize);
+  onCleanup(() => activeRenderer.off("resize", updateTerminalSize));
+
+  const applyAgentSelection = (id: string): void => {
+    const previous = selectedAgentIdSignal();
+    if (previous === id) return;
+    saveComposerDraft(previous);
+    saveScrollFor(previous);
+    setSelectedAgentIdSignal(id);
+    loadComposerDraft(id);
+    restoreScrollFor(id);
+    clearNotice();
+  };
+
+  const offSelection = subscribeAgentSelection(applyAgentSelection);
+  onCleanup(offSelection);
+
+  const offWorkspace = subscribeWorkspace(() => {
+    setWorkspaceRevision((revision) => revision + 1);
+    const nodes = currentNodes();
+    const reconciled = reconcileSelection(nodes, getSelectedAgentId());
+    if (reconciled !== getSelectedAgentId()) setSelectedAgentId(reconciled);
+    syncLiveTicker(nodes);
+  });
+  onCleanup(offWorkspace);
+
+  // Only the selected agent's transcript may force a re-render or move the
+  // scrollbox; hidden agents keep streaming into the store untouched.
+  const offTranscript = agentTranscripts.subscribe((agentId) => {
+    if (agentId !== getSelectedAgentId()) return;
+    setTranscriptRevision((revision) => revision + 1);
+    if (atBottomByAgent.get(agentId) === true && scrollbox) scrollbox.scrollTo(Infinity);
+  });
+  onCleanup(offTranscript);
+
+  setSelectedAgentIdSignal(getSelectedAgentId());
+  syncLiveTicker(currentNodes());
+  onCleanup(() => {
+    if (liveTicker) clearInterval(liveTicker);
+    if (leaderTimer) clearTimeout(leaderTimer);
+    if (noticeTimer) clearTimeout(noticeTimer);
+    if (statusTimer) clearTimeout(statusTimer);
+    liveTicker = null;
+    leaderTimer = null;
+    noticeTimer = null;
+    statusTimer = null;
+  });
+
+  // Main's transcript is the existing `entries` signal, not a transcript-store
+  // subscription; follow its tail only while main is selected and was at the
+  // bottom before the update. Sub-agent entries use the store subscription.
+  createEffect(() => {
+    if (selectedAgentIdSignal() !== MAIN_AGENT_ID) return;
+    entries();
+    if (atBottomByAgent.get(MAIN_AGENT_ID) === true && scrollbox) scrollbox.scrollTo(Infinity);
+  });
+
+  const tree = createMemo(() => {
+    workspaceRevision();
+    return buildAgentTree(getMainAgentState(), listSubAgents());
+  });
+  const selectedNode = (): AgentTreeNode | undefined => {
+    const id = selectedAgentIdSignal();
+    return tree().find((node) => node.id === id) ?? tree()[0];
+  };
+  const selectedName = (): string => selectedNode()?.name ?? MAIN_AGENT_ID;
+
+  const navigatorCap = (): number => Math.max(1, Math.min(7, terminalRows() - 17));
+  const navigatorView = createMemo(() => {
+    nowTick();
+    const all = tree();
+    const flags = lastSiblingFlags(all);
+    const window = visibleAgentRows(all, selectedAgentIdSignal(), navigatorCap());
+    const start = all.findIndex((node) => node.id === window.rows[0]?.id);
+    return {
+      rows: window.rows.map((node, index) => ({ node, lastSibling: flags[start + index] ?? true })),
+      hiddenAbove: window.hiddenAbove,
+      hiddenBelow: window.hiddenBelow,
+    };
+  });
+  const navigatorLineCount = (): number => {
+    const view = navigatorView();
+    return view.rows.length + (view.hiddenAbove > 0 ? 1 : 0) + (view.hiddenBelow > 0 ? 1 : 0) + 1;
+  };
+
+  const bannerText = (): string | null => {
+    const approval = approvalPromptState();
+    if (approval) return "◔ Approval required from @" + (approval.label ?? MAIN_AGENT_ID);
+    // A picker/secret prompt owns the keyboard; a stale notice never shows then.
+    if (picker() || secretMode()) return null;
+    const rejection = notice();
+    return rejection ? "✗ " + rejection : null;
+  };
+  const bannerRows = (): number => (bannerText() ? 1 : 0);
+
   const terminalPanelRows = (): number => terminalVisible() && terminal()
-    ? terminalPanelHeight(terminalExpanded(), process.stdout.rows ?? 24)
+    ? terminalPanelHeight(terminalExpanded(), terminalRows())
     : 0;
   const overlayAvailableRows = (reservedRows = 0): number =>
-    Math.max(1, (process.stdout.rows ?? 24) - 9 - terminalPanelRows() - reservedRows);
+    Math.max(1, terminalRows() - 9 - 2 - terminalPanelRows() - navigatorLineCount() - bannerRows() - reservedRows);
   const visiblePickerItems = () => {
     const current = picker();
     if (!current) return [];
@@ -337,9 +682,44 @@ function App() {
     textarea?.setText(next);
     textarea?.gotoBufferEnd();
     setDraft(next);
+    drafts.set(getSelectedAgentId(), next);
     setCompletionSelected(0);
     if (item.kind === "command" && submitCommand) submitInput();
   };
+
+  const subEntries = createMemo<UiEntry[]>(() => {
+    if (selectedAgentIdSignal() === MAIN_AGENT_ID) return [];
+    transcriptRevision();
+    const node = selectedNode();
+    return transcriptToUiEntries(agentTranscripts.get(selectedAgentIdSignal()), node?.name ?? selectedAgentIdSignal());
+  });
+  const visibleEntries = (): UiEntry[] => selectedAgentIdSignal() === MAIN_AGENT_ID ? entries() : subEntries();
+
+  const contentStatusSegments = createMemo(() => {
+    const node = selectedNode();
+    return node ? formatContentStatus(node, { now: nowTick(), width: Math.max(20, terminalColumns() - 2) }) : [];
+  });
+
+  const rowModel = (node: AgentTreeNode, lastSibling: boolean) => formatAgentRow(node, {
+    width: Math.max(20, terminalColumns() - 2),
+    now: nowTick(),
+    selected: node.id === selectedAgentIdSignal(),
+    lastSibling,
+    activeAgentName: node.kind === "main" ? getMainAgentState().activeAgentName : undefined,
+  });
+
+  const composerPrefix = (): string => formatComposerPrefix(selectedName(), terminalColumns());
+  const composerPrefixCells = (): number => [...composerPrefix()].length + 1;
+  const composerPlaceholder = (): string => formatComposerPlaceholder(selectedName(), terminalColumns(), composerPrefixCells());
+
+  const navigatorHint = (): string => {
+    if (approvalPromptState() || picker() || secretMode()) return "Navigator paused · finish the prompt to continue";
+    if (focusMode() === "navigator") return "↑↓ select · Enter message · Esc parent · Ctrl+K stop terminal · Ctrl+X Ctrl+K stop all";
+    return "Ctrl+X navigate · ↑↓ select · Enter message · Esc parent · Ctrl+X Ctrl+K stop all";
+  };
+
+  const promptMaxRows = (): number =>
+    Math.max(3, Math.min(8, terminalRows() - 11 - 2 - navigatorLineCount() - bannerRows()));
 
   useKeyboard((event) => {
     const sequence = event.sequence ?? "";
@@ -405,6 +785,34 @@ function App() {
       });
       event.preventDefault();
       return;
+    }
+
+    // Workspace keys run before completion/history/dispatchKey so navigating
+    // can never reach the Escape/Ctrl+C cancellation listeners. Modals own
+    // the keyboard and freeze the navigator.
+    if (!approvalPromptState()) {
+      const workspaceKey: WorkspaceKey =
+        name === "up" ? "up"
+          : name === "down" ? "down"
+            : name === "enter" ? "enter"
+              : name === "escape" ? "escape"
+                : name === "ctrl+x" ? "ctrl+x"
+                  : name === "ctrl+k" ? "ctrl+k"
+                    : "other";
+      const before: WorkspaceKeyState = { focus: focusMode(), selectedAgentId: selectedAgentIdSignal(), leaderArmedAt: leaderArmedAt() };
+      const decision = reduceWorkspaceKey(before, workspaceKey, { nodes: tree(), now: Date.now() });
+      if (decision.state.focus !== before.focus) applyFocus(decision.state.focus);
+      if (decision.state.selectedAgentId !== before.selectedAgentId) setSelectedAgentId(decision.state.selectedAgentId);
+      if (decision.state.leaderArmedAt !== before.leaderArmedAt) setLeaderArmedAt(decision.state.leaderArmedAt);
+      if (workspaceKey === "ctrl+x") armLeaderTimeout();
+      if (decision.action === "stop_all") {
+        const stopped = stopAllAgents();
+        setTransientStatus("Stopped " + stopped + " agents.");
+      }
+      if (decision.consumed) {
+        event.preventDefault();
+        return;
+      }
     }
 
     const suggestions = completionItems();
@@ -475,9 +883,11 @@ function App() {
       event.preventDefault();
       return;
     }
-    // Stop the command the agent is running. Only while the prompt is idle, so
-    // Ctrl+K keeps its usual kill-line meaning while typing.
-    if (name === "ctrl+k" && !inputActive() && terminal() && terminal()!.exitCode === null) {
+    // Stop the command the agent is running. Plain Ctrl+K keeps this meaning
+    // while the navigator owns keys, the prompt is inactive, or the composer is
+    // focused but empty; with text present it stays the textarea's kill-line.
+    if (name === "ctrl+k" && terminal() && terminal()!.exitCode === null
+      && (focusMode() === "navigator" || !inputActive() || !(textarea?.plainText ?? draft()).trim())) {
       setStatus("Stopping terminal…");
       void Promise.resolve(terminalStopHandler?.()).finally(() => setStatus(""));
       event.preventDefault();
@@ -494,11 +904,14 @@ function App() {
       if (currentText) {
         textarea?.setText("");
         setDraft("");
+        drafts.set(getSelectedAgentId(), "");
         setCompletionHiddenFor("");
         historyIndex = -1;
         setCompletionSelected(0);
       } else {
-        process.emit("SIGINT");
+        const anyLive = tree().some((node) => node.status === "running" || node.status === "waiting");
+        // Empty composer: cancel a live selected agent instead of quitting.
+        if (!anyLive) process.emit("SIGINT");
       }
       event.preventDefault();
       return;
@@ -564,30 +977,76 @@ function App() {
         </box>
         <text fg="#89827C">{screen().model} · {screen().project}</text>
       </box>
-      <scrollbox flexGrow={1} flexBasis={0} minHeight={0} stickyScroll stickyStart="bottom" viewportCulling contentOptions={{ layoutMode: "list" }}>
-        <For each={entries()}>
-          {(entry) => (
-            <box flexDirection="column" paddingX={1}>
-              <Show when={entry.kind === "user" || entry.kind === "markdown"}>
-                <text fg={entry.kind === "user" ? "#8FCB9B" : "#6D625A"}>
-                  {entry.kind === "user" ? "❯ You" : "⏺ Agent-Termo"}
-                </text>
-              </Show>
-              <Show when={entry.kind === "diff-add" || entry.kind === "diff-remove"} fallback={
-                <Show when={entry.kind === "markdown" || entry.kind === "diff-context"} fallback={<text fg={colors[entry.kind]}>{entry.content}</text>}>
-                  <Show when={entry.kind === "markdown"} fallback={<text fg={colors["diff-context"]}>{entry.content}</text>}>
-                    <markdown content={entry.content} syntaxStyle={syntaxStyle} streaming={entry.streaming ?? false} />
+      <box flexDirection="column" flexGrow={1} flexBasis={0} minHeight={0}>
+        <box height={1} flexDirection="row" flexShrink={0} paddingX={1}>
+          <For each={contentStatusSegments()}>
+            {(segment) => (
+              <text fg={contentStatusColor(segment.role, selectedNode()?.status ?? "idle")} wrapMode="none">{segment.text}</text>
+            )}
+          </For>
+        </box>
+        <text fg="#6D625A" flexShrink={0} wrapMode="none">{"─".repeat(Math.max(1, terminalColumns() - 2))}</text>
+        <scrollbox
+          ref={(element) => {
+            scrollbox = element;
+            element.verticalScrollBar.onChange = () => {
+              const id = getSelectedAgentId();
+              atBottomByAgent.set(id, isScrollAtBottom(element));
+            };
+            // Tail-follow only when the visible agent was at the bottom before
+            // the content grew; background agents never touch this box.
+            element.content.onSizeChange = () => {
+              const id = getSelectedAgentId();
+              if (atBottomByAgent.get(id) === true) element.scrollTo(Infinity);
+            };
+            element.viewport.onSizeChange = () => {
+              const id = getSelectedAgentId();
+              if (atBottomByAgent.get(id) === true) element.scrollTo(Infinity);
+              else atBottomByAgent.set(id, isScrollAtBottom(element));
+            };
+            restoreScrollFor(getSelectedAgentId());
+          }}
+          flexGrow={1}
+          flexBasis={0}
+          minHeight={0}
+          focusable={false}
+          viewportCulling
+          contentOptions={{ layoutMode: "list" }}
+        >
+          <Show when={visibleEntries().length > 0} fallback={
+            <Show when={selectedAgentIdSignal() !== MAIN_AGENT_ID}>
+              <box paddingX={1}>
+                <text fg="#88827C" wrapMode="none">No activity yet for @{selectedName()}.</text>
+              </box>
+            </Show>
+          }>
+            <Index each={visibleEntries()}>
+              {(entry) => (
+                <box flexDirection="column" paddingX={1}>
+                  <Show when={entry().kind === "user" || entry().kind === "markdown"}>
+                    <text fg={entry().kind === "user" ? "#8FCB9B" : entry().agentLabel ? "#8D857D" : "#6D625A"}>
+                      {entry().kind === "user"
+                        ? "❯ You" + (entry().agentLabel ? " → @" + entry().agentLabel : "")
+                        : "⏺ " + (entry().agentLabel ?? "Agent-Termo")}
+                    </text>
                   </Show>
-                </Show>
-              }>
-                <box width="100%" paddingX={1} backgroundColor={entry.kind === "diff-add" ? "#17351F" : "#3A1D1D"}>
-                  <text fg={entry.kind === "diff-add" ? "#B7E4C7" : "#F0B4AE"}>{entry.content}</text>
+                  <Show when={entry().kind === "diff-add" || entry().kind === "diff-remove"} fallback={
+                    <Show when={entry().kind === "markdown" || entry().kind === "diff-context"} fallback={<text fg={colors[entry().kind]}>{entry().content}</text>}>
+                      <Show when={entry().kind === "markdown"} fallback={<text fg={colors["diff-context"]}>{entry().content}</text>}>
+                        <markdown content={entry().content} syntaxStyle={syntaxStyle} streaming={entry().streaming ?? false} />
+                      </Show>
+                    </Show>
+                  }>
+                    <box width="100%" paddingX={1} backgroundColor={entry().kind === "diff-add" ? "#17351F" : "#3A1D1D"}>
+                      <text fg={entry().kind === "diff-add" ? "#B7E4C7" : "#F0B4AE"}>{entry().content}</text>
+                    </box>
+                  </Show>
                 </box>
-              </Show>
-            </box>
-          )}
-        </For>
-      </scrollbox>
+              )}
+            </Index>
+          </Show>
+        </scrollbox>
+      </box>
       <Show when={terminalVisible() && terminal()} fallback={<box height={0} />}>
         <box height={terminalPanelRows()} border borderStyle="single" borderColor="#6D625A" paddingX={1} flexDirection="column" flexShrink={0}>
           <text fg="#D99168">Terminal · {terminal()!.exitCode === null ? "running" : "exit " + terminal()!.exitCode}</text>
@@ -621,8 +1080,13 @@ function App() {
           </For>
         </box>
       </Show>
+      <Show when={bannerText()} fallback={<box height={0} />}>
+        <text fg={approvalPromptState() ? "#79B8D1" : "#E47D76"} wrapMode="none">
+          {clipText(bannerText() ?? "", Math.max(1, terminalColumns() - 2))}
+        </text>
+      </Show>
       <box border borderStyle="single" borderColor={inputActive() ? permissionBarColor(screen().permissionMode) : "#6D625A"} paddingX={1} flexDirection="row" alignItems="flex-start" flexShrink={0}>
-        <text width={2} fg="#D99168">❯ </text>
+        <text fg="#D99168" wrapMode="none">{composerPrefix() + " "}</text>
         <Show when={secretMode()} fallback={
           <textarea
             ref={(element) => { textarea = element; }}
@@ -631,15 +1095,16 @@ function App() {
             minWidth={0}
             height={promptInputHeight(
               draft(),
-              textarea?.width || (process.stdout.columns ?? 80) - 8,
-              Math.max(3, Math.min(8, (process.stdout.rows ?? 24) - 11)),
+              textarea?.width || Math.max(8, terminalColumns() - 6 - composerPrefixCells()),
+              promptMaxRows(),
             )}
-            focused={inputActive() && !currentPicker()}
-            placeholder="Ask anything… or type / for commands"
+            focused={inputActive() && !currentPicker() && !secretMode() && !approvalPromptState()}
+            placeholder={composerPlaceholder()}
             onContentChange={() => {
               const value = textarea?.plainText ?? "";
               if (value !== draft()) setCompletionHiddenFor("");
               setDraft(value);
+              drafts.set(getSelectedAgentId(), value);
               setCompletionSelected(0);
             }}
             onSubmit={submitInput}
@@ -650,6 +1115,42 @@ function App() {
             <text fg="#D0C9C2">{ "•".repeat(secretDraft().length) }</text>
           </box>
         </Show>
+      </box>
+      <box flexDirection="column" width="100%" flexShrink={0}>
+        <Show when={navigatorView().hiddenAbove > 0}>
+          <text fg="#88827C" wrapMode="none">{"  … " + navigatorView().hiddenAbove + " above"}</text>
+        </Show>
+        <For each={navigatorView().rows}>
+          {(row) => {
+            const model = rowModel(row.node, row.lastSibling);
+            return (
+              <box height={1} flexDirection="row">
+                <text fg="#F0B38D" wrapMode="none">{model.marker}</text>
+                <text fg="#88827C" wrapMode="none">{model.connector}</text>
+                <text fg={STATUS_COLOR[model.role]} wrapMode="none">{model.glyph + " "}</text>
+                <text
+                  fg={model.selected ? "#F0B38D" : "#E6E1DC"}
+                  attributes={model.selected ? TextAttributes.BOLD : TextAttributes.NONE}
+                  wrapMode="none"
+                >
+                  {model.label}
+                </text>
+                <For each={model.segments}>
+                  {(segment) => (
+                    <>
+                      <text fg="#88827C" wrapMode="none">{" · "}</text>
+                      <text fg={metaColor(segment.role, model.role)} wrapMode="none">{segment.text}</text>
+                    </>
+                  )}
+                </For>
+              </box>
+            );
+          }}
+        </For>
+        <Show when={navigatorView().hiddenBelow > 0}>
+          <text fg="#88827C" wrapMode="none">{"  … " + navigatorView().hiddenBelow + " below"}</text>
+        </Show>
+        <text fg="#8D857D" wrapMode="none">{clipText(navigatorHint(), Math.max(1, terminalColumns() - 2))}</text>
       </box>
       <box height={1} flexDirection="row" justifyContent="space-between">
         <text fg="#8D857D">{statusLine()}</text>
@@ -743,10 +1244,14 @@ export function setCommands(items: CommandInfo[]): void { setCommandsState(items
 export function setAgentNames(items: string[]): void { setAgentNamesState([...items].sort()); }
 export function setContextFiles(items: string[]): void { setContextFilesState([...items].sort()); }
 export function setNextInput(value: string): void {
-  nextInput = value;
-  setDraft(value);
-  setCompletionHiddenFor("");
-  textarea?.setText(value);
+  // Applies only while main is the composer target; otherwise it is retained
+  // for the next time main is selected (a sub-agent draft is never overwritten).
+  if (getSelectedAgentId() !== MAIN_AGENT_ID) {
+    pendingNextInput = value;
+    return;
+  }
+  pendingNextInput = "";
+  applyComposerText(value);
 }
 export function usesLegacyAppleTerminal(
   platform = process.platform,
@@ -866,14 +1371,26 @@ export function createInput(): InputController {
       if (inputResolver) throw new Error("An input request is already active.");
       setSecretMode(false);
       setSecretDraft("");
-      setDraft(nextInput);
-      setCompletionHiddenFor("");
       historyIndex = -1;
-      historyDraft = nextInput;
-      textarea?.setText(nextInput);
-      nextInput = "";
-      setInputActive(true);
-      textarea?.focus();
+      if (getSelectedAgentId() === MAIN_AGENT_ID) {
+        if (pendingNextInput) {
+          const value = pendingNextInput;
+          pendingNextInput = "";
+          drafts.set(MAIN_AGENT_ID, value);
+          setDraft(value);
+          setCompletionHiddenFor("");
+          textarea?.setText(value);
+          textarea?.gotoBufferEnd();
+        }
+        // The composer stays live between turns: a draft typed while main was
+        // working is preserved rather than overwritten by an empty prompt.
+        if (focusMode() === "composer" && !pickerResolver && !secretResolver && !approvalPromptState()) {
+          setInputActive(true);
+          textarea?.focus();
+        }
+      }
+      // A sub-agent is selected: its draft and focus stay untouched while the
+      // main question remains pending for when main is selected again.
       return new Promise((resolve) => { inputResolver = resolve; });
     },
     questionSecret(prompt = ""): Promise<string | null> {
@@ -942,19 +1459,26 @@ export function createInput(): InputController {
       textarea?.setText("");
       resolve?.("");
     },
-    showPrompt(): void { setInputActive(true); textarea?.focus(); },
+    showPrompt(): void { applyFocus("composer"); },
     submitExternal(text: string): boolean {
       if (!inputResolver) return false;
       const trimmed = text.trim();
-      if (trimmed && history[0] !== trimmed) history.unshift(trimmed);
-      if (history.length > 100) history.pop();
+      pushHistory(trimmed);
       const resolve = inputResolver;
       inputResolver = null;
-      setInputActive(false);
-      setDraft("");
-      setCompletionHiddenFor("");
-      historyIndex = -1;
-      textarea?.setText("");
+      // Only the main composer is cleared. When a sub-agent is selected its
+      // draft and focus survive an externally resolved main question.
+      if (getSelectedAgentId() === MAIN_AGENT_ID) {
+        drafts.set(MAIN_AGENT_ID, "");
+        setDraft("");
+        setCompletionHiddenFor("");
+        historyIndex = -1;
+        textarea?.setText("");
+        if (focusMode() === "composer" && !pickerResolver && !secretResolver && !approvalPromptState()) {
+          setInputActive(true);
+          textarea?.focus();
+        }
+      }
       resolve(trimmed);
       return true;
     },
