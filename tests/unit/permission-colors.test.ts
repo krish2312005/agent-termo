@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { terminalPanelHeight } from "../../src/ui/tui.js";
+import { permissionBarColor, terminalPanelHeight } from "../../src/ui/tui.js";
 import { ROLES } from "../../src/ui/theme.js";
 
 describe("terminal panel height", () => {
@@ -13,18 +13,32 @@ describe("terminal panel height", () => {
   });
 });
 
-describe("composer border roles", () => {
-  it("uses the subtle structural border when the composer is unfocused", () => {
-    expect(ROLES.composerBorder).toBe("#27332C");
+describe("restored permission-colored composer border", () => {
+  it("maps ask to the structural warm border", () => {
+    expect(permissionBarColor("ask")).toBe("#6D625A");
   });
 
-  it("uses the lime accent when the composer is focused", () => {
-    expect(ROLES.composerBorderFocused).toBe("#B5D98A");
+  it("maps files to the warm brand color", () => {
+    expect(permissionBarColor("files")).toBe("#D99168");
   });
 
-  it("never encodes the permission mode in the composer border", () => {
-    // The bright-red auto-mode border is banned; permission is footer text.
-    expect(ROLES.composerBorder).not.toBe("#FF5555");
-    expect(ROLES.composerBorderFocused).not.toBe("#FF5555");
+  it("restores the old bright red for accept-all auto", () => {
+    // Intentionally restored (Carbon Forge removed it); this is not a banned color.
+    expect(permissionBarColor("auto")).toBe("#FF5555");
+    expect(ROLES.permissionAuto).toBe("#FF5555");
+  });
+
+  it("uses the structural border when the composer is inactive", () => {
+    expect(ROLES.composerBorder).toBe("#6D625A");
+  });
+
+  it("matches the helper results to the permission roles", () => {
+    expect(permissionBarColor("ask")).toBe(ROLES.permissionAsk);
+    expect(permissionBarColor("files")).toBe(ROLES.permissionFiles);
+    expect(permissionBarColor("auto")).toBe(ROLES.permissionAuto);
+  });
+
+  it("has no focus-specific composer border role", () => {
+    expect(ROLES).not.toHaveProperty("composerBorderFocused");
   });
 });
