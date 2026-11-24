@@ -1,9 +1,9 @@
 # Agent-Termo Architecture
 
 **Project:** Agent-Termo — Terminal-Based AI Coding Agent  
-**Version:** 1.1  
-**Status:** FINAL  
-**Date:** 2026-11-16
+**Version:** 1.2  
+**Status:** LIVING  
+**Date:** 2026-11-23
 
 ---
 
@@ -29,7 +29,8 @@
 18. [Performance Characteristics](#performance-characteristics)
 19. [Testing Strategy](#testing-strategy)
 20. [Development Workflow](#development-workflow)
-21. [Related Documentation](#related-documentation)
+21. [Multi-agent Workspace](#multi-agent-workspace)
+22. [Related Documentation](#related-documentation)
 
 ---
 
@@ -876,6 +877,593 @@ Authentication errors:
 
 ---
 
+## Multi-agent Workspace
+
+**Status:** specified 2026-11-23 (Phase 1 investigation + Phase 2 design). No product code exists for this section yet. Verified against working tree at `6a02c44`.
+
+This section is the implementation contract for Claude Code-style sub-agent navigation in the live runtime (`src/main.ts` + `src/ui/tui.tsx`). It is authoritative for backend-expert (runtime) and frontend-expert (UI); test-agent uses §21.9. Do not implement a second agent runtime, and do not treat agent names as identifiers.
+
+### 21.1 Verified current state (what already exists)
+
+| Concern | Current reality (verified) | Consequence for this feature |
+|---|---|---|
+| Main runtime | `runRepl` in `src/main.ts` owns exactly one `conversation: ConversationMessage[]`, one `NimClient`, one `InputController`, one `session` (`StoredSession`). | "main" is a real single agent session. Its transcript is the TUI `entries` log. |
+| Delegation | `runDelegatedAgent` (`src/main.ts`) resolves `.claude/agents/*.md`, calls `spawnSubAgent(toolCall.id, agent.name, task, 0)`, creates a fresh `NimClient`, a local `delegatedMessages` array, runs a 10-minute bounded tool loop, then returns one `ToolResult` to the parent. | Delegation is one-shot. There is no stored session, no follow-up path, and `delegatedMessages` is garbage-collected on return. |
+| Nested delegation | `filterAgentTools(..., allowDelegation=false)` removes `agent:delegate` from every sub-agent. | Only `main -> sub-agent` depth exists. The tree must be generic, but nesting must not be enabled by this feature. |
+| Registry | `src/runtime/subagents.ts`: in-memory `Map<string, SubAgentActivity>`, stable per-spawn `id`, `runId`, agent name, task, status (`running\|waiting\|completed\|failed\|cancelled`), activity, step/budget, timestamps, last 40 tools, last 40 progress lines, output/error. Listeners are error-isolated. `beginSubAgentRun()` scopes the live monitor to the current user turn. | Reusable lifecycle/observability data source. Missing: parent link, per-agent usage, queue count, resume transition, full transcript. |
+| Typed events | `src/runtime/events.ts`: `AgentEventHub` + flat `AgentEvent` union (`turn.*`, `tool.*`, `usage.updated`, `context.updated`). The hub is created per `runToolLoop` and is not reachable by the UI. | It cannot carry cross-agent or background transcript data. It is not extended here. |
+| Main transcript | `src/ui/tui.tsx` global `entries` signal; all `print*` helpers append to it. `MarkdownPrinter` streams assistant text into one entry. Tool calls, terminal output, diffs, errors and completion all render here. | This already is main's complete conversation/activity. Keep it and switch it in/out by selection; do not duplicate it. |
+| Sub-agent presentation | `runDelegatedAgent` calls `addSubAgentProgress` (one line, 400 chars) and `start/endSubAgentTool` (one line, 240 chars). `executeToolWithReview` prints every sub-agent tool call/result to the global main log. `src/ui/subagent-view.ts` is chalk-based and only used by `/subagents`. | Sub-agents have no complete transcript, and their tool output currently leaks into main's log. Both must change. |
+| Input | `createInput().question()` resolves the REPL prompt; it is only pending while the REPL waits for input. During a run the textarea is unfocused (`inputActive=false`). Approval prompts call `input.close()` then take over keys via `listenKeys`, then `input.showPrompt()`; `src/runtime/approval-queue.ts` serializes prompts. | A persistent composer needs: focus during runs, routing by selected agent, suspension (not closing) for approvals. `close()` must not be used for background approvals because it resolves a pending main question with `''`. |
+| Keyboard | `useKeyboard` in `src/ui/tui.tsx`: secret -> approval-style pickers -> completion -> history -> `dispatchKey` (cancellation listeners, prompts) -> Ctrl+O/T/K/C. `withEscapeCancellation` registers Escape/Ctrl+C listeners for the duration of a model request. | All existing behavior must be preserved; navigator keys must run before `dispatchKey` so navigation never cancels. |
+| Scroll | One `scrollbox` with unconditional `stickyScroll` at the bottom. `ScrollBoxRenderable` exposes `scrollTop`, `scrollHeight`, `viewport.height`, `scrollTo()`, `afterLayout()`. | Per-agent scroll positions and conditional tail-follow are implementable without new dependencies. |
+| Baseline | `bun run typecheck` exit 0; `bun run test` 275 passed / 2 skipped (38 files passed, 1 skipped); `bun run build` clean. | Any change must keep these green. |
+
+### 21.2 Decisions
+
+#### D1. Identity and hierarchy
+
+- One identity namespace. `main` has the reserved stable id `"main"` (`MAIN_AGENT_ID`). Every sub-agent instance keeps the id returned by `spawnSubAgent` for its whole life, including follow-up turns. Names are display labels only; the UI must never look up or route by name.
+- Represent parent-child edges explicitly: `SubAgentActivity.parentId`. Today every spawn is a direct child of `main`; the tree builder still uses `parentId`/`depth` so a future nesting change needs no UI rewrite.
+- **Do not enable nesting.** `filterAgentTools` stays unchanged and sub-agents remain unable to call `agent:delegate`. Depth is 1 below main today.
+- **Deviation from the illustrative example:** `main > project-manager > frontend-expert` is not truthful in this runtime. `project-manager` is not a separate runtime parent; it is either the main agent's prompt (selected with `/agent`) or a one-shot delegated agent that cannot delegate. Render `main · project-manager` on the main row when that prompt is active, and render `frontend-expert` as a direct child of main. Do not create a fake `project-manager` node.
+- Status vocabulary exposed to the UI: `idle | running | waiting | completed | failed | stopped`. `cancelled` maps to `stopped`. Main is only ever `idle | running | waiting` (after a failed turn the REPL is idle again; the error remains in its transcript). There is no runtime "Thinking" signal, so the UI must not fabricate one; `running` plus the real `activity` text is the working indicator.
+- Status source of truth: `SubAgentActivity.status` for sub-agents; `MainAgentState.status` for main. The tree is always derived, never stored.
+
+#### D2. Transcript ownership and event contract
+
+Three owners, one writer each; no duplicated transcript:
+
+1. **Main transcript** = the existing `entries` signal/`appendLog` path in `src/ui/tui.tsx`. It already records user messages, streamed assistant markdown, tool calls/results, terminal output, diffs, errors and completion. It is retained across workspace switches. No new main transcript store.
+2. **Sub-agent transcripts** = new `src/runtime/agent-transcript.ts`, keyed by agent id, append-only for the session, bounded. Every sub-agent event is recorded there by the runtime before/after the corresponding action. It supports late subscribers by exposing a snapshot read, so mounting or switching the UI never misses history.
+3. **Lifecycle/activity** = `src/runtime/subagents.ts` (extended). Used for navigator status/metadata; it does not store conversation text.
+
+`AgentEventHub` is **not extended**. Rationale: it is run-local (created inside `runToolLoop`), has no replay or late-subscriber snapshot, and carries no transcript text; threading it through every delegated turn would add coupling without giving the UI history when it switches agents. Existing six events and `tests/unit/events.test.ts` stay unchanged.
+
+Transcript content rules (never invented):
+
+- The initial user entry is the delegated `task` plus the optional `context` supplied by the parent; the full system-prompt wrapper is not displayed.
+- Follow-up user entries are the exact submitted text.
+- Assistant entries are the streamed model text (the same `onChunk` stream), finalized with the authoritative final content.
+- Tool entries record name + meaningful args summary and, on completion, the full result/error up to the cap. `bash:execute` records the command and its stdout/stderr; file tools record the path, applied/rejected state and diff stats; other tools record output/error.
+- Lifecycle status entries are recorded only for transitions: spawned/running, waiting for approval, resumed, completed, failed, stopped. Per-iteration "waiting for the model" strings stay in the registry `activity`, not the transcript.
+- Errors are recorded as `error` entries and also set the failed status.
+- Caps: 500 entries and 256 KiB of text per agent; per-entry text cap 8,000 chars; tool result cap 8,000 chars. When a cap is hit, the oldest entries are dropped and a single `truncated` entry is kept stating that older activity was dropped. Transcripts are session-memory only (not persisted across restarts).
+
+#### D3. Follow-up dispatch and lifecycle policy
+
+Public API (single entry point used by the UI):
+
+```ts
+// src/runtime/agent-workspace.ts
+export type AgentMessageResult =
+  | { ok: true; disposition: 'dispatched' | 'queued'; queueLength: number }
+  | { ok: false; reason: 'unknown_agent' | 'empty' | 'duplicate' | 'queue_full' | 'unavailable'; message: string };
+
+export function sendAgentMessage(agentId: string, text: string): AgentMessageResult;
+```
+
+`sendAgentMessage` is synchronous: it decides and starts/resumes work, then returns; it never waits for a model turn. The UI can therefore update immediately. It routes strictly by stable id. Unknown id is always a rejection; it must never fall back to the parent or to the selected agent.
+
+Disposition matrix (`decideMessageDisposition`, pure, exported for tests):
+
+| Target state | Disposition | Behavior |
+|---|---|---|
+| `idle` (main only) | dispatch | If the REPL has a pending `question()`, resolve it with the text via `input.submitExternal(text)`; otherwise enqueue and drain at the next REPL loop top. |
+| `running` | queue | Append to that agent's FIFO queue (max 10), show `queued N`; drained at the **end of the current turn** (safe point). Never inject into a running conversation mid-turn. |
+| `waiting` (approval) | queue | Same queue; the pending approval must be answered first. Queued messages never answer approvals. |
+| `completed` | dispatch | Append a user message to the same stored conversation and start a new turn on the same `NimClient`/messages array. No new agent record, no re-spawn. |
+| `failed` | dispatch | Same as completed; history (including the failure) is preserved; status returns to running. |
+| `stopped` (cancelled) | dispatch | Same as completed. Explicitly allowed by the spec: the conversation is preserved and resumable. |
+| queue full (10) | reject | `@name already has 10 queued messages…` |
+| duplicate | reject | Exact trimmed text already in this agent's queue, or dispatched to it within the last 2,000 ms. |
+| empty | reject | UI normally suppresses; API returns `empty`. |
+| unknown id | reject | `No agent with id "…" exists in this session.` Never redirect. |
+
+Queueing waiting until the **turn boundary** is deliberate: it preserves parent semantics (the parent's `agent:delegate` ToolResult reflects only the initial turn), keeps assistant/tool message ordering valid, and avoids injecting user text between an assistant tool-call message and its tool results. The maximum wait is the existing 10-minute per-turn budget.
+
+Main-agent messages while main is running are queued the same way; the REPL drains one queued message per loop iteration after the current turn returns. A queued main message is then processed by the normal turn path (it is echoed and persisted as a user message; it is not interleaved into the turn that was already running).
+
+Follow-up turn mechanics:
+
+- At `runRepl` startup, register main once: `registerMainAgent({ submitExternal: (text) => input.submitExternal(text), cancel: () => nimClient.cancelCurrentRequest() })`; initialize `setMainAgentState({ status: 'idle', activity: 'ready', usage: nimClient.getUsage() })`, then update `status`/`activity`/`goal`/`usage` at the turn boundaries listed in D4. `startedAt` and `queued` are workspace-owned.
+- One `DelegatedAgentSession` per spawned sub-agent, stored in `src/main.ts`: `{ id, agent, task, parentId, client, messages, input, permissionMode, allowedCommands, projectRoot, queue, status, running, cancelRequested, startedAt, lastTurnEndedAt }`.
+- Initial delegation: create the session, register the handle, run one turn, return the same `ToolResult` to the parent as today. If messages were queued during that turn, start a new turn asynchronously after the result is returned.
+- Follow-up: append the user message(s) to `session.messages` (same array), set status running via `resumeSubAgent(id)`, record the user transcript entry, and run `runDelegatedTurn(session)` without blocking the UI. Reuses the same `NimClient`, model, agent definition, permission mode, allowed commands and project root.
+- The turn runner has one `finally` drain: after any terminal status, if the session queue is non-empty it immediately starts the next turn on the same session. This closes the "message arrived just as the turn ended" race; the handle's status check plus the finally-drain must never drop or duplicate a queued message.
+- Tool-call ids in the stored sub-agent conversation are namespaced per turn (`<turnSeq>-<modelCallId>`) in both the assistant `toolCalls` entry and the matching tool result, so a follow-up cannot collide with ids from an earlier turn. The registry/transcript `callId` uses the same namespaced value.
+- The completion/evidence gate (`verifyCompletionWithChecks`) still runs every turn. Per-turn verification text is the original task for the initial turn, or the concatenated follow-up instruction(s) for a follow-up turn.
+- `recordTaskAction` for follow-ups writes to a detached local `TaskState` (not the parent's); the parent's task state is never mutated by a follow-up.
+- Checkpoints for follow-ups use a per-agent lazily created checkpoint (`createCheckpoint(projectRoot, 'Sub-agent <name>: <task>', 'automatic')`) instead of the parent's `ensureTaskCheckpoint` closure, which may no longer be valid.
+- Follow-up results are visible in the sub-agent's workspace and conversation. They are **not** injected into the parent model's conversation automatically; the parent does not receive a new `ToolResult`.
+
+#### D4. UI state boundaries, focus and keyboard
+
+- Runtime state: registry + main state + session records (D1-D3).
+- Navigation state: new `src/runtime/agent-selection.ts` holds the selected agent id and notifies subscribers. The UI is the only writer and validates with `reconcileSelection`; the runtime reads it only for cancellation scoping. Selection changes do not touch execution.
+- Conversation rendering: main `entries` vs the selected agent's transcript snapshot (D2).
+- Composer state: per-agent drafts (`Map<agentId, string>`), focus mode (`composer | navigator`), leader timeout, approval modal state, notices. Never carry a draft across agents silently.
+- Focus rules:
+  - Default focus is the composer. Typing, cursor keys, Tab completion and history behave exactly as today while the composer is focused.
+  - `Ctrl+X` enters navigator focus (and arms the stop-all chord); it does not cancel anything. Entering navigator focus sets `inputActive=false` and blurs the textarea; it highlights the selected row. Enter/`Esc` at main restore `inputActive=true` and focus the composer.
+  - Navigator: `↑`/`↓` move selection (clamped, no wrap) and switch the workspace immediately; `Enter` focuses the composer for that agent; `Esc` selects the parent (at main it focuses the composer).
+  - `Ctrl+X` then `Ctrl+K` within the leader window (default 1,500 ms) calls `stopAllAgents()`. Any other key disarms the chord and is processed normally. Plain `Ctrl+K` keeps its existing terminal-stop meaning: it stops the running terminal when the navigator has focus, when the composer is focused with an empty draft, or when the prompt is inactive; with a non-empty draft it stays with the textarea (kill-line), exactly as today.
+  - Navigator keys are handled and `preventDefault()`ed **before** `dispatchKey`, so navigating can never reach the Escape/Ctrl+C cancellation listeners or stop an agent.
+  - Modals own the keyboard: approval prompt, picker, secret prompt. The navigator is frozen and the composer is visible but unfocused with an explicit banner naming the owner (`Approval required from @frontend-expert`). Keys are dispatched to the modal exactly as today.
+- `Ctrl+C` while the composer is focused: keep existing copy/clear behavior. When the composer is empty, dispatch to the cancellation listeners if the selected agent is running/waiting; only emit SIGINT (quit) when nothing is running. This preserves cancel semantics that were previously reachable because the composer was unfocused during runs.
+- Composer stays live during runs: `submitInput` must not set `inputActive=false` when it dispatches/queues to an agent; it clears the consumed draft and keeps focus. `createInput().question()` must not overwrite the textarea when the selected agent is not main (leave the sub-agent draft untouched and keep the pending main question pending). `createInput` gains three methods: `submitExternal(text): boolean` (resolve a pending `question()`; false when none), `suspend(): void` (blur, preserve draft and pending question), `resume(): void` (restore focus unless a modal is active). The existing minimal `InputController` used by `executeToolWithReview` gets `suspend?`/`resume?` as optional so current test stubs keep compiling.
+- Per-agent drafts and `setNextInput`: `setNextInput` applies only when the selected agent is main; if a sub-agent is selected it is retained for the next main selection. Switching saves the current textarea text to the old agent's draft and loads the target's draft.
+- Main state updates (all in `src/main.ts`): turn start -> `{ status:'running', activity:'working', goal: taskState.goal, activeAgentName }`; approval prompt -> `{ status:'waiting', activity:'waiting for your approval' }` then back to running; every model response -> `{ usage: nimClient.getUsage() }`; turn end (including failure/cancel) -> `{ status:'idle', activity:'ready', usage }` before the REPL awaits input again.
+- Preserved shortcuts: `Ctrl+O`, `Ctrl+T`, `Tab`, `Shift+Enter`, history `↑/↓`, completion menu keys, picker keys, secret-entry keys, `/subagents`, approval Y/A/N, and `Ctrl+K` terminal stop (see nuance above). No existing binding is removed.
+- `Ctrl+X Ctrl+K` does not exist today. It is added here as the deliberate stop-all; the example hint therefore becomes truthful. "Stop all" requests cancellation on every registered handle (main `NimClient.cancelCurrentRequest()` plus each live sub-agent), clears all queued messages, sets sub-agent status to stopped when their loops unwind, and reports `Stopped N agents.` It never kills an already-running tool call; that call finishes or hits its own timeout, and the loop stops before the next iteration.
+
+Keyboard table:
+
+| Context | Key | Action |
+|---|---|---|
+| Any (not modal/secret/picker) | `Ctrl+X` | Enter navigator focus; arm stop-all chord (1,500 ms) |
+| Navigator | `↑` / `↓` | Previous/next agent (clamped); switch workspace immediately |
+| Navigator | `Enter` | Focus composer for the selected agent |
+| Navigator | `Esc` | Select parent; at main, focus composer |
+| Navigator | `Ctrl+X`, then `Ctrl+K` | Stop all agents |
+| Navigator | `Ctrl+K` (no chord) | Existing terminal-process stop |
+| Composer | `Enter` | Route via `routeComposerInput` (below) |
+| Composer | `↑` / `↓` / `Tab` / `Shift+Enter` | Existing cursor/history/completion/newline behavior |
+| Composer | `Esc` | Existing completion close / request cancellation; not navigation |
+| Composer | `Ctrl+K` (empty draft, no chord) | Existing terminal-process stop; with text, textarea kill-line |
+| Composer | `Ctrl+C` | Existing copy/clear; cancel if selected agent is running and text is empty; else quit |
+| Approval | `Y`/`Enter`, `A`, `N`/`Esc` | Existing command/file approval semantics |
+
+Composer routing is a pure decision (`src/ui/workspace-view.ts`):
+
+```ts
+export type ComposerRoute =
+  | { kind: 'repl' }
+  | { kind: 'agent'; agentId: string }
+  | { kind: 'reject'; reason: 'empty' | 'command_while_busy' | 'unknown_agent'; message: string };
+
+export function routeComposerInput(input: {
+  text: string;
+  selectedAgentId: string;
+  knownAgentIds: readonly string[];
+  mainAwaitingInput: boolean;
+}): ComposerRoute;
+```
+
+Rules: empty -> reject; slash commands and `exit`/`quit` always belong to the main REPL (allowed only while main is awaiting input; otherwise explicit `command_while_busy` rejection, never sent to a sub-agent); non-command text goes to the selected agent. When the selected agent is main and the REPL is awaiting input, `repl`; when main is running, `agent(main)` so it is queued. When a sub-agent is selected, `agent(id)` even while the main REPL is awaiting input; the pending main question stays pending. The composer clears on a successful dispatch/queue and stays focused.
+
+#### D5. Concurrency, approvals, cancellation
+
+- The approval queue (`src/runtime/approval-queue.ts`) remains the only serializer for interactive prompts across main and sub-agents. No new mutex.
+- `executeToolWithReview` gains an optional `quiet` flag (sub-agent path) and an approval label. Quiet suppresses sub-agent tool/diff prints in main's log; approval prompts are always global and prefixed with `[agent-name]`. UI plumbing: `promptCommandApproval(command, requester?)`, `promptAcceptReject(message, requester?)`, and `setApprovalPrompt(active: boolean, label?: string)` (exported through `src/ui/index.ts` and `src/ui/screen.ts`); the label is the requesting agent's display name, or `'main'`.
+- Approvals call `input.suspend()` / `input.resume()` (new optional methods) instead of `close()`/`showPrompt()`. Suspend blurs the composer, preserves the draft and any pending REPL question, and remembers whether the composer was the keyboard owner; resume restores that exact state (composer focus stays composer, navigator focus stays navigator) unless a picker/secret/approval is still active. This is required because a background sub-agent may now request approval while the main REPL is awaiting input; `close()` would resolve that question with `''` and destroy the draft.
+- A pending approval sets the requesting agent's status `waiting`; messages to it queue. It does not block other agents except when they also need the FIFO approval prompt.
+- No deadlocks: an approval is always answerable once a foreground picker/secret prompt is completed or cancelled; queued messages never answer prompts; stop-all cancels requests but the approval remains answerable.
+- `executeToolWithReview` accepts an optional `shouldAbort()` predicate for sub-agent turns. It is checked after approval and before applying/executing, so a stop-all cannot still apply a just-approved file change. It returns a cancelled `ToolResult`.
+- Cancellation scoping: main model calls keep the existing global Escape/Ctrl+C cancellation (unchanged). Follow-up sub-agent turns pass `shouldCancel: () => getSelectedAgentId() === session.id`, so Escape in the composer cannot silently cancel a background agent that is not selected. Initial delegated runs keep the existing behavior (global cancellation while the parent run is active). `Ctrl+X Ctrl+K` explicitly cancels everything.
+- Provider/model selection is copied at spawn. A later `/model` or provider switch applies to new delegations only; existing sessions keep their client. Documented limitation.
+- The terminal panel and `bash:start/read/stop` hooks remain global (one terminal at a time). Concurrent agents' terminal output may interleave there; each agent's own command/output is still recorded in its transcript.
+
+### 21.3 Type contracts
+
+```ts
+// src/runtime/subagents.ts — additive changes (existing behavior preserved;
+// test fixtures that construct SubAgentActivity gain parentId/queued)
+import type { TokenUsage } from '../types/index.js';
+
+export const MAIN_AGENT_ID = 'main';
+
+export interface SubAgentActivity {
+  id: string;
+  runId: number;
+  parentId: string;          // MAIN_AGENT_ID for every spawn today
+  agent: string;             // display name only
+  task: string;
+  status: 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled';
+  activity: string;
+  step: number;
+  budget: number;
+  startedAt: number;         // epoch ms, first spawn; never reset on resume
+  endedAt?: number;          // epoch ms of the last finished turn
+  tools: SubAgentToolCall[];
+  progress: string[];
+  output?: string;
+  error?: string;
+  usage?: TokenUsage;        // cumulative for this agent (NimClient.getUsage())
+  queued: number;            // messages waiting for the next turn (0..10)
+}
+
+export type SubAgentEventType =
+  | 'run' | 'spawned' | 'activity' | 'tool-start' | 'tool-end'
+  | 'progress' | 'waiting' | 'finished' | 'resumed' | 'usage' | 'queued';
+
+export function spawnSubAgent(
+  requestId: string,
+  agent: string,
+  task: string,
+  budget?: number,
+  parentId?: string,         // default MAIN_AGENT_ID; derived id never equals parentId
+): string;
+
+export function resumeSubAgent(id: string): boolean; // terminal -> running; clears error/output/endedAt
+export function setSubAgentUsage(id: string, usage: TokenUsage): void;
+export function setSubAgentQueued(id: string, count: number): void;
+export function clearSubAgentActivity(): void; // clears rows, keeps listeners, emits 'run' (/clear)
+```
+
+```ts
+// src/runtime/agent-tree.ts — pure, no I/O, no UI imports
+import type { SubAgentActivity } from './subagents.js';
+import type { TokenUsage } from '../types/index.js';
+
+export type WorkspaceStatus = 'idle' | 'running' | 'waiting' | 'completed' | 'failed' | 'stopped';
+
+export interface MainAgentState {
+  status: 'idle' | 'running' | 'waiting';
+  activity: string;            // single line, e.g. "waiting for your approval"
+  activeAgentName?: string;    // the /agent prompt currently active, if any
+  goal?: string;               // taskState.goal
+  usage?: TokenUsage;          // nimClient.getUsage()
+  queued: number;              // queued main messages (0..10)
+  startedAt: number;           // session start, epoch ms
+}
+
+export interface AgentTreeNode {
+  id: string;
+  name: string;                // 'main' or the sub-agent display name
+  kind: 'main' | 'subagent';
+  parentId: string | null;
+  depth: number;               // main = 0
+  status: WorkspaceStatus;
+  activity: string;
+  task: string;
+  error?: string;              // sub-agent error, first line only
+  startedAt: number;
+  endedAt?: number;
+  usage?: TokenUsage;
+  childCount: number;
+  activeChildCount: number;    // direct children with status running|waiting
+  queued: number;
+  duplicateName: boolean;      // a sibling has the same display name
+}
+
+export function workspaceStatusOf(status: SubAgentActivity['status']): WorkspaceStatus;
+
+/** DFS pre-order: main, then each child subtree sorted by (startedAt, id). Orphans attach to main. */
+export function buildAgentTree(main: MainAgentState, subagents: readonly SubAgentActivity[]): AgentTreeNode[];
+
+/** Clamped, no wrap. Unknown current id -> main. */
+export function moveAgentSelection(nodes: readonly AgentTreeNode[], selectedId: string, delta: -1 | 1): string;
+export function parentAgentId(nodes: readonly AgentTreeNode[], id: string): string | null;
+export function reconcileSelection(nodes: readonly AgentTreeNode[], selectedId: string): string; // id or MAIN_AGENT_ID
+export function visibleAgentRows(
+  nodes: readonly AgentTreeNode[],
+  selectedId: string,
+  maxRows: number,
+): { rows: AgentTreeNode[]; hiddenAbove: number; hiddenBelow: number };
+```
+
+```ts
+// src/runtime/agent-transcript.ts — per-agent conversation store
+import type { WorkspaceStatus } from './agent-tree.js';
+
+export type AgentTranscriptEvent =
+  | { type: 'user'; agentId: string; text: string; at: number }
+  | { type: 'assistant.start'; agentId: string; messageId: string; at: number }
+  | { type: 'assistant.delta'; agentId: string; messageId: string; text: string; at: number }
+  | { type: 'assistant.end'; agentId: string; messageId: string; finalText?: string; at: number }
+  | { type: 'tool.start'; agentId: string; callId: string; name: string; args: string; at: number }
+  | { type: 'tool.end'; agentId: string; callId: string; ok: boolean; result?: string; at: number }
+  | { type: 'status'; agentId: string; status: WorkspaceStatus; detail?: string; at: number }
+  | { type: 'error'; agentId: string; message: string; at: number };
+
+export type AgentTranscriptEntryKind = 'user' | 'assistant' | 'tool' | 'status' | 'error' | 'truncated';
+
+export interface AgentTranscriptEntry {
+  id: string;                  // unique within the store
+  agentId: string;
+  kind: AgentTranscriptEntryKind;
+  at: number;                  // epoch ms
+  text: string;                // user/assistant/status/error text; tool summary
+  streaming?: boolean;          // assistant only
+  messageId?: string;          // assistant correlation
+  tool?: {
+    callId: string;
+    name: string;
+    args: string;              // one-line meaningful args summary
+    state: 'running' | 'ok' | 'failed';
+    result?: string;           // capped output/error
+    startedAt: number;
+    endedAt?: number;
+  };
+}
+
+export const MAX_TRANSCRIPT_ENTRIES = 500;
+export const MAX_TRANSCRIPT_TEXT = 8_000;          // chars per entry
+export const MAX_TRANSCRIPT_BYTES_PER_AGENT = 256 * 1024;
+
+export function applyTranscriptEvent(
+  entries: readonly AgentTranscriptEntry[],
+  event: AgentTranscriptEvent,
+): AgentTranscriptEntry[];
+
+export function summarizeToolArgs(name: string, args: Record<string, unknown>): string;
+
+export interface AgentTranscriptStore {
+  append(event: AgentTranscriptEvent): void;
+  get(agentId: string): readonly AgentTranscriptEntry[];
+  subscribe(listener: (agentId: string) => void): () => void;
+  clearAgent(agentId: string): void;
+  clearAll(): void;
+}
+export function createAgentTranscriptStore(): AgentTranscriptStore;
+export const agentTranscripts: AgentTranscriptStore; // default instance used by runtime + UI
+```
+
+Invariants: every entry belongs to exactly one `agentId`; assistant deltas only update an entry with the matching `agentId` + `messageId`; `tool.end` only updates the matching `agentId` + `callId`; a store mutation notifies listeners with the affected id; `get()` returns a stable snapshot (never mutates under a reader).
+
+```ts
+// src/runtime/agent-selection.ts — navigation state only
+export function getSelectedAgentId(): string;
+export function setSelectedAgentId(id: string): void;
+export function subscribeAgentSelection(listener: (id: string) => void): () => void;
+export function resetAgentSelection(): void; // main
+```
+
+```ts
+// src/runtime/agent-workspace.ts — handles, main state, dispatch, stop-all
+import type { MainAgentState, WorkspaceStatus } from './agent-tree.js';
+
+export const MAX_QUEUED_MESSAGES_PER_AGENT = 10;
+export { MAIN_AGENT_ID } from './subagents.js';
+
+export interface AgentHandle {
+  readonly id: string;
+  readonly kind: 'subagent';
+  status(): WorkspaceStatus;
+  send(text: string): AgentMessageResult; // same semantics as sendAgentMessage
+  cancel(): void;
+}
+
+/** Main is built in: the workspace owns its state, queue and duplicate window; the REPL supplies only the I/O. */
+export interface MainAgentBindings {
+  /** Resolve a pending `input.question()` with this text; false when none is pending. */
+  submitExternal(text: string): boolean;
+  cancel(): void; // nimClient.cancelCurrentRequest()
+}
+
+export interface AgentWorkspace {
+  registerMainAgent(bindings: MainAgentBindings): () => void;
+  registerHandle(handle: AgentHandle): () => void;
+  send(agentId: string, text: string): AgentMessageResult;
+  getMainState(): MainAgentState;
+  setMainState(patch: Partial<Pick<MainAgentState, 'status' | 'activity' | 'activeAgentName' | 'goal' | 'usage'>>): void; // `queued`/`startedAt` are workspace-owned
+  takeQueuedMainMessage(): string | undefined; // FIFO; decrements queued
+  subscribe(listener: () => void): () => void; // main state + registry events
+  stopAll(): number;                            // cancellation requests issued
+  reset(): void;                                // cancel + clear registry/transcripts/main queue
+}
+
+export function createAgentWorkspace(): AgentWorkspace; // test seam (also subscribes to subagents.ts)
+export const agentWorkspace: AgentWorkspace;            // default instance used by runtime + UI
+
+// Convenience wrappers over the default instance:
+export function sendAgentMessage(agentId: string, text: string): AgentMessageResult;
+export function getMainAgentState(): MainAgentState;
+export function setMainAgentState(
+  patch: Partial<Pick<MainAgentState, 'status' | 'activity' | 'activeAgentName' | 'goal' | 'usage'>>,
+): void;
+export function takeQueuedMainMessage(): string | undefined;
+export function subscribeWorkspace(listener: () => void): () => void;
+export function stopAllAgents(): number;
+export function resetAgentWorkspace(): void; // keeps the registered main handle
+```
+
+```ts
+// src/ui/workspace-view.ts — pure presentation helpers (no OpenTUI imports)
+import type { AgentTreeNode, WorkspaceStatus } from '../runtime/agent-tree.js';
+import type { AgentTranscriptEntry } from '../runtime/agent-transcript.js';
+import type { UiEntry } from './tui.js'; // type-only
+
+export type AgentColorRole = 'idle' | 'running' | 'waiting' | 'completed' | 'failed' | 'stopped';
+export function agentStatusGlyph(status: WorkspaceStatus): string;
+export function formatAgentRow(
+  node: AgentTreeNode,
+  opts: { width: number; now: number; selected: boolean },
+): { prefix: string; glyph: string; label: string; meta: string; role: AgentColorRole; selected: boolean };
+export function transcriptToUiEntries(
+  entries: readonly AgentTranscriptEntry[],
+  agentName: string,
+): UiEntry[]; // sets the new optional UiEntry.agentLabel
+
+// Pure keyboard decision so navigation is testable without a terminal.
+export type WorkspaceKey = 'up' | 'down' | 'enter' | 'escape' | 'ctrl+x' | 'ctrl+k' | 'other';
+export interface WorkspaceKeyState {
+  focus: 'composer' | 'navigator';
+  selectedAgentId: string;
+  leaderArmedAt?: number; // epoch ms; set by ctrl+x
+}
+export function reduceWorkspaceKey(
+  state: WorkspaceKeyState,
+  key: WorkspaceKey,
+  ctx: { nodes: readonly AgentTreeNode[]; now: number; leaderWindowMs?: number /* default 1500 */ },
+): { state: WorkspaceKeyState; action: 'none' | 'stop_all'; consumed: boolean };
+```
+
+`UiEntry` gains one optional field: `agentLabel?: string` (display name of the agent that produced the entry). Existing renderers default to `Agent-Termo`.
+
+### 21.4 Data flow
+
+Spawn -> events -> transcript -> UI:
+
+```
+main runToolLoop sees agent:delegate(tc)
+  -> resolveDelegation + loadProjectAgents
+  -> spawnSubAgent(tc.id, name, task, 0, MAIN_AGENT_ID)          [registry: parentId, status running]
+  -> spawnSubAgent emits 'spawned' -> subscribeWorkspace -> UI navigator snapshot bump
+  -> create DelegatedAgentSession (client, messages, tools, handle registered)
+  -> agentTranscripts.append(user task)
+  -> runDelegatedTurn:
+       status running -> transcript status
+       model onChunk -> assistant.delta -> transcript store notifies UI (only selected agent renders)
+       tool.start -> executeToolWithReview(quiet) -> tool.end -> transcript + registry tool events
+       finishSubAgent(completed|failed|cancelled) -> transcript status/error -> registry 'finished'
+  -> return ToolResult to parent (unchanged)
+```
+
+Composer -> dispatch -> resume -> events:
+
+```
+composer Enter
+  -> routeComposerInput({text, selectedAgentId, knownAgentIds, mainAwaitingInput})
+     'repl'  -> existing input.question resolution (main only)
+     'agent' -> sendAgentMessage(targetId, text)
+     'reject'-> explicit composer notice; nothing is redirected
+  -> agentWorkspace.send:
+       sub-agent idle/completed/failed/stopped -> append user message to the SAME session messages
+                                        + transcript user entry + resume status running
+                                        + runDelegatedTurn(session) in background
+       sub-agent running/waiting      -> queue + registry queued count
+       main idle                      -> MainAgentBindings.submitExternal(text) (or queue if no pending question)
+       main running/waiting           -> queue (drained by the REPL at the next loop top)
+  -> when the running turn ends: if queue non-empty, start the next turn on the same session
+  -> selection change never calls a runtime mutator except setSelectedAgentId
+```
+
+### 21.5 Lifecycle and retention
+
+| Agent | States | Transitions |
+|---|---|---|
+| main | idle, running, waiting | idle -> running on a user turn; running <-> waiting around approvals; running -> idle when the turn returns (including failure/cancel); never completed/stopped |
+| sub-agent | running, waiting, completed, failed, stopped | running <-> waiting around approvals; running -> completed/failed/stopped; completed/failed/stopped -> running on a follow-up dispatch |
+
+Retention: sub-agent registry rows and transcripts live for the session. `beginSubAgentRun()` only scopes the legacy live monitor; the workspace navigator uses `listSubAgents()` (all rows) so finished agents stay inspectable. `/clear` cancels agents and calls `resetAgentWorkspace()` (clears registry rows + transcripts + queues, resets main state and selection to main). No sub-agent transcript or registry persistence across process restarts; the main session keeps its existing JSON persistence.
+
+### 21.6 UI specification
+
+Layout order (top to bottom): existing app header; selected agent's content (`flexGrow=1`, `minHeight=0`); terminal panel (when visible, existing position); picker/completion overlays; composer; **agent navigator directly below the composer**; existing status line. The navigator is `flexShrink=0` and never squeezes the content area. Update `overlayAvailableRows` and `promptInputHeight` budgets to subtract the navigator's rendered rows.
+
+Content area:
+
+- One non-scrolling status row at the top of the content area for the selected agent (thin separator; never boxed): `@<name> · <status label> · <activity|task> · <elapsed> · <tokens> tok` using only real values (omit absent segments). It shows the current execution status and working indicator in the main content, not only in the navigator.
+- Main selected: render the existing `entries` exactly as today (labels `❯ You` / `⏺ Agent-Termo`).
+- Sub-agent selected: render `transcriptToUiEntries(agentTranscripts.get(id), name)` with labels `❯ You → @name`, `⏺ name`, tool lines, dim status lines, red error lines. Markdown and streaming use the existing `<markdown>` component. No parent/user/assistant text from another agent may appear. Empty transcript -> `No activity yet for @name.`
+- Scroll: one scrollbox, a `Map<agentId, scrollTop>`; on switch save the current position, load the target's saved position (first view starts at the bottom), restore after layout with `scrollTo()`. Tail-follow only when the agent was measured at the bottom before the update (`scrollTop + viewport.height >= scrollHeight - 2` in `afterLayout`). A non-selected agent's updates never touch the scrollbox. Do not use unconditional `stickyScroll`. The transcript subscription only bumps the render revision when `agentId === selectedAgentId()`; hidden agents are read from the snapshot on switch, so background streaming cannot force a scroll or re-render.
+- Composer: placeholder `Message @<name>…`; prefix label `@<name> ❯` (clipped) so the target is always visible with text present; placeholder/prefix update immediately on selection. Per-agent drafts; switching saves/loads the target draft. Successful dispatch clears the draft and keeps focus. Rejections show a composer notice (auto-clears after ~4 s). While a modal owns the keyboard, the composer is visible but unfocused with an explicit owner banner (`Approval required from @frontend-expert`).
+
+Navigator rows (one line each, never wrap):
+
+- Row parts: `▸ ` when selected; tree prefix (2 spaces per depth, `├ ` / `└ ` for children); status glyph; `main` or agent name (append `#<first 6 id chars>` when `duplicateName`); dim metadata.
+- Glyphs: idle `○`, running `◐`, waiting `◔`, completed `✓`, failed `✗`, stopped `!`.
+- Main metadata: status label; `· <activeAgentName>` if set; `· <goal clipped>`; `· waiting on N subagent(s)` when `activeChildCount > 0`; `· since HH:MM` (session start) while running/waiting; `· <tokens> tok` when usage exists; `· N queued` when queued.
+- Sub-agent metadata: status label; live -> `· <activity>`; completed -> `· <task clipped>`; failed -> `· <first error line clipped>`; stopped -> `· stopped`; `· since HH:MM` while live or `· <formatDuration(endedAt - startedAt)>` when terminal; `· <tokens> tok` when usage exists; `· N queued` when queued. Times use local `toLocaleTimeString` with hour/minute only. Elapsed is wall-clock since spawn, not compute time; label it as elapsed, not "runtime".
+- Never display a metric that is absent in the runtime. "Thinking" is not a status; show `Running` plus activity.
+- Live elapsed updates: while at least one node is running/waiting, a 1,000 ms UI interval bumps a `now` signal used only for duration/since formatting; clear the interval when nothing is live. It must not trigger transcript re-renders (read `now` only in row formatting).
+- Rows are derived from `buildAgentTree` + `visibleAgentRows` (at most 7 agent rows; when space is tight, at least the selected agent row). The hint row is always visible and is not counted in the 7. Overflow shows `… N above` / `… N below` dim rows. Hint row: `Ctrl+X navigate · ↑↓ select · Enter message · Esc parent · Ctrl+X Ctrl+K stop all` (clipped; adapt when navigator is focused).
+- Responsive priority when narrow: drop usage, then "since", then goal/task, then active agent name; keep glyph, name, status, activity, and the hint. Selected row uses the existing accent (`#D99168`/`#F0B38D`), dim metadata `#88827C`, running/waiting `#E2A078`/`#79B8D1`, success `#8FCB9B`, error `#E47D76`. No new palette; dark/light behavior follows the existing TUI theme tokens. Borders are existing `#6D625A`; no rounded style for the navigator.
+
+Edge states:
+
+1. No sub-agents: navigator shows main + hint.
+2. New sub-agent: snapshot event adds the row; selection does not jump.
+3. Completed: row remains, transcript retained.
+4. Failed: failed glyph, error at the end of the transcript, conversation preserved and resumable.
+5. Main waiting on children: main row shows `waiting on N subagent(s)` from real active children.
+6. Multiple active agents: switching is UI-only; runs continue.
+7. Nested: tree renders any depth generically; runtime exposes one level today.
+8. Routing: selected id is the dispatch target; no name lookup, no parent fallback.
+9. Streaming during switch: the store keeps receiving; the hidden agent's scroll is untouched.
+10. Selected agent finishes/stops/fails: id stays valid; `reconcileSelection` falls back to main only if a node truly disappears.
+11. Empty conversation: explicit empty state as above.
+
+### 21.7 File-level change plan
+
+| File | Action | What changes (one line) |
+|---|---|---|
+| `src/runtime/subagents.ts` | modify | Add `parentId`, `usage`, `queued`, resume/usage/queued mutators and `clearSubAgentActivity`; derive ids so they never equal `parentId`; export `MAIN_AGENT_ID`. |
+| `src/runtime/agent-tree.ts` | create | Pure `WorkspaceStatus`, `MainAgentState`, `AgentTreeNode`, tree build, selection movement/parent/reconcile/windowing. |
+| `src/runtime/agent-transcript.ts` | create | Per-agent transcript event/entry types, caps, pure reducer, store with snapshot reads/subscriptions, tool-arg summarizer. |
+| `src/runtime/agent-selection.ts` | create | Selected agent id getter/setter/subscription/reset (navigation state only). |
+| `src/runtime/agent-workspace.ts` | create | Main agent state, handle registry, `sendAgentMessage`, queue policy wrapper, `subscribeWorkspace`, `stopAllAgents`, `resetAgentWorkspace`. |
+| `src/main.ts` | modify | Persistent `DelegatedAgentSession` + follow-up turn loop; register main/sub handles; transcript recording; quiet sub-agent tool output; approval labels + suspend/resume; main status/usage/queue drain; `/clear` reset; scoped follow-up cancellation. |
+| `src/ui/tui.tsx` | modify | Workspace signals/subscriptions, navigator rendering, content switching, per-agent scroll, composer routing/placeholder/drafts, focus modes, key handling, stop-all chord, approval banner; keep all existing keys. |
+| `src/ui/workspace-view.ts` | create | Pure row formatting/glyphs, `routeComposerInput`, transcript-to-`UiEntry` mapping. |
+| `src/ui/screen.ts` | modify | Re-export new UI API (`setApprovalPrompt`, workspace helpers used by main). |
+| `src/ui/index.ts` | modify | Re-export the new UI API used by `main.ts`; keep print facade behavior. |
+| `docs/ARCHITECTURE.md` | modify | This section (contract). |
+| `docs/architecture/target-architecture.md` | modify | Add current `not yet implemented` markers for the new modules/capabilities. |
+| `tests/unit/agent-tree.test.ts` | create | Hierarchy/selection/parent/window tests. |
+| `tests/unit/agent-transcript.test.ts` | create | Reducer isolation/streaming/tool pairing/caps/subscription tests. |
+| `tests/unit/agent-workspace.test.ts` | create | Dispatch/queue/dedupe/queue-full/unknown/stop-all/main-state tests with fake handles. |
+| `tests/unit/agent-selection.test.ts` | create | Selection subscribe/reset tests. |
+| `tests/unit/workspace-view.test.ts` | create | Composer routing, glyphs, row meta, transcript mapping tests. |
+| `tests/unit/subagents.test.ts` | modify | Add parentId/usage/queue/resume/clear coverage (existing cases unchanged). |
+| `tests/unit/subagent-view.test.ts` | modify | Add the two new required `SubAgentActivity` fields (`parentId`, `queued`) to the fixture; rendering assertions unchanged. |
+
+No new environment variables; `.env.example` is unchanged.
+
+### 21.8 Acceptance criteria -> component mapping
+
+| Acceptance criterion | Implemented by |
+|---|---|
+| Navigator directly below the composer | `tui.tsx` layout order; `overlayAvailableRows`/`promptInputHeight` budgets |
+| Hierarchy shows main/parents/children | `subagents.ts.parentId` + `agent-tree.buildAgentTree` |
+| `↑`/`↓` changes selection | `agent-selection` + `tui.tsx` navigator focus branch + `moveAgentSelection` |
+| Selection immediately changes the main content | `tui.tsx` selected-agent content switch; `agent-transcript.get` snapshot |
+| Each agent shows its own actual conversation/activity | main `entries`; sub-agent `agentTranscripts`; registry fallback metadata |
+| Can prompt the selected sub-agent directly | `workspace-view.routeComposerInput` + `sendAgentMessage` |
+| Messages delivered to the correct agent id/session | `AgentHandle.send`; `DelegatedAgentSession.messages` reused |
+| Switching never interrupts execution | selection module is UI-only; no runtime mutator on selection |
+| Background agents keep streaming | transcript store appended regardless of selection; workspace subscription |
+| Conversation history + scroll preserved | main `entries` retained; transcript store + `Map<agentId, scrollTop>` |
+| Parent/child never mixed | separate stores + `quiet` sub-agent tool output |
+| Completed/failed agents inspectable | registry retention + transcript retention |
+| Existing shortcuts work; text editing not broken | key table; navigator only when focused; composer key handling unchanged |
+| Dark/light themes work; no unrelated UI broken | existing TUI hex tokens; surgical file list |
+| Tests/typecheck/build pass | `bun run typecheck`, `bun run test`, `bun run build` (baseline: 0 / 275 passed + 2 skipped / clean) |
+
+### 21.9 Test seams and verification
+
+Automated, no terminal required:
+
+- `buildAgentTree`: order, depth/indent data, multiple children, duplicate names flagged, orphan attach, active child counts, completed retention.
+- `moveAgentSelection` / `parentAgentId` / `reconcileSelection` / `visibleAgentRows`: clamping, no wrap, parent escape, missing-id fallback, window bounds.
+- `applyTranscriptEvent` / store: per-agent isolation, assistant delta accumulation + final replacement, tool start/end pairing by callId, late `tool.end` ignored, status dedupe, error finalizes streaming, entry/byte caps and truncation marker, unsubscribe.
+- `decideMessageDisposition` + `createAgentWorkspace().registerMainAgent`/`registerHandle`/`send`: unknown reject, idle/completed/failed/stopped dispatch, running/waiting queue, queue full, duplicate (queued + 2 s dispatch window), FIFO order, no parent fallback.
+- `stopAllAgents`: cancels every handle once, clears queues, returns count.
+- `routeComposerInput`: command-while-idle -> repl, command-while-busy reject, main-running -> queued target, sub-agent target while main awaits input, unknown target reject, empty.
+- `reduceWorkspaceKey`: Ctrl+X enters navigator and arms; arrows move selection; Enter focuses composer; Escape selects parent then focuses composer at main; Ctrl+X then Ctrl+K yields `stop_all` only inside the leader window (after it, Ctrl+K is not stop_all); composer focus never consumes navigation keys; `other` disarms the leader.
+- `transcriptToUiEntries`/`formatAgentRow`: labels, glyphs, status mapping, no fabricated usage, truncation.
+- `subagents.ts`: parentId default, id never equals parentId, resume transitions, usage/queued emission, clear keeps listeners.
+
+Manual scenarios (must be run in a real TTY): spawn at least two sub-agents from main, verify both appear, navigate with Ctrl+X + arrows, verify content switches, send different instructions to each and verify the transcripts show exactly those messages, return to main unchanged, switch during streaming, verify background updates, verify completed/failed inspection, arrow-key editing in the composer, stop-all chord, and `/clear` reset.
+
+Required commands and reporting: `bun run typecheck` (expect exit 0), `bun run test` (expect all pass; baseline 275 passed / 2 skipped), `bun run build` (expect clean `dist/cli.js`). Report exact output, not a summary claim.
+
+### 21.10 Limitations and decisions for project-manager
+
+Explicit limitations:
+
+- No nested delegation; the tree is generic but depth is one below main by design.
+- Sub-agent registry/transcripts are in-memory; restarting Agent-Termo loses them.
+- Follow-up queueing waits for the current turn (up to the 10-minute budget); there is no mid-turn injection.
+- Follow-up results do not automatically re-enter the parent model's context.
+- Stop-all aborts model requests and prevents the next iteration/approval, but an already-running tool call is not killed; it completes or hits its own timeout.
+- The terminal panel is shared; concurrent agents can interleave terminal output there (per-agent command output still lands in the transcript).
+- No "Thinking" status exists in the runtime; none is invented.
+- Token usage is cumulative per agent, not per turn.
+- Provider/model changes apply to newly spawned sessions; existing sessions keep their client.
+
+Items for project-manager to confirm (decisions taken here, reversible but explicit):
+
+1. Illustrative hierarchy deviation: `project-manager` is shown as main's active-prompt label, not a separate parent node. Fake nodes are rejected.
+2. `Ctrl+X Ctrl+K` stop-all is **new** (it does not exist today); plain `Ctrl+K` terminal stop is preserved where the composer does not own the key.
+3. Composer is always visible, but approval/picker/secret modals own the keyboard; navigation is frozen while they are open.
+4. `/clear` now also resets the sub-agent workspace (previously it only cleared main).
+5. Follow-up results stay inside the sub-agent session and do not flow back to the parent automatically.
+
+---
+
 ## Related Documentation
 
 | Document | Purpose |
@@ -893,4 +1481,4 @@ Authentication errors:
 
 ---
 
-*Architecture Document v1.1 — Agent-Termo Terminal AI Coding Agent*
+*Architecture Document v1.2 — Agent-Termo Terminal AI Coding Agent*

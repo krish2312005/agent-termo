@@ -57,6 +57,10 @@ flowchart TB
 | `src/runtime/sessions.ts` | session ownership/persistence | `implemented` for JSON persistence; `partially implemented` for schema versioning/migrations. |
 | `src/runtime/terminal-sessions.ts` | process lifecycle | `implemented` (process-tree kill, background sessions). |
 | `src/ui/*` | rendering only | `partially implemented` — rendering is here, but the loop still calls it directly. |
+| `src/runtime/agent-workspace.ts` | cross-agent workspace state, message dispatch, stop-all | `not yet implemented` — specified in `docs/ARCHITECTURE.md` §21 (Multi-agent Workspace). |
+| `src/runtime/agent-tree.ts` | pure agent hierarchy + selection/window math | `not yet implemented` — specified in `docs/ARCHITECTURE.md` §21. |
+| `src/runtime/agent-transcript.ts` | per-agent transcript store (conversation + tools + errors) | `not yet implemented` — specified in `docs/ARCHITECTURE.md` §21. |
+| `src/runtime/agent-selection.ts` | selected-agent navigation state | `not yet implemented` — specified in `docs/ARCHITECTURE.md` §21. |
 
 ## Execution lifecycle / state machine
 
@@ -353,6 +357,28 @@ Rendering:
 - `/context` prints `context <meter>` in addition to its existing lines,
   formatting directly at this call site:
   `printInfo('context ' + formatContextMeter(estimated, budget.inputBudgetTokens))`.
+
+## Multi-agent workspace (specified, not yet implemented)
+
+Status: `not yet implemented` — the design is fixed in
+`docs/ARCHITECTURE.md` §21 (Multi-agent Workspace). No runtime or UI code
+exists for it yet. These markers flip to `implemented` only after the
+acceptance tests, typecheck, and build pass for the implementation.
+
+| Capability | Current status |
+|---|---|
+| Stable per-agent identity + explicit `parentId` hierarchy (`main` + sub-agents) | `partially implemented` — `src/runtime/subagents.ts` has stable ids and lifecycle, but no parent link, usage, queue count, or resume transition. |
+| Navigate into an agent workspace (selection switches the main content area) | `not yet implemented` — the TUI has one global `entries` log. |
+| Follow-up message dispatch to a specific agent id (same session, no re-spawn) | `not yet implemented` — `runDelegatedAgent` is one-shot; `delegatedMessages` is local. |
+| Per-agent transcript (user, assistant stream, tools, terminal/file ops, errors, completion) | `not yet implemented` — the registry stores one-line summaries only. |
+| Background streaming + per-agent scroll/history retention | `not yet implemented` — only one scrollbox and one log exist. |
+| Nested delegation (`main > project-manager > specialist`) | `not yet implemented` **by design** — `filterAgentTools` forbids sub-agent delegation; the tree is generic, but depth stays one below main. |
+| Sub-agent transcript persistence across restarts | `not yet implemented` — session memory only; main session persistence is unchanged. |
+
+The workspace transcript is deliberately **not** added to `AgentEventHub`:
+that hub is created per `runToolLoop`, has no replay or late-subscriber
+snapshot, and carries no transcript text. The existing six-event contract
+above is unchanged by the workspace feature.
 
 ## Summary of the honest gap
 

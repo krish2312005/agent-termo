@@ -3819,3 +3819,4 @@ User request
 | 2026-11-23 15:54 PST | git-manager | review+commit docs connected-provider fix memory timeline | [20261123-155440-git-manager-review-commit-docs-connected-provider-fix-memory-t.md](changes/20261123-155440-git-manager-review-commit-docs-connected-provider-fix-memory-t.md) |
 | 2026-11-23 15:56 PST | git-manager | merge fix/ui-paste-api-keys into master | [20261123-155622-git-manager-merge-fix-ui-paste-api-keys-into-master.md](changes/20261123-155622-git-manager-merge-fix-ui-paste-api-keys-into-master.md) |
 | 2026-11-23 15:58 PST | git-manager | push master to github | [20261123-155814-git-manager-push-master-to-github.md](changes/20261123-155814-git-manager-push-master-to-github.md) |
+| 2026-11-23 16:12 PST | architect | multi-agent workspace architecture spec | [20261123-161237-architect-multi-agent-workspace-architecture-spec.md](changes/20261123-161237-architect-multi-agent-workspace-architecture-spec.md) |
