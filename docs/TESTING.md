@@ -53,10 +53,60 @@ Vitest configuration lives in `vitest.config.ts`. Tests live in `tests/unit/` an
   tool execution through `runToolLoop`, including failing-call recovery, completion
   gate blocking, duplicate-call suppression, repeated-failure pause, and corrective
   action clearing the retry budget so a failed call can succeed on retry.
+- **Agent tree and selection** (`tests/unit/agent-tree.test.ts`): main is always the
+  first node; DFS pre-order sorted by `(startedAt, id)`; generic depth/nesting;
+  direct-child active counts; completed/failed/stopped retention; sibling-only
+  duplicate-name flags; orphan/missing-parent/self-link/cycle rows attach to main;
+  `cancelled` -> `stopped`; selection clamping with no wrap; unknown-id fallback;
+  parent lookup; `reconcileSelection`; and the `visibleAgentRows` window bounds
+  (centering, top/bottom clamping, 1-row and fractional limits, overflow totals).
+- **Per-agent transcripts** (`tests/unit/agent-transcript.test.ts`): agent isolation
+  and current snapshots for background (non-selected) agents; user/assistant entries;
+  delta accumulation and authoritative final replacement; tool start/end pairing by
+  `callId` with late/foreign/mismatched ends ignored; status dedupe; error finalizing
+  a streaming assistant entry; the 500-entry, 256 KiB and 8,000-char caps with exactly
+  one `truncated` marker; snapshot copy semantics; subscribe/unsubscribe; throwing
+  listener isolation; clear-one/clear-all; and the tool-args summarizer.
+- **Agent workspace routing** (`tests/unit/agent-workspace.test.ts`): the full
+  `decideMessageDisposition` matrix (empty, unknown, duplicate queued text, the
+  2,000 ms dispatch window boundary, 10-message queue limit, running/waiting queue,
+  idle/completed/failed/stopped dispatch); id-only routing for two agents with the
+  same display name; unknown ids never fall back to main/parent; `unavailable` only
+  for a missing main binding; main `submitExternal` dispatch and FIFO queue drain;
+  main running/waiting queueing with a real cap; stop-all cancelling each live target
+  once (main + handles), clearing the queue and returning the live count; reset
+  clearing handles/registry/transcripts/queues/selection while retaining main
+  bindings; workspace notifications for main state, handles and registry events;
+  and defensive main-state copies/valid patches. The duplicate windows use injected
+  `now`/fake timers, never real sleeps.
+- **Agent selection state** (`tests/unit/agent-selection.test.ts`): get/set,
+  same/empty/non-string no-ops, subscribe/unsubscribe, throwing-listener isolation,
+  reset-to-main notifications, and proof that selection changes never mutate the
+  sub-agent registry (navigation-only).
+- **Workspace UI helpers** (`tests/unit/workspace-view.test.ts`): composer routing
+  (empty, main idle -> repl, main busy -> `agent(main)`, sub-agent target while main
+  awaits, unknown target, slash/exit/quit idle vs `command_while_busy`); the pure
+  workspace key reducer (Ctrl+X arms/enters navigator, clamped arrows, Enter,
+  Esc parent then composer at main, `Ctrl+X Ctrl+K` only inside the 1,500 ms window,
+  any other key disarms, composer focus never consumes navigation keys); navigator
+  row formatting (selection marker, all glyphs/labels, connectors/depth, duplicate
+  `#id6` suffix, metadata drop order, no fabricated tokens/since, width/no-wrap
+  truncation); the content status row; and `transcriptToUiEntries` (user/assistant
+  agent labels, markdown/streaming, tool/success/error/dim mapping, status/error/
+  truncated lines, no cross-agent entries).
+- **Sub-agent registry extensions** (`tests/unit/subagents.test.ts`): `MAIN_AGENT_ID`,
+  default/custom `parentId`, derived ids never equal to the parent, resume transitions
+  (terminal -> running, cleared terminal fields, `resumed` event, live/unknown
+  refusal), cumulative usage and queued counters with clamping and their events,
+  unknown-id no-ops, and `clearSubAgentActivity` clearing rows while keeping
+  listeners subscribed.
 - Other unit suites cover approval queues, checkpoints, checks, delegation, markdown,
   models, plans, providers, streaming, subagents, terminal sessions, and workspace
   path validation. Integration suites cover sessions, skills, browser verification,
   and the packaged runtime.
+
+Current baseline after the multi-agent workspace slice: **391 passed / 2 skipped**
+(43 test files passed, 1 skipped).
 
 ## Known gaps
 
@@ -80,3 +130,29 @@ Vitest configuration lives in `vitest.config.ts`. Tests live in `tests/unit/` an
   verification.
 - Provider config tests use temp `AGENT_TERMO_DIR` directories and fake `sk-test-*`
   keys; they never read or write the real `~/.agent-termo`.
+- **Multi-agent workspace, manual-only:** the real TTY scenarios from
+  `docs/architecture.md` §21.9 are not automated — spawning two sub-agents and
+  seeing both rows, Ctrl+X + arrow navigation switching content, per-agent
+  scroll/drafts, the approval owner banner and frozen navigator, background
+  streaming while hidden, `/clear`, and the actual `Ctrl+X Ctrl+K` key chord.
+  `workspace-view.test.ts` covers the pure formatting/routing/key decisions those
+  handlers call; `tui.tsx` wiring and OpenTUI rendering need a real terminal.
+- The literal transcript labels `❯ You → @name` / `⏺ name` are rendered by the
+  `tui.tsx` JSX from `UiEntry.agentLabel`; tests assert the `agentLabel`/`kind`
+  inputs produced by `transcriptToUiEntries`, not the JSX output.
+- Sub-agent follow-up queueing is split: `agent-workspace` owns routing and the
+  duplicate window, but each `DelegatedAgentSession` owns its FIFO and the
+  end-of-turn drain in `src/main.ts`. Workspace tests use fake handles, so the real
+  session queue/drain (including the finally-drain race) is covered only by manual
+  runs/manual TTY use, not unit tests.
+- **Known narrow-terminal risk:** at the supported 40-column minimum, a navigator
+  row combining a duplicate long name, a live activity and a non-zero queue count
+  can exceed the available cells. `formatAgentRow` never wraps and clips in the
+  documented drop order, but it keeps the design's minimum name/detail widths
+  (8 cells plus `…`); tests assert fit for realistic single-name rows down to
+  width 38 and for the stressed duplicate/queued rows from width 48 up. Resolve in
+  `workspace-view.ts` if the design's "no horizontal overflow" rule must win at
+  40 columns.
+- Workspace tests create in-memory workspaces with fake handles and fake main
+  bindings; they never call a provider, start a terminal, or touch
+  `~/.agent-termo`.

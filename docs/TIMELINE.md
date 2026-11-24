@@ -3826,3 +3826,5 @@ User request
 | 2026-11-23 16:38 PST | backend-expert | multi-agent workspace runtime | [20261123-163802-backend-expert-multi-agent-workspace-runtime.md](changes/20261123-163802-backend-expert-multi-agent-workspace-runtime.md) |
 | 2026-11-23 16:41 PST | git-manager | review+commit multi-agent workspace runtime | [20261123-164157-git-manager-review-commit-multi-agent-workspace-runtime.md](changes/20261123-164157-git-manager-review-commit-multi-agent-workspace-runtime.md) |
 | 2026-11-23 16:57 PST | frontend-expert | multi-agent workspace live TUI | [20261123-165734-frontend-expert-multi-agent-workspace-live-tui.md](changes/20261123-165734-frontend-expert-multi-agent-workspace-live-tui.md) |
+| 2026-11-23 17:01 PST | git-manager | review+commit multi-agent workspace UI | [20261123-170144-git-manager-review-commit-multi-agent-workspace-ui.md](changes/20261123-170144-git-manager-review-commit-multi-agent-workspace-ui.md) |
+| 2026-11-23 17:11 PST | test-agent | multi-agent workspace unit tests | [20261123-171130-test-agent-multi-agent-workspace-unit-tests.md](changes/20261123-171130-test-agent-multi-agent-workspace-unit-tests.md) |
