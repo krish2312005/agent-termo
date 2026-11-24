@@ -134,18 +134,34 @@ Vitest configuration lives in `vitest.config.ts`. Tests live in `tests/unit/` an
   path validation. Integration suites cover sessions, skills, browser verification,
   and the packaged runtime.
 
-### Carbon Forge UI (live TUI theme)
+### Warm Terminal UI (live TUI theme; Carbon Forge reverted at the user's request)
 
-- **Theme tokens** (`tests/unit/theme.test.ts`): the eight exact foundation colors and
-  the documented derived tokens; semantic roles (selection/focus lime, brand/tool
-  copper, info/subagent teal, error red, composer border `#27332C` unfocused /
-  `#B5D98A` focused); no role is `#FF5555` and every role value comes from the
-  palette. A static scan of `src/ui/tui.tsx`, `src/ui/index.ts` and
-  `src/ui/subagent-view.ts` proves they contain no hex literals, none of the 25
-  legacy hexes listed in DESIGN_SYSTEM §11.7, and no legacy Chalk named colors
-  (`cyan`/`magenta`/`yellow`/`green`/`red`/`dim`); `src/ui/theme.ts` is the only
-  hex source under `src/ui`. It also asserts the transcript `UiKind` map, markdown
-  `SyntaxStyle` roles and the focus-based composer border.
+- **Theme tokens** (`tests/unit/theme.test.ts`): the exact restored Warm Terminal
+  palette (25 `COLORS` tokens, background `#11100F` through the diff/markdown
+  hexes) and the exact `ROLES` map — selection `#F0B38D` distinct from brand
+  `#D99168`, tool/approval `#79B8D1`, info `#8BB7D8`, success `#8FCB9B`, error
+  `#E47D76`, assistant label `#6D625A`, and the restored permission border
+  contract (inactive/ask `#6D625A`, files `#D99168`, accept-all auto `#FF5555`
+  intentionally back). Every role value comes from `COLORS`; the transitional
+  Carbon Forge roles (`focus`, `subagent`, `composerBorderFocused`) and token
+  aliases (`accent`, `copper`, `teal`, `textDim`, `surface`, `textMuted`) must
+  stay absent. Regression gates scan all of `src/` recursively: none of the 12
+  Carbon Forge hexes may return, the 25 warm hexes may appear only in
+  `src/ui/theme.ts`, and `src/ui/tui.tsx`/`index.ts`/`subagent-view.ts` contain no
+  hex literals. The non-TUI fallbacks keep the restored named Chalk colors
+  (`index.ts`: cyan/magenta/dim; `subagent-view.ts`:
+  yellow/cyan/green/red/dim/magenta) and do not import the theme. It also asserts
+  the transcript `UiKind` map, markdown `SyntaxStyle` roles, and the restored
+  permission-colored composer border callsite
+  (`inputActive() ? permissionBarColor(...) : ROLES.composerBorder`).
+- **Permission border contract** (`tests/unit/permission-colors.test.ts`):
+  `permissionBarColor` maps `ask`/inactive to `#6D625A`, `files` to `#D99168`,
+  and `auto` to the restored `#FF5555` (asserted, not banned), matching
+  `ROLES.permissionAsk`/`permissionFiles`/`permissionAuto`; the terminal panel
+  height tests are unchanged. Footer, `/help` and terminal-title coverage is
+  unchanged by the revert — `tests/unit/footer.test.ts`,
+  `tests/unit/help.test.ts`, `tests/unit/terminal-title.test.ts` and
+  `tests/unit/subagent-view.test.ts` were not edited and still pass.
 - **One-line footer** (`tests/unit/footer.test.ts`): the exact canonical composer
   line (context 11700/23000, thinking `low`, permission `auto`, usage
   `~130,851 tokens`, width 200); dynamic meter/token/thinking/permission/usage
@@ -176,9 +192,11 @@ Vitest configuration lives in `vitest.config.ts`. Tests live in `tests/unit/` an
   `process.once("exit")` fallback (invoked through injected IO), the reset seam,
   and static CLI/`runRepl`/cleanup wiring. No test writes to the real terminal.
 
-Current baseline after the Carbon Forge UI slice: **514 passed / 2 skipped**
-(49 test files passed, 1 skipped); the prior baseline was 446 passed / 2 skipped
-(45 files passed, 1 skipped).
+Current baseline after the Warm Terminal palette revert: **514 passed / 2 skipped**
+(49 test files passed, 1 skipped). The pre-revert Carbon Forge baseline was also
+514 passed / 2 skipped (50 files, 1 skipped): the revert rewrote the theme and
+permission tests without changing the total. The baseline before the Carbon Forge
+slice was 446 passed / 2 skipped (45 files passed, 1 skipped).
 
 ## Known gaps
 
@@ -255,7 +273,7 @@ Current baseline after the Carbon Forge UI slice: **514 passed / 2 skipped**
   no width library); CJK/emoji lines can occupy more terminal cells than the
   requested budget. Asserted widths therefore match the navigator/transcript
   convention used elsewhere in `workspace-view.ts`.
-- **Carbon Forge UI, manual-only:** the theme/footer/help/title suites test pure
+- **Warm Terminal UI, manual-only:** the theme/footer/help/title suites test pure
   formatters, tokens and source wiring. The OpenTUI footer row painting and
   variant switching, the composer border in a real terminal, `/help` scrolling in
   the transcript scrollbox, and the host interpretation of the OSC 2/title-stack

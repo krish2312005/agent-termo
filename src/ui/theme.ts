@@ -1,45 +1,58 @@
 /**
- * Carbon Forge — the single source of truth for live TUI colors.
+ * Warm Terminal — the restored pre-Carbon-Forge palette; the single source of
+ * truth for live TUI colors.
  *
- * Foundation palette (the eight exact values from the visual brief):
- *   background #101512, surface #19211D, border #27332C, text #E5EDE6,
- *   accent #B5D98A, copper #D69B69, teal #83B9A2, error #E17D75.
+ * History: Carbon Forge (2026-11-23) replaced this palette and was reverted at
+ * the user's request. The values below are the exact pre-Carbon-Forge hexes
+ * from a9f0892:src/ui/tui.tsx, cross-checked against the verified pre-theme
+ * table in docs/DESIGN_SYSTEM.md §10.1. There is no ThemeProvider, no light
+ * mode, and no runtime theme switching: this is a flat token module.
  *
- * Derived tokens exist only where the foundation palette cannot express a
- * live role. Every derivation is documented below. There is no ThemeProvider,
- * no light mode, and no runtime theme switching: this is a flat token module.
+ * WCAG 2.x contrast ratios (rounded) against #11100F:
+ *   text 14.6   detail 10.7   textAlt 11.6   selection 10.4
+ *   userSuccess 10.1   info 8.9   toolWaiting 8.7   running 8.6
+ *   mutedCompletion 7.7   brand 7.4   error 6.8   mutedPicker 5.5
+ *   muted 5.2   mutedHeader 5.0   dim 5.0   permissionAuto 6.1 (as text;
+ *   always paired with the `auto` label)   border 3.2 (structural; also the
+ *   restored assistant label, never the only carrier of meaning)
  *
- * WCAG 2.x contrast ratios (rounded) against #101512 / #19211D:
- *   text 15.5 / 13.8   accent 11.7 / 10.4   copper 7.7 / 6.9
- *   teal  8.3 /  7.4   error   6.5 /  5.8   textMuted 8.0 / 7.1
- *   textDim 5.4 / 4.8  border  1.4 /  1.3 (decorative only; focus is never
- *   border-only)
- *
- * Semantic rules:
- *   - copper = branding and tool execution
- *   - teal = informational states and sub-agents
- *   - accent (lime) = active selection, focus, success/completed
- *   - error = failures and destructive feedback; the legacy bright-red
- *     permission border is banned
+ * Diff rows keep their historical pairing: #B7E4C7 on #17351F,
+ * #F0B4AE on #3A1D1D, and #BDB6AE context on #11100F.
  */
-export const COLORS = {
-  background: "#101512",
-  surface: "#19211D",
-  border: "#27332C",
-  text: "#E5EDE6",
-  accent: "#B5D98A",
-  copper: "#D69B69",
-  teal: "#83B9A2",
-  error: "#E17D75",
 
-  /** Derived: 70% text + 30% background (sRGB). Secondary text. */
-  textMuted: "#A5ACA6",
-  /** Derived: 55% text + 45% background (sRGB). Metadata, hints, separators. */
-  textDim: "#858C87",
-  /** Derived: 15% accent + 85% background (sRGB). Diff add row fill. */
-  diffAddSurface: "#293224",
-  /** Derived: 15% error + 85% background (sRGB). Diff remove row fill. */
-  diffRemoveSurface: "#2F2521",
+const SOURCE = {
+  background: "#11100F",
+  border: "#6D625A",
+  brand: "#D99168",
+  text: "#E6E1DC",
+  muted: "#8D857D",
+  dim: "#88827C",
+  detail: "#C9C1BA",
+  textAlt: "#D0C9C2",
+  mutedHeader: "#89827C",
+  mutedPicker: "#8F8982",
+  mutedCompletion: "#8EAAA8",
+  selection: "#F0B38D",
+  userSuccess: "#8FCB9B",
+  info: "#8BB7D8",
+  toolWaiting: "#79B8D1",
+  running: "#E2A078",
+  error: "#E47D76",
+  permissionAuto: "#FF5555",
+  /** Diff add text; used on diffAddSurface. */
+  diffAddText: "#B7E4C7",
+  diffAddSurface: "#17351F",
+  /** Diff remove text; used on diffRemoveSurface. */
+  diffRemoveText: "#F0B4AE",
+  diffRemoveSurface: "#3A1D1D",
+  diffContextText: "#BDB6AE",
+  markdownHeading2: "#D7A27C",
+  markdownRaw: "#9CCB9C",
+} as const;
+
+/** Exact palette values. */
+export const COLORS = {
+  ...SOURCE,
 } as const;
 
 export type ColorToken = keyof typeof COLORS;
@@ -50,49 +63,63 @@ export type ColorToken = keyof typeof COLORS;
  */
 export const ROLES = {
   pageBackground: COLORS.background,
-  panelSurface: COLORS.surface,
+  /** Faithful derivation: pre-theme panels had no fill, so #11100F showed through. */
+  panelSurface: COLORS.background,
   border: COLORS.border,
 
-  focus: COLORS.accent,
-  selection: COLORS.accent,
-  brand: COLORS.copper,
-  tool: COLORS.copper,
-  info: COLORS.teal,
-  subagent: COLORS.teal,
-  success: COLORS.accent,
+  selection: COLORS.selection,
+  brand: COLORS.brand,
+  tool: COLORS.toolWaiting,
+  info: COLORS.info,
+  approval: COLORS.toolWaiting,
+  success: COLORS.userSuccess,
   error: COLORS.error,
 
   text: COLORS.text,
-  mutedText: COLORS.textMuted,
-  dimText: COLORS.textDim,
+  mutedText: COLORS.muted,
+  dimText: COLORS.dim,
+  detailText: COLORS.detail,
+  textAlt: COLORS.textAlt,
+  mutedHeader: COLORS.mutedHeader,
+  mutedPicker: COLORS.mutedPicker,
+  mutedCompletion: COLORS.mutedCompletion,
 
-  userLabel: COLORS.accent,
-  userText: COLORS.text,
-  assistantLabel: COLORS.textMuted,
-  subagentLabel: COLORS.teal,
+  userLabel: COLORS.userSuccess,
+  userText: COLORS.userSuccess,
+  assistantLabel: COLORS.border,
+  subagentLabel: COLORS.muted,
 
   composerBorder: COLORS.border,
-  composerBorderFocused: COLORS.accent,
+  permissionAsk: COLORS.border,
+  permissionFiles: COLORS.brand,
+  permissionAuto: COLORS.permissionAuto,
 
-  statusIdle: COLORS.textDim,
-  statusRunning: COLORS.copper,
-  statusWaiting: COLORS.teal,
-  statusCompleted: COLORS.accent,
+  statusIdle: COLORS.muted,
+  statusRunning: COLORS.running,
+  statusWaiting: COLORS.toolWaiting,
+  statusCompleted: COLORS.userSuccess,
   statusFailed: COLORS.error,
-  statusStopped: COLORS.textDim,
+  statusStopped: COLORS.dim,
 
-  diffAddText: COLORS.accent,
+  diffAddText: COLORS.diffAddText,
   diffAddSurface: COLORS.diffAddSurface,
-  diffRemoveText: COLORS.error,
+  diffRemoveText: COLORS.diffRemoveText,
   diffRemoveSurface: COLORS.diffRemoveSurface,
-  diffContextText: COLORS.textMuted,
+  diffContextText: COLORS.diffContextText,
 
   markdownText: COLORS.text,
-  markdownHeading1: COLORS.accent,
-  markdownHeading2: COLORS.teal,
-  markdownLink: COLORS.teal,
-  markdownRaw: COLORS.copper,
-  markdownList: COLORS.copper,
+  markdownHeading1: COLORS.running,
+  markdownHeading2: COLORS.markdownHeading2,
+  markdownLink: COLORS.toolWaiting,
+  markdownRaw: COLORS.markdownRaw,
+  markdownList: COLORS.markdownHeading2,
+
+  pickerText: COLORS.textAlt,
+  pickerMuted: COLORS.mutedPicker,
+  completionText: COLORS.mutedCompletion,
+  terminalCommand: COLORS.muted,
+  terminalHint: COLORS.border,
+  terminalOutput: COLORS.detail,
 } as const;
 
 export type ColorRole = keyof typeof ROLES;

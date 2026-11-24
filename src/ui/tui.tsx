@@ -160,6 +160,18 @@ export function approvalPrompt(): ApprovalPromptState | null {
   return approvalPromptState();
 }
 
+export function permissionBarColor(mode: PermissionMode): string {
+  switch (mode) {
+    case "files":
+      return ROLES.permissionFiles;
+    case "auto":
+      return ROLES.permissionAuto;
+    case "ask":
+    default:
+      return ROLES.permissionAsk;
+  }
+}
+
 // -----------------------------------------------------------------------------
 // Workspace state helpers (UI-local; runtime semantics live in src/runtime)
 // -----------------------------------------------------------------------------
@@ -175,16 +187,16 @@ const STATUS_COLOR: Record<AgentColorRole, string> = {
 
 function metaColor(role: "status" | "detail" | "error" | "muted", status: AgentColorRole): string {
   if (role === "status") return STATUS_COLOR[status];
-  if (role === "detail") return ROLES.mutedText;
+  if (role === "detail") return ROLES.detailText;
   if (role === "error") return ROLES.error;
   return ROLES.dimText;
 }
 
-function contentStatusColor(role: ContentStatusRole, status: WorkspaceStatus, subagent: boolean): string {
-  if (role === "accent") return subagent ? ROLES.subagent : ROLES.brand;
-  if (role === "separator") return ROLES.dimText;
+function contentStatusColor(role: ContentStatusRole, status: WorkspaceStatus): string {
+  if (role === "accent") return ROLES.brand;
+  if (role === "separator") return ROLES.border;
   if (role === "status") return STATUS_COLOR[status];
-  if (role === "detail") return ROLES.mutedText;
+  if (role === "detail") return ROLES.detailText;
   if (role === "error") return ROLES.error;
   return ROLES.dimText;
 }
@@ -854,8 +866,6 @@ function App() {
     : focusMode() === "navigator"
       ? "navigator"
       : "composer";
-  // The composer owns keys unless the navigator or a prompt modal does.
-  const composerFocused = (): boolean => inputActive() && !currentPicker() && !approvalPromptState();
   const footerLine = (): string => formatFooter({
     context: screen().context,
     thinking: screen().thinking,
@@ -1118,9 +1128,9 @@ function App() {
       >
         <box flexDirection="row" alignItems="center" gap={1}>
           <text fg={ROLES.brand}>✻ Agent-Termo</text>
-          <text fg={ROLES.dimText}>v{packageJson.version}</text>
+          <text fg={ROLES.mutedText}>v{packageJson.version}</text>
         </box>
-        <text fg={ROLES.dimText}>{screen().model} · {screen().project}</text>
+        <text fg={ROLES.mutedHeader}>{screen().model} · {screen().project}</text>
       </box>
       <box flexDirection="column" flexGrow={1} flexBasis={0} minHeight={0}>
         <Show when={!compactApprovalChrome()} fallback={<box height={0} />}>
@@ -1128,7 +1138,7 @@ function App() {
             <For each={contentStatusSegments()}>
               {(segment) => (
                 <text
-                  fg={contentStatusColor(segment.role, selectedNode()?.status ?? "idle", selectedNode()?.kind === "subagent")}
+                  fg={contentStatusColor(segment.role, selectedNode()?.status ?? "idle")}
                   wrapMode="none"
                 >{segment.text}</text>
               )}
@@ -1182,7 +1192,7 @@ function App() {
                       <box flexDirection="row">
                         <text fg={ROLES.userLabel}>❯ You</text>
                         <Show when={entry().agentLabel}>
-                          <text fg={ROLES.subagentLabel}>{" → @" + entry().agentLabel}</text>
+                          <text fg={ROLES.userLabel}>{" → @" + entry().agentLabel}</text>
                         </Show>
                       </box>
                     </Show>
@@ -1216,12 +1226,12 @@ function App() {
           flexShrink={0}
         >
           <text fg={ROLES.brand}>Terminal · {terminal()!.exitCode === null ? "running" : "exit " + terminal()!.exitCode}</text>
-          <text fg={ROLES.dimText}>$ {terminal()!.command}</text>
-          <text fg={ROLES.dimText}>
+          <text fg={ROLES.terminalCommand}>$ {terminal()!.command}</text>
+          <text fg={ROLES.terminalHint}>
             {terminal()!.exitCode === null ? "Ctrl+K stop · " : ""}Ctrl+T {terminalExpanded() ? "shrink" : "expand"} · Ctrl+O hide
           </text>
           <scrollbox flexGrow={1} minHeight={0} stickyScroll stickyStart="bottom">
-            <text fg={ROLES.mutedText}>{terminal()!.lines.join("\n")}</text>
+            <text fg={ROLES.terminalOutput}>{terminal()!.lines.join("\n")}</text>
           </scrollbox>
         </box>
       </Show>
@@ -1237,20 +1247,20 @@ function App() {
             flexShrink={0}
           >
             <text fg={ROLES.brand}>{current().title}</text>
-            <text fg={ROLES.dimText}>Filter: {current().query}</text>
+            <text fg={ROLES.pickerMuted}>Filter: {current().query}</text>
             <For each={visiblePickerItems()}>
               {(item) => item.header
-                ? <text fg={ROLES.dimText}>{"— " + item.label + " —"}</text>
-                : <text fg={item.selected ? ROLES.selection : ROLES.mutedText}>{item.selected ? "› " : "  "}{item.label}{item.hint ? "  " + item.hint : ""}</text>}
+                ? <text fg={ROLES.pickerMuted}>{"— " + item.label + " —"}</text>
+                : <text fg={item.selected ? ROLES.selection : ROLES.pickerText}>{item.selected ? "› " : "  "}{item.label}{item.hint ? "  " + item.hint : ""}</text>}
             </For>
-            <text fg={ROLES.dimText}>↑ ↓ move · type to filter · Enter select · Esc cancel</text>
+            <text fg={ROLES.pickerMuted}>↑ ↓ move · type to filter · Enter select · Esc cancel</text>
           </box>
         )}
       </Show>
       <Show when={inputActive() && completionItems().length > 0 && !currentPicker() && !secretMode()} fallback={<box height={0} />}>
         <box paddingX={2} flexDirection="column" flexShrink={0}>
           <For each={visibleCompletionItems()}>
-            {(item) => <text fg={item.selected ? ROLES.selection : ROLES.mutedText}>{item.selected ? "› " : "  "}{item.label}{item.hint ? "  " + item.hint : ""}</text>}
+            {(item) => <text fg={item.selected ? ROLES.selection : ROLES.completionText}>{item.selected ? "› " : "  "}{item.label}{item.hint ? "  " + item.hint : ""}</text>}
           </For>
         </box>
       </Show>
@@ -1263,14 +1273,14 @@ function App() {
       }>
         <box flexDirection="column" flexShrink={0} backgroundColor={ROLES.panelSurface}>
           <Index each={approvalPanelLines()}>
-            {(line) => <text fg={ROLES.info} wrapMode="none">{line()}</text>}
+            {(line) => <text fg={ROLES.approval} wrapMode="none">{line()}</text>}
           </Index>
         </box>
       </Show>
       <box
         border
         borderStyle="single"
-        borderColor={composerFocused() ? ROLES.composerBorderFocused : ROLES.composerBorder}
+        borderColor={inputActive() ? permissionBarColor(screen().permissionMode) : ROLES.composerBorder}
         paddingX={1}
         flexDirection="row"
         alignItems="flex-start"
@@ -1302,7 +1312,7 @@ function App() {
           />
         }>
           <box flexGrow={1} flexBasis={0} minWidth={0}>
-            <text fg={ROLES.mutedText}>{ "•".repeat(secretDraft().length) }</text>
+            <text fg={ROLES.textAlt}>{ "•".repeat(secretDraft().length) }</text>
           </box>
         </Show>
       </box>
@@ -1319,11 +1329,7 @@ function App() {
                 <text fg={ROLES.dimText} wrapMode="none">{model.connector}</text>
                 <text fg={STATUS_COLOR[model.role]} wrapMode="none">{model.glyph + " "}</text>
                 <text
-                  fg={model.selected
-                    ? ROLES.selection
-                    : row.node.kind === "subagent"
-                      ? ROLES.subagent
-                      : ROLES.text}
+                  fg={model.selected ? ROLES.selection : ROLES.text}
                   attributes={model.selected ? TextAttributes.BOLD : TextAttributes.NONE}
                   wrapMode="none"
                 >

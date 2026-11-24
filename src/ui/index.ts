@@ -7,7 +7,6 @@ import packageJson from "../../package.json" with { type: "json" };
 import { loadMemory, loadTimeline } from "../memory/index.js";
 import { getSubAgent, listSubAgents, subscribeSubAgents } from "../runtime/subagents.js";
 import { buildInspector, formatDuration, statusIcon } from "./subagent-view.js";
-import { COLORS } from "./theme.js";
 import {
   appendAssistantDelta,
   appendLog,
@@ -72,13 +71,6 @@ export const COMMANDS: CommandInfo[] = [
 ];
 
 const c: typeof Chalk = Chalk as unknown as typeof Chalk;
-// Carbon Forge hexes for the non-TUI Chalk fallback (DESIGN_SYSTEM §11.3).
-const ink = {
-  dim: c.hex(COLORS.textDim),
-  accent: c.hex(COLORS.accent),
-  copper: c.hex(COLORS.copper),
-  teal: c.hex(COLORS.teal),
-};
 const rule = (): string => "─".repeat(Math.max(10, Math.min(terminalWidth() - 2, 100)));
 function print(content: string, kind: UiKind = "info"): void { appendLog(content, kind); }
 
@@ -94,9 +86,9 @@ function inline(text: string): string {
     .split(/(\x60[^\x60]+\x60)/)
     .map((segment) =>
       segment.length > 1 && segment.startsWith("\x60") && segment.endsWith("\x60")
-        ? ink.copper(segment.slice(1, -1))
+        ? c.cyan(segment.slice(1, -1))
         : segment
-            .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label: string, url: string) => ink.teal(label) + ink.dim(" (" + url + ")"))
+            .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label: string, url: string) => c.cyan(label) + c.dim(" (" + url + ")"))
             .replace(/\*\*(.+?)\*\*|__(.+?)__/g, (_match, boldA: string, boldB: string) => c.bold(boldA ?? boldB))
             .replace(/~~(.+?)~~/g, (_match, value: string) => c.strikethrough(value))
             .replace(/(?<!\w)\*([^*\n]+)\*|(?<!\w)_([^_\n]+)_/g, (_match, italicA: string, italicB: string) => c.italic(italicA ?? italicB))
@@ -158,7 +150,7 @@ export class MarkdownPrinter {
       this.beforeFirstOutput?.();
       appendLog("\n", "markdown");
     }
-    const prefix = this.first ? ink.copper("● ") : this.partialLine ? "" : "  ";
+    const prefix = this.first ? c.magenta("● ") : this.partialLine ? "" : "  ";
     this.first = false;
     appendLog(prefix + this.render(this.pending), "markdown");
     this.pending = "";
@@ -177,7 +169,7 @@ export class MarkdownPrinter {
       this.beforeFirstOutput?.();
       appendLog("\n", "markdown");
     }
-    const prefix = this.first ? ink.copper("● ") : this.partialLine ? "" : "  ";
+    const prefix = this.first ? c.magenta("● ") : this.partialLine ? "" : "  ";
     this.first = false;
     appendLog(blank && !this.inCode ? "\n" : prefix + this.render(line) + "\n", "markdown");
     this.partialLine = false;
@@ -187,28 +179,25 @@ export class MarkdownPrinter {
     const fence = /^\s*\x60\x60\x60\s*([\w+-]*)/.exec(line);
     if (fence) {
       this.inCode = !this.inCode;
-      return this.inCode ? ink.dim("┌─ " + (fence[1] || "code")) : ink.dim("└─");
+      return this.inCode ? c.dim("┌─ " + (fence[1] || "code")) : c.dim("└─");
     }
-    if (this.inCode) return ink.dim("│ ") + ink.copper(line.replace(/\t/g, "  "));
+    if (this.inCode) return c.dim("│ ") + c.cyan(line.replace(/\t/g, "  "));
     const heading = /^(#{1,6})\s+(.*)$/.exec(line);
-    if (heading) {
-      const style = (heading[1]?.length ?? 1) === 1 ? ink.accent : ink.teal;
-      return style.bold(inline(heading[2] ?? ""));
-    }
-    if (/^\s*([-*_])\1{2,}\s*$/.test(line)) return ink.dim("─".repeat(Math.min(40, terminalWidth() - 4)));
+    if (heading) return c.bold.magenta(inline(heading[2] ?? ""));
+    if (/^\s*([-*_])\1{2,}\s*$/.test(line)) return c.dim("─".repeat(Math.min(40, terminalWidth() - 4)));
     const task = /^(\s*)[-*+]\s+\[([ xX])\]\s+(.*)$/.exec(line);
-    if (task) return (task[1] ?? "") + ink.copper(task[2]?.toLowerCase() === "x" ? "☑" : "☐") + " " + inline(task[3] ?? "");
+    if (task) return (task[1] ?? "") + c.magenta(task[2]?.toLowerCase() === "x" ? "☑" : "☐") + " " + inline(task[3] ?? "");
     const bullet = /^(\s*)[-*+]\s+(.*)$/.exec(line);
-    if (bullet) return (bullet[1] ?? "") + ink.copper("•") + " " + inline(bullet[2] ?? "");
+    if (bullet) return (bullet[1] ?? "") + c.magenta("•") + " " + inline(bullet[2] ?? "");
     const numbered = /^(\s*)(\d+)[.)]\s+(.*)$/.exec(line);
-    if (numbered) return (numbered[1] ?? "") + ink.copper(numbered[2] + ".") + " " + inline(numbered[3] ?? "");
-    if (/^\s*\|?(?:\s*:?-+:?\s*\|)+\s*$/.test(line)) return ink.dim("─".repeat(Math.min(terminalWidth() - 4, 80)));
+    if (numbered) return (numbered[1] ?? "") + c.magenta(numbered[2] + ".") + " " + inline(numbered[3] ?? "");
+    if (/^\s*\|?(?:\s*:?-+:?\s*\|)+\s*$/.test(line)) return c.dim("─".repeat(Math.min(terminalWidth() - 4, 80)));
     if (/^\s*\|.*\|\s*$/.test(line)) {
       const cells = line.trim().replace(/^\||\|$/g, "").split("|").map((cell) => inline(cell.trim()));
-      return ink.dim("│ ") + cells.join(ink.dim(" │ ")) + ink.dim(" │");
+      return c.dim("│ ") + cells.join(c.dim(" │ ")) + c.dim(" │");
     }
     const quote = /^>\s?(.*)$/.exec(line);
-    if (quote) return ink.dim("▎ ") + c.italic(inline(quote[1] ?? ""));
+    if (quote) return c.dim("▎ ") + c.italic(inline(quote[1] ?? ""));
     return inline(line);
   }
 }
@@ -469,7 +458,7 @@ export function printHelp(): void {
     print(markdown, "markdown");
     return;
   }
-  // Non-TUI fallback: render the same document with the Carbon Forge Chalk hexes.
+  // Non-TUI fallback: render the same document with the pre-theme named Chalk colors.
   const printer = new MarkdownPrinter();
   printer.push(markdown);
   printer.end();

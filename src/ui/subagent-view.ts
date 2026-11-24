@@ -5,17 +5,8 @@
 
 import Chalk from 'chalk';
 import type { SubAgentActivity, SubAgentStatus } from '../runtime/subagents.js';
-import { COLORS } from './theme.js';
 
 const c: typeof Chalk = Chalk as unknown as typeof Chalk;
-// Carbon Forge hexes for the non-TUI Chalk fallback (DESIGN_SYSTEM §11.3).
-const ink = {
-  dim: c.hex(COLORS.textDim),
-  accent: c.hex(COLORS.accent),
-  copper: c.hex(COLORS.copper),
-  teal: c.hex(COLORS.teal),
-  error: c.hex(COLORS.error),
-};
 
 /** Rows the inspector panel spends on borders + the fixed task/status/now header. */
 const PANEL_CHROME_ROWS = 5;
@@ -51,15 +42,15 @@ export function statusLabel(status: SubAgentStatus): string {
 export function statusIcon(status: SubAgentStatus): string {
 	switch (status) {
 		case 'running':
-			return ink.copper('◐');
+			return c.yellow('◐');
 		case 'waiting':
-			return ink.teal('◔');
+			return c.cyan('◔');
 		case 'completed':
-			return ink.accent('✓');
+			return c.green('✓');
 		case 'cancelled':
-			return ink.dim('!');
+			return c.yellow('!');
 		default:
-			return ink.error('✗');
+			return c.red('✗');
 	}
 }
 
@@ -89,7 +80,7 @@ export function renderStrip(list: readonly SubAgentActivity[], opts: StripOption
 	const live = running + waiting;
 	const plural = (n: number): string => `${n} subagent${n === 1 ? '' : 's'}`;
 
-	const dot = live > 0 ? ink.copper('●') : failed > 0 ? ink.error('●') : ink.accent('●');
+	const dot = live > 0 ? c.yellow('●') : failed > 0 ? c.red('●') : c.green('●');
 	const headline = live > 0 ? `${plural(live)} running` : `${plural(list.length)} finished`;
 	const detail = [waiting > 0 ? `${waiting} waiting` : '', done > 0 && live > 0 ? `${done} done` : '', failed > 0 ? `${failed} failed` : '']
 		.filter(Boolean)
@@ -106,13 +97,13 @@ export function renderStrip(list: readonly SubAgentActivity[], opts: StripOption
 	// Lowest priority is dropped first when the terminal is narrow.
 	const segments: Array<{ plain: string; paint: (s: string) => string; priority: number }> = [
 		{ plain: ' ' + headline, paint: (s) => c.bold(s), priority: 0 },
-		{ plain: detail ? ' · ' + detail : '', paint: (s) => ink.dim(s), priority: 3 },
+		{ plain: detail ? ' · ' + detail : '', paint: (s) => c.dim(s), priority: 3 },
 		{
 			plain: current ? ` | ▸ ${current.agent} ${list.length > 1 ? `${sel + 1}/${list.length}` : ''}`.trimEnd() : '',
-			paint: (s) => ink.teal(s),
+			paint: (s) => c.cyan(s),
 			priority: 2,
 		},
-		{ plain: ' | ' + hint, paint: (s) => ink.dim(s), priority: 1 },
+		{ plain: ' | ' + hint, paint: (s) => c.dim(s), priority: 1 },
 	];
 
 	let kept = segments.filter((s) => s.plain);
@@ -170,27 +161,27 @@ export function buildInspector(a: SubAgentActivity, width: number, now: number =
 	const now_ = isLive(a) ? a.activity : a.status === 'completed' ? 'finished' : a.status;
 	const statusText = `${statusLabel(a.status)} · ${formatDuration(elapsed(a, now))}${stepText}`;
 	const head = [
-		ink.dim('Task    ') + clip(flat(a.task), room - 8),
-		ink.dim('Status  ') + statusIcon(a.status) + ' ' + clip(statusText, room - 10),
-		ink.dim('Now     ') + (isLive(a) ? ink.teal(clip(now_, room - 8)) : clip(now_, room - 8)),
+		c.dim('Task    ') + clip(flat(a.task), room - 8),
+		c.dim('Status  ') + statusIcon(a.status) + ' ' + clip(statusText, room - 10),
+		c.dim('Now     ') + (isLive(a) ? c.cyan(clip(now_, room - 8)) : clip(now_, room - 8)),
 	];
 
 	const body: string[] = [];
 	if (a.progress.length > 0) {
 		body.push(c.bold('Progress'));
 		for (const line of a.progress) {
-			wrap(line, room - 4).forEach((part, index) => body.push((index === 0 ? ink.dim('  • ') : '    ') + part));
+			wrap(line, room - 4).forEach((part, index) => body.push((index === 0 ? c.dim('  • ') : '    ') + part));
 		}
 	}
 	if (a.tools.length > 0) {
 		body.push(c.bold('Tool calls'));
 		for (const tool of a.tools) {
 			const running = tool.endedAt === undefined;
-			const icon = running ? ink.copper('◐') : tool.ok ? ink.accent('✓') : ink.error('✗');
+			const icon = running ? c.yellow('◐') : tool.ok ? c.green('✓') : c.red('✗');
 			const time = formatDuration((tool.endedAt ?? now) - tool.startedAt) + (running ? '…' : '');
 			const label = `${tool.name} ${tool.args}`.trim();
-			body.push('  ' + icon + ' ' + clip(label, Math.max(4, room - 4 - time.length - 1)) + ' ' + ink.dim(time));
-			if (tool.result) body.push(ink.dim('    ↳ ' + clip(tool.result, room - 6)));
+			body.push('  ' + icon + ' ' + clip(label, Math.max(4, room - 4 - time.length - 1)) + ' ' + c.dim(time));
+			if (tool.result) body.push(c.dim('    ↳ ' + clip(tool.result, room - 6)));
 		}
 	}
 	if (a.output) {
@@ -198,10 +189,10 @@ export function buildInspector(a: SubAgentActivity, width: number, now: number =
 		for (const line of wrap(a.output, room - 2)) body.push('  ' + line);
 	}
 	if (a.error) {
-		body.push(ink.error.bold('Error'));
-		for (const line of wrap(a.error, room - 2)) body.push('  ' + ink.error(line));
+		body.push(c.red.bold('Error'));
+		for (const line of wrap(a.error, room - 2)) body.push('  ' + c.red(line));
 	}
-	if (body.length === 0) body.push(ink.dim('  No activity yet.'));
+	if (body.length === 0) body.push(c.dim('  No activity yet.'));
 	return { head, body };
 }
 
@@ -232,7 +223,7 @@ export function renderPanel(a: SubAgentActivity, opts: PanelOptions): { rows: st
 	const end = body.length - scroll;
 	const visible = body.slice(Math.max(0, end - bodyRows), end);
 
-	const border = ink.copper;
+	const border = c.magenta;
 	const pad = (styled: string): string => {
 		// styled is already clipped to `inner` visible columns
 		// eslint-disable-next-line no-control-regex
@@ -245,10 +236,10 @@ export function renderPanel(a: SubAgentActivity, opts: PanelOptions): { rows: st
 	let position = opts.count > 1 ? ` ${opts.index + 1}/${opts.count} ` : '';
 	if (title.length + position.length > avail) position = '';
 	title = clip(title, avail);
-	const top = border('╭─' + title) + border('─'.repeat(avail - title.length - position.length)) + ink.dim(position) + border('╮');
+	const top = border('╭─' + title) + border('─'.repeat(avail - title.length - position.length)) + c.dim(position) + border('╮');
 	const more = scroll > 0 ? ` ↓ ${scroll} newer ` : '';
 	const hint = clip(` ↑↓ switch · pgup/pgdn scroll${more ? ' ·' + more : ''} · esc close `, Math.max(0, width - 4));
-	const bottom = border('╰─') + ink.dim(hint) + border('─'.repeat(Math.max(0, width - 3 - hint.length)) + '╯');
+	const bottom = border('╰─') + c.dim(hint) + border('─'.repeat(Math.max(0, width - 3 - hint.length)) + '╯');
 
 	const rows: string[] = [top, ...head.map(pad)];
 	for (let i = 0; i < bodyRows; i++) rows.push(pad(visible[i] ?? ''));
