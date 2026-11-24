@@ -85,6 +85,11 @@ export function formatAgentTokens(totalTokens: number): string {
 	return (value / 1_000_000).toFixed(1).replace(/\.0$/, '') + 'M';
 }
 
+/** Code-point cell count, matching `clipText` (the module has no width library). */
+function cellLength(value: string): number {
+	return [...value].length;
+}
+
 function clipText(value: string, max: number): string {
 	if (max <= 0) return '';
 	const chars = [...value];
@@ -103,52 +108,56 @@ function formatClock(at: number): string {
 
 const waitingText = (count: number): string => `waiting on ${count} subagent${count === 1 ? '' : 's'}`;
 
+type MetaKind = 'status' | 'agent' | 'task' | 'waiting' | 'activity' | 'error' | 'time' | 'tokens' | 'queued';
+
 interface MetaSegment extends AgentRowSegment {
 	/** 1 = tokens, 2 = time, 3 = completed task/goal, 4 = active agent name. */
 	priority?: 1 | 2 | 3 | 4;
+	kind: MetaKind;
 }
 
 function metaSegments(node: AgentTreeNode, opts: AgentRowOptions): MetaSegment[] {
-	const segments: MetaSegment[] = [{ text: agentStatusLabel(node.status), role: 'status' }];
+	const segments: MetaSegment[] = [{ text: agentStatusLabel(node.status), role: 'status', kind: 'status' }];
 	const live = isLive(node.status);
 
 	if (node.kind === 'main') {
 		const activeAgent = oneLine(opts.activeAgentName ?? '', 40);
-		if (activeAgent) segments.push({ text: activeAgent, role: 'muted', priority: 4 });
-		if (node.task) segments.push({ text: oneLine(node.task, 80), role: 'muted', priority: 3 });
-		if (node.activeChildCount > 0) segments.push({ text: waitingText(node.activeChildCount), role: 'detail' });
-		if (live) segments.push({ text: 'since ' + formatClock(node.startedAt), role: 'muted', priority: 2 });
-		if (node.usage) segments.push({ text: formatAgentTokens(node.usage.totalTokens) + ' tok', role: 'muted', priority: 1 });
-		if (node.queued > 0) segments.push({ text: node.queued + ' queued', role: 'muted' });
+		if (activeAgent) segments.push({ text: activeAgent, role: 'muted', kind: 'agent', priority: 4 });
+		if (node.task) segments.push({ text: oneLine(node.task, 80), role: 'muted', kind: 'task', priority: 3 });
+		if (node.activeChildCount > 0) segments.push({ text: waitingText(node.activeChildCount), role: 'detail', kind: 'waiting' });
+		if (live) segments.push({ text: 'since ' + formatClock(node.startedAt), role: 'muted', kind: 'time', priority: 2 });
+		if (node.usage) segments.push({ text: formatAgentTokens(node.usage.totalTokens) + ' tok', role: 'muted', kind: 'tokens', priority: 1 });
+		if (node.queued > 0) segments.push({ text: node.queued + ' queued', role: 'muted', kind: 'queued' });
 		return segments;
 	}
 
 	if (live) {
 		const activity = oneLine(node.activity, 80);
-		if (activity) segments.push({ text: activity, role: 'detail' });
+		if (activity) segments.push({ text: activity, role: 'detail', kind: 'activity' });
 	} else if (node.status === 'completed') {
-		if (node.task) segments.push({ text: oneLine(node.task, 80), role: 'muted', priority: 3 });
+		if (node.task) segments.push({ text: oneLine(node.task, 80), role: 'muted', kind: 'task', priority: 3 });
 	} else if (node.status === 'failed') {
 		const error = node.error ? oneLine(node.error, 120) : '';
-		if (error) segments.push({ text: error, role: 'error' });
+		if (error) segments.push({ text: error, role: 'error', kind: 'error' });
 	}
 	// stopped has no detail segment; the `!` glyph and `Stopped` label carry it.
-	if (live) segments.push({ text: 'since ' + formatClock(node.startedAt), role: 'muted', priority: 2 });
-	else if (node.endedAt !== undefined) segments.push({ text: formatDuration(node.endedAt - node.startedAt), role: 'muted', priority: 2 });
-	if (node.usage) segments.push({ text: formatAgentTokens(node.usage.totalTokens) + ' tok', role: 'muted', priority: 1 });
-	if (node.queued > 0) segments.push({ text: node.queued + ' queued', role: 'muted' });
+	if (live) segments.push({ text: 'since ' + formatClock(node.startedAt), role: 'muted', kind: 'time', priority: 2 });
+	else if (node.endedAt !== undefined) segments.push({ text: formatDuration(node.endedAt - node.startedAt), role: 'muted', kind: 'time', priority: 2 });
+	if (node.usage) segments.push({ text: formatAgentTokens(node.usage.totalTokens) + ' tok', role: 'muted', kind: 'tokens', priority: 1 });
+	if (node.queued > 0) segments.push({ text: node.queued + ' queued', role: 'muted', kind: 'queued' });
 	return segments;
 }
 
 function rowLength(prefix: string, glyphPart: string, label: string, segments: readonly MetaSegment[]): number {
-	const meta = segments.reduce((sum, segment) => sum + segment.text.length, 0) + Math.max(0, segments.length - 1) * 3;
-	return prefix.length + glyphPart.length + label.length + (segments.length > 0 ? 3 + meta : 0);
+	const meta = segments.reduce((sum, segment) => sum + cellLength(segment.text), 0) + Math.max(0, segments.length - 1) * 3;
+	return cellLength(prefix) + cellLength(glyphPart) + cellLength(label) + (segments.length > 0 ? 3 + meta : 0);
 }
 
 /**
- * One navigator row. `width` is the row's available cells; names and details
- * are clipped with `…` in the design's drop order (tokens, time, task/goal,
- * active agent, then detail, then name) so a row never wraps.
+ * One navigator row. `width` is the row's available cells and is a hard
+ * invariant: the rendered row never exceeds it. Optional metadata is dropped
+ * in the design's order (tokens, time, task/goal, active agent), then queued
+ * counts, then the detail and name are clipped with `…`.
  */
 export function formatAgentRow(node: AgentTreeNode, opts: AgentRowOptions): AgentRow {
 	const width = Math.max(1, Math.floor(opts.width) || 1);
@@ -160,39 +169,81 @@ export function formatAgentRow(node: AgentTreeNode, opts: AgentRowOptions): Agen
 	const glyph = agentStatusGlyph(node.status);
 	const glyphPart = glyph + ' ';
 	const baseName = node.kind === 'main' ? 'main' : node.name;
-	const labelSuffix = node.kind === 'subagent' && node.duplicateName ? '#' + node.id.slice(0, 6) : '';
-	// The duplicate `#id6` suffix is part of the retained identity, so clip the
-	// base name and keep the suffix whenever the field is wide enough.
-	const clipLabel = (max: number): string => {
-		if (!labelSuffix) return clipText(baseName, max);
-		const suffixCells = [...labelSuffix].length;
-		if (max <= suffixCells) return clipText(baseName + labelSuffix, max);
-		return clipText(baseName, max - suffixCells) + labelSuffix;
-	};
-
+	const suffix = node.kind === 'subagent' && node.duplicateName ? '#' + node.id.slice(0, 6) : '';
 	const segments = metaSegments(node, opts);
 	const nameCap = width >= 78 ? 32 : width >= 58 ? 22 : 14;
-	const minMeta = segments.length > 0 ? 3 + (segments[0]?.text.length ?? 0) : 0;
-	const nameRoom = Math.max(8, Math.min(nameCap, width - prefix.length - glyphPart.length - minMeta));
-	let label = clipLabel(nameRoom);
+
+	// The duplicate `#id6` suffix is part of the retained identity while the
+	// label field is at least its 8-cell minimum; below that it goes before the
+	// name itself is clipped.
+	const formatLabel = (max: number, withSuffix: boolean): string => {
+		if (!withSuffix || !suffix) return clipText(baseName, max);
+		const suffixCells = cellLength(suffix);
+		if (max <= suffixCells) return clipText(baseName + suffix, max);
+		return clipText(baseName, max - suffixCells) + suffix;
+	};
+
+	const minMeta = segments.length > 0 ? 3 + cellLength(segments[0]!.text) : 0;
+	const nameRoom = Math.max(8, Math.min(nameCap, width - cellLength(prefix) - cellLength(glyphPart) - minMeta));
+	let label = formatLabel(nameRoom, suffix.length > 0);
+	const total = (): number => rowLength(prefix, glyphPart, label, segments);
 
 	for (const priority of [1, 2, 3, 4] as const) {
-		if (rowLength(prefix, glyphPart, label, segments) <= width) break;
+		if (total() <= width) break;
 		for (let index = segments.length - 1; index >= 0; index--) {
 			if (segments[index]?.priority === priority) segments.splice(index, 1);
 		}
 	}
 
-	while (rowLength(prefix, glyphPart, label, segments) > width) {
-		const detail = segments.find((segment) => segment.role === 'detail' || segment.role === 'error');
-		if (!detail || detail.text.length <= 9) break;
-		detail.text = clipText(detail.text, Math.max(9, detail.text.length - (rowLength(prefix, glyphPart, label, segments) - width)));
+	// The design's 9-cell detail and 8-cell name minimums can still overflow at
+	// narrow widths. Queued counts are the first hard-invariant casualty, ahead
+	// of clipping the detail or name below those minimums.
+	const designMinimum = (): number => rowLength(
+		prefix,
+		glyphPart,
+		formatLabel(8, suffix.length > 0),
+		segments.map((segment) => segment.role === 'detail' || segment.role === 'error'
+			? { ...segment, text: clipText(segment.text, 9) }
+			: segment),
+	);
+	if (total() > width && designMinimum() > width) {
+		for (let index = segments.length - 1; index >= 0; index--) {
+			if (segments[index]?.kind === 'queued') segments.splice(index, 1);
+		}
 	}
 
-	while (rowLength(prefix, glyphPart, label, segments) > width) {
-		const overflow = rowLength(prefix, glyphPart, label, segments) - width;
-		if (label.length <= 8) break;
-		label = clipLabel(Math.max(8, label.length - overflow));
+	// Clip live activity / failed error to its readable minimum, then the name.
+	while (total() > width) {
+		const detail = segments.find((segment) => segment.role === 'detail' || segment.role === 'error');
+		if (!detail || cellLength(detail.text) <= 9) break;
+		detail.text = clipText(detail.text, Math.max(9, cellLength(detail.text) - (total() - width)));
+	}
+	while (total() > width && cellLength(label) > 8) {
+		label = formatLabel(Math.max(8, cellLength(label) - (total() - width)), suffix.length > 0);
+	}
+
+	// Hard invariant below the design minimums: shed queued metadata, clip the
+	// detail to its last cell, drop it, then clip the name. The fixed parts
+	// (marker, connector, glyph, status label) are never truncated.
+	if (total() > width) {
+		for (let index = segments.length - 1; index >= 0; index--) {
+			if (segments[index]?.kind === 'queued') segments.splice(index, 1);
+		}
+	}
+	while (total() > width) {
+		const detail = segments.find((segment) =>
+			(segment.role === 'detail' || segment.role === 'error') && cellLength(segment.text) > 1);
+		if (!detail) break;
+		detail.text = clipText(detail.text, Math.max(1, cellLength(detail.text) - (total() - width)));
+	}
+	if (total() > width) {
+		for (let index = segments.length - 1; index >= 0; index--) {
+			const role = segments[index]?.role;
+			if (role === 'detail' || role === 'error') segments.splice(index, 1);
+		}
+	}
+	while (total() > width && cellLength(label) > 0) {
+		label = formatLabel(Math.max(0, cellLength(label) - (total() - width)), suffix.length > 0);
 	}
 
 	return {
@@ -263,7 +314,7 @@ export function formatContentStatus(
 	}
 	if (node.usage) parts.push({ text: formatAgentTokens(node.usage.totalTokens) + ' tok', role: 'muted', priority: 1 });
 
-	const plainLength = (): number => parts.reduce((sum, part) => sum + part.text.length, 0) + Math.max(0, parts.length - 1) * 3;
+	const plainLength = (): number => parts.reduce((sum, part) => sum + cellLength(part.text), 0) + Math.max(0, parts.length - 1) * 3;
 	for (const priority of [1, 2, 3] as const) {
 		if (plainLength() <= width) break;
 		for (let index = parts.length - 1; index >= 0; index--) {
@@ -271,14 +322,31 @@ export function formatContentStatus(
 		}
 	}
 	while (plainLength() > width) {
-		const detail = parts.find((part) => (part.role === 'detail' || part.role === 'error') && part.text.length > 9);
+		const detail = parts.find((part) => (part.role === 'detail' || part.role === 'error') && cellLength(part.text) > 9);
 		if (!detail) break;
-		detail.text = clipText(detail.text, Math.max(9, detail.text.length - (plainLength() - width)));
+		detail.text = clipText(detail.text, Math.max(9, cellLength(detail.text) - (plainLength() - width)));
 	}
 	while (plainLength() > width) {
 		const name = parts[0];
-		if (!name || name.text.length <= 2) break;
-		name.text = clipText(name.text, Math.max(2, name.text.length - (plainLength() - width)));
+		if (!name || cellLength(name.text) <= 2) break;
+		name.text = clipText(name.text, Math.max(2, cellLength(name.text) - (plainLength() - width)));
+	}
+	// Hard invariant below the design minimums: shrink the detail to one cell,
+	// then the name, then drop the detail so the @name + status core fits.
+	while (plainLength() > width) {
+		const detail = parts.find((part) => (part.role === 'detail' || part.role === 'error') && cellLength(part.text) > 1);
+		if (!detail) break;
+		detail.text = clipText(detail.text, Math.max(1, cellLength(detail.text) - (plainLength() - width)));
+	}
+	while (plainLength() > width) {
+		const name = parts[0];
+		if (!name || cellLength(name.text) <= 1) break;
+		name.text = clipText(name.text, Math.max(1, cellLength(name.text) - (plainLength() - width)));
+	}
+	while (plainLength() > width) {
+		const detail = parts.find((part) => part.role === 'detail' || part.role === 'error');
+		if (!detail) break;
+		parts.splice(parts.indexOf(detail), 1);
 	}
 
 	const segments: ContentStatusSegment[] = [];

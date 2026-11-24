@@ -257,6 +257,141 @@ describe('formatAgentRow', () => {
   });
 });
 
+describe('formatAgentRow width invariant', () => {
+  /** Assemble the row exactly as tui.tsx does: four text nodes plus ` · `-joined segments. */
+  const tuiRowLine = (row: AgentRow): string =>
+    row.marker + row.connector + row.glyph + ' ' + row.label + row.segments.map((segment) => ' · ' + segment.text).join('');
+
+  const longActivity = 'editing src/ui/tui.tsx for the multi-agent workspace navigator and transcript panes';
+  const longTask = 'implement the navigator, content status row and composer routing for every selected agent';
+  const longError = 'provider returned 401 because the API key is invalid and the request was rejected';
+
+  // The TUI requests at least 20 cells (`Math.max(20, terminalColumns - 2)`), so 20 is
+  // its floor and the supported 40-column terminal yields 38. Depths 0 and 1 are the
+  // shipped tree (main plus direct sub-agents); deeper nesting is not implemented.
+  const fixtures: Array<{ case: string; node: AgentTreeNode; activeAgentName?: string }> = [
+    { case: 'subagent/unique/usage', node: node({ status: 'running', activity: longActivity, usage }) },
+    {
+      case: 'subagent/duplicate/queued-1',
+      node: node({ name: 'frontend-expert', duplicateName: true, queued: 1, activity: longActivity, task: longTask, error: longError, usage }),
+    },
+    {
+      case: 'subagent/long/queued-42',
+      node: node({
+        name: 'a-very-long-agent-name-indeed',
+        duplicateName: true,
+        queued: 42,
+        activity: longActivity,
+        task: longTask,
+        error: longError,
+        endedAt: startedAt + 3_600_000,
+        usage,
+      }),
+    },
+    {
+      case: 'subagent/no-usage/queued-0',
+      node: node({ name: 'test-agent', queued: 0, activity: 'running the unit tests', task: 'run the suite', endedAt: undefined, usage: undefined }),
+    },
+    {
+      case: 'main/active-agent/queued-1',
+      node: mainNode({ status: 'running', activity: 'working', task: longTask, activeChildCount: 2, queued: 1, usage }),
+      activeAgentName: 'project-manager',
+    },
+    {
+      case: 'main/no-usage/queued-42',
+      node: mainNode({ status: 'waiting', activity: 'waiting for approval', task: longTask, activeChildCount: 0, queued: 42, usage: undefined }),
+      activeAgentName: 'frontend-expert',
+    },
+    {
+      case: 'subagent/cjk/duplicate',
+      node: node({ name: '前端专家-测试', duplicateName: true, activity: '正在编辑导航器与转录面板', task: '实现导航器', queued: 1, usage }),
+    },
+    {
+      case: 'subagent/emoji/duplicate',
+      node: node({ name: '👨‍👩‍👧‍👦-frontend-expert-🚀', duplicateName: true, activity: '🤖 editing 🚀', task: '查看 🧪', queued: 1, usage }),
+    },
+  ];
+
+  const widths = [20, 24, 30, 38, 40, 48, 60, 80] as const;
+  const statuses: WorkspaceStatus[] = ['idle', 'running', 'waiting', 'completed', 'failed', 'stopped'];
+
+  it('never renders more code points than the requested width for supported depths and statuses', () => {
+    for (const fixture of fixtures) {
+      const siblingFlags = fixture.node.depth > 0 ? [false, true] : [true];
+      for (const width of widths) {
+        for (const selected of [true, false]) {
+          for (const lastSibling of siblingFlags) {
+            for (const status of statuses) {
+              const row = formatAgentRow(
+                { ...fixture.node, status },
+                { width, now, selected, lastSibling, activeAgentName: fixture.activeAgentName },
+              );
+              const line = tuiRowLine(row);
+              const caseId = `${fixture.case} w=${width} status=${status} selected=${selected} last=${lastSibling}`;
+
+              expect(cellLength(line), caseId).toBeLessThanOrEqual(width);
+              expect(line, caseId).not.toMatch(/[\r\n]/);
+              expect(row.prefix, caseId).toBe(row.marker + row.connector);
+              expect(row.marker, caseId).toBe(selected ? '▸ ' : '  ');
+              expect(row.glyph, caseId).toBe(agentStatusGlyph(status));
+              expect(row.meta.startsWith(agentStatusLabel(status)), caseId).toBe(true);
+              expect(cellLength(row.label), caseId).toBeGreaterThan(0);
+              expect(line.startsWith(row.marker + row.connector + row.glyph + ' '), caseId).toBe(true);
+            }
+          }
+        }
+      }
+    }
+  });
+
+  it('fits the reported duplicate frontend-expert row at width 38 for live and failed statuses', () => {
+    const repro = node({
+      name: 'frontend-expert',
+      duplicateName: true,
+      queued: 1,
+      activity: longActivity,
+      task: longTask,
+      error: longError,
+      endedAt: startedAt + 60_000,
+      usage,
+    });
+
+    for (const status of ['running', 'waiting', 'failed'] as WorkspaceStatus[]) {
+      const row = formatAgentRow({ ...repro, status }, { width: 38, now, selected: true, lastSibling: true });
+      const line = tuiRowLine(row);
+
+      expect(cellLength(line), status).toBeLessThanOrEqual(38);
+      expect(line, status).not.toMatch(/[\r\n]/);
+      expect(line.startsWith('▸ └ ' + agentStatusGlyph(status) + ' '), status).toBe(true);
+      expect(row.meta.startsWith(agentStatusLabel(status)), status).toBe(true);
+      expect(row.label.endsWith('#req-ab'), status).toBe(true);
+      expect(cellLength(row.label), status).toBeGreaterThan(cellLength('#req-ab'));
+    }
+  });
+
+  it('keeps the full name and duplicate suffix when the width permits', () => {
+    const identities: Array<{ case: string; fixture: AgentTreeNode; expected: string }> = [
+      { case: 'unique', fixture: node({ name: 'frontend-expert', duplicateName: false }), expected: 'frontend-expert' },
+      { case: 'duplicate', fixture: node({ name: 'frontend-expert', duplicateName: true }), expected: 'frontend-expert#req-ab' },
+      { case: 'cjk', fixture: node({ name: '前端专家-测试', duplicateName: true }), expected: '前端专家-测试#req-ab' },
+      { case: 'emoji', fixture: node({ name: '🤖-frontend-expert-🚀', duplicateName: true }), expected: '🤖-frontend-expert-🚀#req-ab' },
+    ];
+
+    for (const { case: caseId, fixture, expected } of identities) {
+      for (const status of statuses) {
+        const row = formatAgentRow({ ...fixture, status }, { width: 80, now, selected: true });
+        const id = `${caseId}/${status}`;
+
+        expect(row.label, id).toBe(expected);
+        expect(row.marker, id).toBe('▸ ');
+        expect(row.glyph, id).toBe(agentStatusGlyph(status));
+        expect(row.meta.startsWith(agentStatusLabel(status)), id).toBe(true);
+        expect(cellLength(tuiRowLine(row)), id).toBeLessThanOrEqual(80);
+      }
+    }
+  });
+});
+
 describe('formatContentStatus', () => {
   it('shows the main idle state without inventing elapsed time or tokens', () => {
     const segments = formatContentStatus(mainNode({ status: 'idle', activity: 'ready' }), { now, width: 200 });

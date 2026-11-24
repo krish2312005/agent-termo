@@ -105,7 +105,7 @@ Vitest configuration lives in `vitest.config.ts`. Tests live in `tests/unit/` an
   path validation. Integration suites cover sessions, skills, browser verification,
   and the packaged runtime.
 
-Current baseline after the multi-agent workspace slice: **391 passed / 2 skipped**
+Current baseline after the multi-agent workspace slice: **394 passed / 2 skipped**
 (43 test files passed, 1 skipped).
 
 ## Known gaps
@@ -145,14 +145,22 @@ Current baseline after the multi-agent workspace slice: **391 passed / 2 skipped
   end-of-turn drain in `src/main.ts`. Workspace tests use fake handles, so the real
   session queue/drain (including the finally-drain race) is covered only by manual
   runs/manual TTY use, not unit tests.
-- **Known narrow-terminal risk:** at the supported 40-column minimum, a navigator
-  row combining a duplicate long name, a live activity and a non-zero queue count
-  can exceed the available cells. `formatAgentRow` never wraps and clips in the
-  documented drop order, but it keeps the design's minimum name/detail widths
-  (8 cells plus `…`); tests assert fit for realistic single-name rows down to
-  width 38 and for the stressed duplicate/queued rows from width 48 up. Resolve in
-  `workspace-view.ts` if the design's "no horizontal overflow" rule must win at
-  40 columns.
+- **Navigator row width is a hard invariant (`formatAgentRow`):** a row assembled
+  exactly as `tui.tsx` renders it (`marker + connector + glyph + " " + label`, then
+  `" · " + segment.text` for each metadata segment) never exceeds the requested
+  `width` in code points for the shipped tree (main plus direct sub-agents, depths
+  0-1) at widths >= 20; the TUI's own floor is 20 cells and the supported 40-column
+  terminal requests 38. `workspace-view.test.ts` asserts the matrix of widths
+  20/24/30/38/40/48/60/80, depths 0-1, all six statuses, selected/unselected,
+  duplicate long names, queue counts 0/1/42, usage present/absent, and CJK/emoji
+  names, plus the reported duplicate `frontend-expert` + `queued 1` row at width 38
+  for running/waiting/failed. The selected marker, connector, glyph and status
+  label always survive, and the full name (including the duplicate `#id6` suffix)
+  survives when the width permits (asserted at 80). Honest limitation: synthetic
+  nests deeper than the runtime's one-level tree can still overflow at narrow
+  widths because the fixed marker/connector/glyph/status prefix is never truncated
+  (e.g. depth 13 at width 38 renders 40-42 cells); the tree is generic but the
+  runtime does not create such rows.
 - Workspace tests create in-memory workspaces with fake handles and fake main
   bindings; they never call a provider, start a terminal, or touch
   `~/.agent-termo`.
