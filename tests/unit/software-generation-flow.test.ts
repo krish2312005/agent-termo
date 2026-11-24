@@ -5,6 +5,8 @@ import { buildNemotronRequestOverrides } from '../../src/llm/client.js';
 describe('software-generation tool routing', () => {
   it('enables tools for natural software-creation requests', () => {
     expect(shouldUseTools('Make a simple software like a Kanban board')).toBe(true);
+    expect(shouldUseTools('Making a Kanban app with vanilla JavaScript')).toBe(true);
+    expect(shouldRequireInitialToolCall('Making a Kanban app with vanilla JavaScript')).toBe(true);
     expect(shouldUseTools('Build an app with HTML, CSS, and JavaScript')).toBe(true);
     expect(shouldUseTools('Create a website')).toBe(true);
     expect(shouldRequireInitialToolCall('Make a simple software like a Kanban board')).toBe(true);

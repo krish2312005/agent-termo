@@ -364,15 +364,17 @@ async function completeWithRetry(
 				throw error;
 			}
 		} catch (error) {
-			if (tools?.length && isToolRequestTimeoutError(error)) {
-				const timeoutError = new Error('Native tool-call request timed out; retrying once with the text-based tool protocol. ' + providerError(error));
-				Object.assign(timeoutError, { retryable: false });
-				throw timeoutError;
-			}
+			// Once visible output has started, never replay the request through a
+			// second protocol; the caller must preserve it as a partial response.
 			if (emittedVisibleText && isTransientError(error)) {
 				const partialError = new Error('Streaming response interrupted after partial output: ' + providerError(error));
-				Object.assign(partialError, { retryable: false });
+				Object.assign(partialError, { retryable: false, toolRequestTimeout: false });
 				throw partialError;
+			}
+			if (tools?.length && isToolRequestTimeoutError(error)) {
+				const timeoutError = new Error('Native tool-call request timed out; retrying once with the text-based tool protocol. ' + providerError(error));
+				Object.assign(timeoutError, { retryable: false, toolRequestTimeout: true });
+				throw timeoutError;
 			}
 			throw error;
 		}
@@ -465,16 +467,17 @@ function hasRelevantSkill(input: string, skills: SkillDefinition[]): boolean {
 
 export function shouldUseTools(input: string, activeAgentName = '', continuing = false, hasMcpTools = false, hasRelevantSkills = false): boolean {
 	if (continuing || activeAgentName || hasMcpTools || hasRelevantSkills) return true;
-	return /\b(build|make|code|debug|deploy|edit|file|fix|implement|develop|refactor|review|run|test|write|rewrite|create|delete|inspect|analy[sz]e|documentation|docs|architecture|delegate|spawn|specialist|sub-?agent|software(?:s)?|application|app|website|webapp|program|project|feature|component)\b/i.test(input);
+	return /\b(build(?:s|ing)?|mak(?:e|es|ing)|code|debug|deploy|edit|file|fix|implement|develop(?:s|ing)?|refactor|review|run|test|write|rewrite|creat(?:e|es|ing)|delete|inspect|analy[sz]e|documentation|docs|architecture|delegate|spawn|specialist|sub-?agent|software(?:s)?|application|app|website|webapp|program|project|feature|component)\b/i.test(input);
 }
 
 export function shouldRequireInitialToolCall(input: string): boolean {
-	return /\b(build|make|code|debug|deploy|edit|fix|implement|develop|refactor|write|rewrite|create|delete|test)\b/i.test(input);
+	return /\b(build(?:s|ing)?|mak(?:e|es|ing)|code|debug|deploy|edit|fix|implement|develop(?:s|ing)?|refactor|write|rewrite|creat(?:e|es|ing)|delete|test)\b/i.test(input);
 }
 
 export function isToolRequestTimeoutError(error: unknown): boolean {
 	if (!error || typeof error !== 'object') return false;
-	const value = error as { name?: unknown; message?: unknown; code?: unknown };
+	const value = error as { name?: unknown; message?: unknown; code?: unknown; toolRequestTimeout?: unknown };
+	if (typeof value.toolRequestTimeout === 'boolean') return value.toolRequestTimeout;
 	return /timeout|timed\s*out|ETIMEDOUT|APITimeoutError/i.test([value.name, value.message, value.code].map(String).join(' '));
 }
 
@@ -3071,7 +3074,8 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 							persistSession();
 							if (!streamed.printed) printAssistantMessage(cleanText);
 						}
-					} else {					// Show any narration that came with the first tool calls
+					} else {
+						// Show any narration that came with the first tool calls
 						const narration = (fullText ?? '').trim().replace(/^null$/, '').trim();
 						if (narration && !streamed.printed) printAssistantMessage(narration);
 
