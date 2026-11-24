@@ -490,7 +490,7 @@ export function isToolProtocolUnsupportedError(error: unknown): boolean {
 		? (value.error as { message?: unknown }).message
 		: value.error;
 	const message = [value.message, detail, value.code].map(String).join(' ');
-	return /(?:unsupported|unknown|unrecognized|not\\s+supported).{0,80}\\b(?:tools?|tool_choice)\\b|\\b(?:tools?|tool_choice)\\b.{0,80}(?:unsupported|unknown|unrecognized|not\\s+supported)|function[- ]calling.{0,60}(?:unsupported|not\\s+supported)/i.test(message);
+	return /(?:unsupported|unknown|unrecognized|not\s+supported).{0,80}\b(?:tools?|tool_choice)\b|\b(?:tools?|tool_choice)\b.{0,80}(?:unsupported|unknown|unrecognized|not\s+supported)|function[- ]calling.{0,60}(?:unsupported|not\s+supported)/i.test(message);
 }
 
 export function getMissingRequiredToolArguments(
