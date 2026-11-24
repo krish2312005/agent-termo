@@ -50,17 +50,9 @@ const SOURCE = {
   markdownRaw: "#9CCB9C",
 } as const;
 
-/**
- * Exact palette values. The four trailing names are temporary aliases kept
- * only because src/ui/index.ts and src/ui/subagent-view.ts still import them
- * until the callsite stage restores their pre-theme named Chalk colors.
- */
+/** Exact palette values. */
 export const COLORS = {
   ...SOURCE,
-  accent: SOURCE.brand,
-  copper: SOURCE.brand,
-  teal: SOURCE.mutedCompletion,
-  textDim: SOURCE.dim,
 } as const;
 
 export type ColorToken = keyof typeof COLORS;
@@ -128,12 +120,6 @@ export const ROLES = {
   terminalCommand: COLORS.muted,
   terminalHint: COLORS.border,
   terminalOutput: COLORS.detail,
-
-  // Transitional aliases removed in the callsite stage: tui.tsx still reads
-  // ROLES.subagent for navigator names and ROLES.composerBorderFocused for the
-  // composer border. Both map to restored warm roles.
-  subagent: COLORS.text,
-  composerBorderFocused: COLORS.border,
 } as const;
 
 export type ColorRole = keyof typeof ROLES;
