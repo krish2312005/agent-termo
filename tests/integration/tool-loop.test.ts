@@ -222,8 +222,8 @@ describe('agent tool-loop orchestration', () => {
 			expect(taskState.reason).toContain('unchanged failed tool call');
 			expect(providerCalls).toBe(0);
 			expect(toolResults).toHaveLength(6);
-			expect(toolResults[0]?.content).toContain('path is required');
-			expect(toolResults[1]?.content).toContain('path is required');
+			expect(toolResults[0]?.content).toContain('missing required argument(s): path, content');
+			expect(toolResults[1]?.content).toContain('missing required argument(s): path, content');
 			expect(toolResults.slice(2).every((message) =>
 				message.content.includes('already failed and was requested again unchanged'),
 			)).toBe(true);
