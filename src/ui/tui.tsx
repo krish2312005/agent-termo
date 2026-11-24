@@ -71,8 +71,8 @@ export interface InputController {
   /** Restore the composer focus that was active before suspend(). */
   resume: () => void;
 }
-/** The approval modal currently owns the keyboard; the label names the requester. */
-export interface ApprovalPromptState { label?: string }
+/** The approval modal currently owns the keyboard; the label names the requester and detail describes the action. */
+export interface ApprovalPromptState { label?: string; detail?: string }
 export interface ScreenContext { usedTokens: number; budgetTokens: number; }
 export interface ScreenState {
   model: string;
@@ -138,9 +138,9 @@ export function setTerminalStopHandler(handler: (() => void | Promise<void>) | n
   terminalStopHandler = handler;
 }
 
-/** The approval modal owns the keyboard; `label` names the requesting agent. */
-export function setApprovalPrompt(active: boolean, label?: string): void {
-  setApprovalPromptState(active ? { label } : null);
+/** The approval modal owns the keyboard; `label` names the requester and `detail` describes the action. */
+export function setApprovalPrompt(active: boolean, label?: string, detail?: string): void {
+  setApprovalPromptState(active ? { label, detail } : null);
 }
 
 /** Reactive read for the workspace banner (empty when no approval is active). */

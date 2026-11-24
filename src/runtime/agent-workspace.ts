@@ -176,7 +176,14 @@ export function createAgentWorkspace(): AgentWorkspace {
 			if (decision.disposition === 'dispatch' && mainBindings!.submitExternal(trimmed)) {
 				return { ok: true, disposition: 'dispatched', queueLength: mainQueue.length };
 			}
-			// No pending question: the REPL drains this at its next loop top.
+			// No pending question: the REPL drains this at its next loop top, under the same cap.
+			if (mainQueue.length >= MAX_QUEUED_MESSAGES_PER_AGENT) {
+				return {
+					ok: false,
+					reason: 'queue_full',
+					message: `@${name} already has ${MAX_QUEUED_MESSAGES_PER_AGENT} queued messages; wait for the current turn to finish.`,
+				};
+			}
 			mainQueue.push(trimmed);
 			mainState = { ...mainState, queued: mainQueue.length };
 			notify();

@@ -11,6 +11,26 @@ import type { TokenUsage } from '../types/index.js';
 /** Reserved stable id for the main agent. Names are display labels only. */
 export const MAIN_AGENT_ID = 'main';
 
+/**
+ * Display-only label sanitizer: strips terminal escape sequences and C0/C1
+ * control characters, trims, and clips. Never used for routing.
+ */
+export function sanitizeAgentLabel(name: string, max = 40): string {
+	const withoutEscapes = (typeof name === 'string' ? name : '')
+		.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '') // OSC … BEL/ST
+		.replace(/\x1b[P^_X][\s\S]*?\x1b\\/g, '') // DCS/SOS/PM/APC … ST
+		.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '') // CSI
+		.replace(/\x1b[@-_]/g, ''); // other two-character ESC sequences
+	const clean = withoutEscapes.replace(/[\x00-\x1f\x7f-\x9f]/g, '').trim();
+	return clean.length <= max ? clean : clean.slice(0, max - 1) + '…';
+}
+
+/** Approval label for a sub-agent; a sub-agent can never present itself as `main`. */
+export function approvalRequesterLabel(id: string, agentName: string): string {
+	const label = sanitizeAgentLabel(agentName) || 'agent';
+	return label === MAIN_AGENT_ID ? `${label}#${String(id).slice(0, 6)}` : label;
+}
+
 export type SubAgentStatus = 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled';
 
 export interface SubAgentToolCall {
@@ -116,8 +136,8 @@ export function getSubAgent(idOrAgent: string): SubAgentActivity | undefined {
 export function spawnSubAgent(requestId: string, agent: string, task: string, budget = 0, parentId = MAIN_AGENT_ID): string {
 	const base = requestId.slice(0, 12) || 'agent';
 	let id = base;
-	// A child id must never equal its parent id (nor an existing sibling id).
-	for (let n = 2; activities.has(id) || id === parentId; n++) id = `${base}-${n}`;
+	// A child id must never equal its parent id, the reserved main id, or an existing sibling id.
+	for (let n = 2; activities.has(id) || id === parentId || id === MAIN_AGENT_ID; n++) id = `${base}-${n}`;
 	activities.set(id, {
 		id,
 		runId: currentRun,

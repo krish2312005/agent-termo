@@ -24,7 +24,7 @@ import { ensureAgentFolder, loadProjectAgents, loadAgentCommands, type AgentComm
 import { loadTermoInstructions } from './runtime/termo-md.js';
 import { createSkill, deleteSkill, importSkill, listSkills, loadSkillCatalogPrompt, loadSkillInstructions, readSkillFile, type SkillDefinition, type SkillScope } from './runtime/skills.js';
 import { initializeMcpServers, getMcpServerStatuses, getMcpToolDefinitions, isMcpToolName, executeMcpTool, shutdownMcpServers, saveMcpServerConfigs, type McpServerConfig } from './runtime/mcp.js';
-import { commandApprovalKey, isCommandApprovalRequired, loadAllowedCommands, saveAllowedCommands } from './runtime/permissions.js';
+import { commandApprovalKey, isCommandApprovalRequired, loadAllowedCommands, saveAllowedCommands, supportsPersistentApproval } from './runtime/permissions.js';
 import { verifyCompletionWithChecks, formatIssues, type RanCheck } from './runtime/verify.js';
 import { runProjectChecks } from './runtime/checks.js';
 import { appendSessionArchive, createSession, forkSession, listSessions, loadLatestSession, loadSession, saveSession, searchSessionHistory, type StoredSession } from './runtime/sessions.js';
@@ -33,6 +33,7 @@ import { listTerminalSessions, stopTerminalSession } from './runtime/terminal-se
 import { AgentEventHub } from './runtime/events.js';
 import {
 	addSubAgentProgress,
+	approvalRequesterLabel,
 	beginSubAgentRun,
 	endSubAgentTool,
 	finishSubAgent,
@@ -549,9 +550,33 @@ interface ToolReviewOptions {
 	shouldAbort?: () => boolean;
 	/** Display name of the agent requesting approval; 'main' for the REPL. */
 	requester?: string;
+	/** Ask mode only: the proposed file change that is about to be presented for approval. */
+	onProposedChange?: (change: ProposedFileChange) => void;
 }
 
 const CANCELLED_TOOL_RESULT = { success: false, error: 'Cancelled by the user.' };
+
+const APPROVAL_DETAIL_MAX = 200;
+const APPROVAL_DIFF_PREVIEW_LINES = 4;
+const APPROVAL_DIFF_LINE_MAX = 100;
+
+/** First line of an action, clipped for the approval banner. */
+function clipApprovalDetail(text: string): string {
+	const firstLine = (text.split(/\r?\n/, 1)[0] ?? '').trim();
+	return firstLine.length <= APPROVAL_DETAIL_MAX ? firstLine : firstLine.slice(0, APPROVAL_DETAIL_MAX - 1) + '…';
+}
+
+/** Real proposal facts only: kind, path, diff stats, and the first diff lines. */
+function formatProposedChangeDetail(change: ProposedFileChange): string {
+	const kind = change.isDeletion ? 'DELETE' : change.isNewFile ? 'NEW' : 'MODIFY';
+	const header = `${kind} ${change.path} +${change.diff.additions} −${change.diff.deletions}`;
+	const preview = change.diff.lines.slice(0, APPROVAL_DIFF_PREVIEW_LINES).map((line) => {
+		const prefix = line.type === 'add' ? '+' : line.type === 'remove' ? '-' : ' ';
+		const content = line.content.replace(/\t/g, '  ');
+		return prefix + (content.length <= APPROVAL_DIFF_LINE_MAX ? content : content.slice(0, APPROVAL_DIFF_LINE_MAX - 1) + '…');
+	});
+	return preview.length > 0 ? `${header}\n${preview.join('\n')}` : header;
+}
 
 async function applyWithCheckpoint(
   change: ProposedFileChange,
@@ -596,13 +621,13 @@ async function executeToolWithReview(
 	getCheckpointId?: () => string,
 	options: ToolReviewOptions = {},
 ): Promise<{ toolResult: { success: boolean; output?: string; error?: string }; change?: ProposedFileChange; applied: boolean }> {
-	const { quiet = false, shouldAbort, requester } = options;
+	const { quiet = false, shouldAbort, requester, onProposedChange } = options;
 	const aborted = (): boolean => shouldAbort?.() === true;
 	/** Suspend the composer (not close it) so a pending REPL question and its draft survive. */
-	const withPrompt = async <T>(prompt: () => Promise<T>): Promise<T> => withApprovalPrompt(async () => {
+	const withPrompt = async <T>(detail: string | undefined, prompt: () => Promise<T>): Promise<T> => withApprovalPrompt(async () => {
 		input.suspend?.();
 		onWaiting?.(true);
-		setApprovalPrompt(true, requester);
+		setApprovalPrompt(true, requester, detail);
 		try {
 			return await prompt();
 		} finally {
@@ -613,15 +638,18 @@ async function executeToolWithReview(
 	});
 	if (!quiet) printToolCall(toolName, args);
 	const approvalKey = commandApprovalKey(toolName, args);
-	const hasPersistentApproval = !toolName.startsWith('mcp_') && allowedCommands.has(approvalKey);
+	const hasPersistentApproval = supportsPersistentApproval(toolName) && allowedCommands.has(approvalKey);
 	if (permissionMode !== 'auto' && isCommandApprovalRequired(toolName) && !hasPersistentApproval) {
-		const decision = await withPrompt(() => promptCommandApproval(typeof args.command === 'string' ? args.command : approvalKey, requester));
+		const action = typeof args.command === 'string' ? args.command : approvalKey;
+		const decision = await withPrompt(clipApprovalDetail(action), () => promptCommandApproval(action, requester));
 		if (decision === 'reject') return { toolResult: { success: false, error: 'Command rejected by user' }, applied: false };
-		if (decision === 'always' && !toolName.startsWith('mcp_')) {
+		if (decision === 'always' && supportsPersistentApproval(toolName)) {
 			allowedCommands.add(approvalKey);
 			try { saveAllowedCommands(projectRoot, allowedCommands); } catch { if (!quiet) printInfo('Command allowed for this session but could not be saved.'); }
 		} else if (decision === 'always') {
-			if (!quiet) printInfo('MCP tool approval is per call and will not be saved with its arguments.');
+			if (!quiet) printInfo(toolName.startsWith('mcp_')
+				? 'MCP tool approval is per call and will not be saved with its arguments.'
+				: 'This action is approved for this call only.');
 		}
 	}
 	// A stop-all that arrived while the approval was pending must not still run this call.
@@ -649,7 +677,11 @@ async function executeToolWithReview(
 		}
 			// Only one delegated worker may own the shared interactive approval prompt at a time.
 		if (!quiet) printToolResult(toolName, { success: toolResult.success, output: toolResult.output, error: toolResult.error }, { needsApproval: true, proposedChange });
-		const decision = await withPrompt(() => promptAcceptReject('Accept this change?', requester));
+		const decision = await withPrompt(formatProposedChangeDetail(proposedChange), () => {
+			// Record the real proposal before the prompt so it stays inspectable afterwards.
+			onProposedChange?.(proposedChange);
+			return promptAcceptReject(`Accept change to ${proposedChange.path}?`, requester);
+		});
 
 		if (decision === 'accept') {
 			// Checked after approval and before applying so stop-all cannot still write.
@@ -837,6 +869,8 @@ function cancelDelegatedTurn(session: DelegatedAgentSession, started: number, de
 async function runDelegatedTurn(session: DelegatedAgentSession, verificationText: string): Promise<ToolResult> {
 	const started = Date.now();
 	const { id: subId, client: delegatedClient, messages: delegatedMessages, projectRoot } = session;
+	// Approval labels are display-only and sanitized; they never route anything.
+	const requester = approvalRequesterLabel(subId, session.agentName);
 	// Initial runs keep the existing global Escape/Ctrl+C cancellation. A
 	// follow-up is cancelled only while its own agent is selected.
 	const shouldCancel = session.turnSeq > 1 ? (): boolean => getSelectedAgentId() === session.id : undefined;
@@ -924,7 +958,11 @@ async function runDelegatedTurn(session: DelegatedAgentSession, verificationText
 						appendDelegatedStatus(session, waiting ? 'waiting' : 'running');
 					},
 					getCheckpointId,
-					{ quiet: true, shouldAbort: stopped, requester: session.agentName },
+					{ quiet: true, shouldAbort: stopped, requester, onProposedChange: (change) => {
+						const stats = `+${change.diff.additions} −${change.diff.deletions}`;
+						appendDelegatedStatus(session, 'waiting', `approval needed: ${change.path} (${stats})`);
+						setSubAgentActivity(subId, `waiting to apply ${change.path}`);
+					} },
 				);
 				const toolResult = execution.toolResult;
 				if (execution.applied) ranChecks.length = 0;

@@ -25,13 +25,30 @@ export function saveAllowedCommands(projectRoot: string, commands: Set<string>):
 }
 
 export function isCommandApprovalRequired(toolName: string): boolean {
-  return toolName.startsWith('mcp_') || toolName === 'bash:execute' || toolName === 'git:commit' || toolName === 'git:push';
+  return toolName.startsWith('mcp_')
+    || toolName === 'bash:execute'
+    || toolName === 'bash:start'
+    || toolName === 'bash:stop'
+    || toolName === 'browser:verify'
+    || toolName === 'git:commit'
+    || toolName === 'git:push';
+}
+
+/** Only exact commands may be remembered; action-style tools are approved per call. */
+export function supportsPersistentApproval(toolName: string): boolean {
+  return !toolName.startsWith('mcp_') && toolName !== 'bash:stop' && toolName !== 'browser:verify';
 }
 
 export function commandApprovalKey(toolName: string, args: Record<string, unknown>): string {
   const command = toolName.startsWith('mcp_')
     ? JSON.stringify(args)
-    : typeof args.command === 'string' ? args.command.trim() : `${toolName}:${String(args.message ?? '').trim()}`;
+    : typeof args.command === 'string'
+      ? args.command.trim()
+      : toolName === 'bash:stop'
+        ? `session_id=${String(args.session_id ?? '').trim()}`
+        : toolName === 'browser:verify'
+          ? `base_url=${String(args.base_url ?? '').trim()}`
+          : `${toolName}:${String(args.message ?? '').trim()}`;
   return `${toolName}|${command}`;
 }
 
