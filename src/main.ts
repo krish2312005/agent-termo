@@ -2,7 +2,7 @@
 // Agent-Termo — Main REPL entry point
 // =============================================================================
 
-import { NimClient, parseToolCallsFromText, type ThinkingCapacity } from './llm/client.js';
+import { NimClient, parseToolCallsFromText, type CompletionRequestOptions, type ThinkingCapacity } from './llm/client.js';
 import { buildPlanContext, formatTaskPlanMarkdown, parseTaskPlan, PLAN_PROGRESS_TOOL, updatePlanStep, writeTaskPlanFile, type TaskPlan } from './runtime/plans.js';
 import { getToolLoopStopReason } from './runtime/run-budget.js';
 export { getToolLoopStopReason } from './runtime/run-budget.js';
@@ -306,6 +306,7 @@ async function completeWithContextRecovery(
 	tools?: Parameters<NimClient['complete']>[1],
 	onChunk?: (text: string) => void,
 	onCompacted?: (messages: ConversationMessage[]) => void,
+	requestOptions: CompletionRequestOptions = {},
 ): Promise<Awaited<ReturnType<NimClient['complete']>>> {
 	const model = typeof nimClient.getModel === 'function' ? nimClient.getModel() : 'unknown-model';
 	const prepare = (aggressive = false) => {
@@ -327,7 +328,7 @@ async function completeWithContextRecovery(
 
 	prepare();
 	try {
-		return await completeWithRetry(nimClient, messages, tools, onChunk);
+		return await completeWithRetry(nimClient, messages, tools, onChunk, requestOptions);
 	} catch (error) {
 		if (!isContextWindowError(error)) throw error;
 		const before = estimateContextTokens(messages, tools, model);
@@ -336,7 +337,7 @@ async function completeWithContextRecovery(
 			throw new Error(recovered.warning ?? providerError(error));
 		}
 		printInfo('The provider rejected the context size. Retrying once with a more aggressive compacted history.');
-		return await completeWithRetry(nimClient, messages, tools, onChunk);
+		return await completeWithRetry(nimClient, messages, tools, onChunk, requestOptions);
 	}
 }
 
@@ -345,25 +346,34 @@ async function completeWithRetry(
 	messages: ConversationMessage[],
 	tools?: Parameters<NimClient['complete']>[1],
 	onChunk?: (text: string) => void,
+	requestOptions: CompletionRequestOptions = {},
 ): Promise<Awaited<ReturnType<NimClient['complete']>>> {
 	return withTransientRetries(async () => {
 		let emittedVisibleText = false;
 		try {
-			for await (const result of nimClient.streamComplete(messages, tools, (chunk) => {
-				if (onChunk && chunk) emittedVisibleText = true;
-				onChunk?.(chunk);
-			})) return result;
-			throw new Error('The model stream ended without a response.');
+			try {
+				for await (const result of nimClient.streamComplete(messages, tools, (chunk) => {
+					if (onChunk && chunk) emittedVisibleText = true;
+					onChunk?.(chunk);
+				}, undefined, requestOptions)) return result;
+				throw new Error('The model stream ended without a response.');
+			} catch (error) {
+				if (!emittedVisibleText && isStreamingUnsupportedError(error)) {
+					return await nimClient.complete(messages, tools, requestOptions);
+				}
+				throw error;
+			}
 		} catch (error) {
-			// Retrying after visible output would duplicate or contradict text already rendered.
+			if (tools?.length && isToolRequestTimeoutError(error)) {
+				const timeoutError = new Error('Native tool-call request timed out; retrying once with the text-based tool protocol. ' + providerError(error));
+				Object.assign(timeoutError, { retryable: false });
+				throw timeoutError;
+			}
 			if (emittedVisibleText && isTransientError(error)) {
 				const partialError = new Error('Streaming response interrupted after partial output: ' + providerError(error));
 				Object.assign(partialError, { retryable: false });
 				throw partialError;
 			}
-			// Some OpenAI-compatible endpoints reject stream=true. Fall back only
-			// before any text has been displayed, so the output cannot be duplicated.
-			if (!emittedVisibleText && isStreamingUnsupportedError(error)) return nimClient.complete(messages, tools);
 			throw error;
 		}
 	});
@@ -453,9 +463,35 @@ function hasRelevantSkill(input: string, skills: SkillDefinition[]): boolean {
 	});
 }
 
-function shouldUseTools(input: string, activeAgentName: string, continuing: boolean, hasMcpTools = false, hasRelevantSkills = false): boolean {
+export function shouldUseTools(input: string, activeAgentName = '', continuing = false, hasMcpTools = false, hasRelevantSkills = false): boolean {
 	if (continuing || activeAgentName || hasMcpTools || hasRelevantSkills) return true;
-	return /\b(build|code|debug|deploy|edit|file|fix|implement|refactor|review|run|test|write|rewrite|create|delete|inspect|analy[sz]e|documentation|docs|architecture|delegate|spawn|specialist|sub-?agent)\b/i.test(input);
+	return /\b(build|make|code|debug|deploy|edit|file|fix|implement|develop|refactor|review|run|test|write|rewrite|create|delete|inspect|analy[sz]e|documentation|docs|architecture|delegate|spawn|specialist|sub-?agent|software(?:s)?|application|app|website|webapp|program|project|feature|component)\b/i.test(input);
+}
+
+export function shouldRequireInitialToolCall(input: string): boolean {
+	return /\b(build|make|code|debug|deploy|edit|fix|implement|develop|refactor|write|rewrite|create|delete|test)\b/i.test(input);
+}
+
+export function isToolRequestTimeoutError(error: unknown): boolean {
+	if (!error || typeof error !== 'object') return false;
+	const value = error as { name?: unknown; message?: unknown; code?: unknown };
+	return /timeout|timed\s*out|ETIMEDOUT|APITimeoutError/i.test([value.name, value.message, value.code].map(String).join(' '));
+}
+
+function appendToolExecutionDirective(conversation: ConversationMessage[], reason: string): void {
+	conversation.push({
+		id: crypto.randomUUID(),
+		role: 'user',
+		content: [
+			'Execution recovery: the previous response did not perform the requested software work.',
+			'Reason: ' + reason,
+			'Resume implementation now. Do not give another acknowledgement, plan, or progress sentence.',
+			'Return only valid JSON using this exact shape, with real tool arguments:',
+			'{"tool_calls":[{"id":"call_1","name":"file:glob","arguments":{"pattern":"**/*"}}]}',
+			'Use canonical tool names and arguments from the system instructions. Inspect the project, create or edit the necessary files, and run relevant checks. Do not claim completion until the work is done.',
+		].join('\n'),
+		timestamp: new Date(),
+	});
 }
 
 /** Build the continuation directive injected when the user says "continue". */
@@ -2967,7 +3003,14 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					startSpinner('Working');
 					try {
 							const streamed = new MarkdownPrinter();
-						const result = await withEscapeCancellation(nimClient, () => completeWithContextRecovery(nimClient, conversation, tools, (chunk) => { setScreenStatus({ usage: nimClient.formatUsage() }); streamed.push(chunk); streamed.flushPartial(); }, (messages) => appendSessionArchive(projectRoot, session.id, messages)));
+						const result = await withEscapeCancellation(nimClient, () => completeWithContextRecovery(
+					nimClient,
+					conversation,
+					tools,
+					(chunk) => { setScreenStatus({ usage: nimClient.formatUsage() }); streamed.push(chunk); streamed.flushPartial(); },
+					(messages) => appendSessionArchive(projectRoot, session.id, messages),
+					{ requireToolCall: shouldRequireInitialToolCall(userInput) },
+				));
 						streamed.end();
 						if (!streamed.printed) stopSpinner();
 						setScreenStatus({ usage: nimClient.formatUsage() });
@@ -2976,22 +3019,59 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						const toolCalls = dedup(result.toolCalls);
 					stopSpinner();
 
-					if (toolCalls.length === 0) {
-						// No tool calls — just display the text response
+					if (toolCalls.length === 0 && tools && shouldRequireInitialToolCall(userInput)) {
 						const cleanText = (fullText ?? '').trim().replace(/^null$/, '').trim();
 						if (cleanText) {
-							conversation.push({
-								id: crypto.randomUUID(),
-								role: 'assistant',
-								content: cleanText,
-								timestamp: new Date(),
-				});
-				rememberChat(projectRoot, 'Assistant', cleanText);
+							conversation.push({ id: crypto.randomUUID(), role: 'assistant', content: cleanText, timestamp: new Date() });
+							rememberChat(projectRoot, 'Assistant', cleanText);
+							if (!streamed.printed) printAssistantMessage(cleanText);
+						}
+						appendToolExecutionDirective(conversation, 'The model returned no executable tool calls.');
+						persistSession();
+						printInfo('No executable action was returned. Retrying once with the text-based tool protocol…');
+						try {
+							const fallbackStream = new MarkdownPrinter();
+							const fallback = await withEscapeCancellation(nimClient, () => completeWithContextRecovery(
+								nimClient,
+								conversation,
+								undefined,
+								(chunk) => { setScreenStatus({ usage: nimClient.formatUsage() }); fallbackStream.push(chunk); fallbackStream.flushPartial(); },
+								(messages) => appendSessionArchive(projectRoot, session.id, messages),
+							));
+							fallbackStream.end();
+							const recoveredCalls = dedup(fallback.toolCalls.length > 0 ? fallback.toolCalls : parseToolCallsFromText(fallback.content));
+							if (recoveredCalls.length > 0) {
+								const narration = (fallback.content ?? '').trim();
+								if (narration && !fallbackStream.printed) printAssistantMessage(narration);
+								await runToolLoop(conversation, projectRoot, recoveredCalls, input, nimClient, permissionMode, allowedCommands, taskState, ensureTaskCheckpoint, persistSession, activePlan, activeAgentToolDefinitions, (messages) => appendSessionArchive(projectRoot, session.id, messages), session.id);
+							} else {
+								const recoveryText = (fallback.content ?? '').trim();
+								if (recoveryText) {
+									conversation.push({ id: crypto.randomUUID(), role: 'assistant', content: recoveryText, timestamp: new Date() });
+									rememberChat(projectRoot, 'Assistant', recoveryText);
+									if (!fallbackStream.printed) printAssistantMessage(recoveryText);
+								}
+								taskState.status = 'interrupted';
+								taskState.reason = 'The model did not return executable tool calls after the one-time recovery request.';
+								printError('The software task is paused because the model still returned no executable actions.', 'Type /continue to retry from this point. No completion is assumed.');
+								persistSession();
+							}
+						} catch (recoveryError) {
+							taskState.status = 'interrupted';
+							taskState.reason = providerError(recoveryError);
+							printError('The software task was paused during tool-call recovery: ' + providerError(recoveryError));
+							persistSession();
+						}
+					} else if (toolCalls.length === 0) {
+						// Ordinary chat responses do not need to execute tools.
+						const cleanText = (fullText ?? '').trim().replace(/^null$/, '').trim();
+						if (cleanText) {
+							conversation.push({ id: crypto.randomUUID(), role: 'assistant', content: cleanText, timestamp: new Date() });
+							rememberChat(projectRoot, 'Assistant', cleanText);
 							persistSession();
 							if (!streamed.printed) printAssistantMessage(cleanText);
 						}
-					} else {
-						// Show any narration that came with the first tool calls
+					} else {					// Show any narration that came with the first tool calls
 						const narration = (fullText ?? '').trim().replace(/^null$/, '').trim();
 						if (narration && !streamed.printed) printAssistantMessage(narration);
 
@@ -3010,7 +3090,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 								stopBackgroundCommands();
 									continue mainLoop;
 							}
-							if (!tools || isTransientError(err) || isPartialStreamFailure(err)) {
+							if (!tools || (isTransientError(err) && !isToolRequestTimeoutError(err)) || (isPartialStreamFailure(err) && !isToolRequestTimeoutError(err))) {
 								printError(nimClient.getProviderName() + ' provider error: ' + providerError(err), 'Try /providers to switch providers or /model to select another model.');
 								if (taskState.status === 'running') {
 									taskState.status = 'interrupted';
@@ -3022,7 +3102,9 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 							// Tool calling failed (e.g. HTTP 400 because the model does not
 					// support the `tools` parameter). Retry without tools and parse
 					// any JSON tool calls the model may have emitted as plain text.
-						printInfo(nimClient.getProviderName() + ' tool request failed: ' + providerError(err) + ' — retrying without tools.');
+						printInfo(nimClient.getProviderName() + ' tool request failed: ' + providerError(err) + ' — retrying once with the text-based tool protocol.');
+						appendToolExecutionDirective(conversation, providerError(err));
+						persistSession();
 						try {
 								const fallbackStream = new MarkdownPrinter();
 					const fallback = await withEscapeCancellation(nimClient, () => completeWithContextRecovery(nimClient, conversation, undefined, (chunk) => { setScreenStatus({ usage: nimClient.formatUsage() }); fallbackStream.push(chunk); fallbackStream.flushPartial(); }, (messages) => appendSessionArchive(projectRoot, session.id, messages)));
@@ -3044,6 +3126,10 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 								persistSession();
 								if (!fallbackStream.printed) printAssistantMessage(cleanText);
 							}
+							taskState.status = 'interrupted';
+							taskState.reason = 'The tool request failed and the text-based recovery returned no executable tool calls.';
+							printError('The software task is paused because no executable actions were returned.', 'Type /continue to retry. No completion is assumed.');
+							persistSession();
 							}
 					} catch (err2) {
 						printError('NVIDIA NIM provider error: ' + providerError(err2));

@@ -20,6 +20,7 @@ The default output reserve is 8,192 tokens and the safety margin is 2,048 tokens
 
 - `AGENT_TERMO_CONTEXT_WINDOW` — optional total context-window override for custom or unlisted deployments. Leave unset to use the provider model catalogue.
 - `AGENT_TERMO_OUTPUT_RESERVE_TOKENS` — output tokens reserved when calculating the input budget (default 8,192).
+- `AGENT_TERMO_TOOL_TIMEOUT_MS` — optional request timeout for native tool-calling requests (15,000–300,000 ms); by default the timeout scales with estimated prompt size.
 - `AGENT_TERMO_CONTEXT_SAFETY_MARGIN` — additional input headroom (default 2,048).
 
 NVIDIA's OpenAI-compatible `/v1/models` endpoint supplies the model IDs, not a dependable context-window field; known limits are therefore maintained against NVIDIA's per-model API references in `src/llm/models.ts`. Unknown model IDs retain the conservative fallback rather than inheriting another model's capacity.

@@ -21,6 +21,18 @@ describe('NVIDIA NIM model limits', () => {
     });
   });
 
+  it('uses the documented 1M context and 32K output limit for Nemotron 3 Ultra', () => {
+    const model = 'nvidia/nemotron-3-ultra-550b-a55b';
+    expect(getProviderModelLimits(model)).toMatchObject({
+      contextWindowTokens: 1_000_000,
+      maxOutputTokens: 32_768,
+    });
+    const budget = resolveContextBudget(model, {});
+    expect(budget.contextWindowTokens).toBe(1_000_000);
+    expect(budget.maxOutputTokens).toBe(32_768);
+    expect(budget.inputBudgetTokens).toBeGreaterThan(900_000);
+  });
+
   it('reserves a 262K context window for nemotron-3.5-super-vl-120b-a12b', () => {
     const model = 'nvidia/nemotron-3.5-super-vl-120b-a12b';
 
