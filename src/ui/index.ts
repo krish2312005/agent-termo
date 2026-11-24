@@ -290,8 +290,11 @@ export function printDiffViewer(change: ProposedFileChange): void {
   }
 }
 
-export function promptAcceptReject(message = "Accept this change?"): Promise<"accept" | "reject"> {
-  print("? " + message + " [Y/n]", "info");
+/** Approval prompts are global and name the requesting agent when one is given. */
+const requesterPrefix = (requester?: string): string => (requester ? "[" + requester + "] " : "");
+
+export function promptAcceptReject(message = "Accept this change?", requester?: string): Promise<"accept" | "reject"> {
+  print("? " + requesterPrefix(requester) + message + " [Y/n]", "info");
   return new Promise((resolve) => {
     let done = false;
     let stop: () => void = () => undefined;
@@ -309,8 +312,8 @@ export function promptAcceptReject(message = "Accept this change?"): Promise<"ac
   });
 }
 
-export function promptCommandApproval(command: string): Promise<"once" | "always" | "reject"> {
-  print("Allow terminal command? " + command + "\n[Y] once  [A] always for this exact command  [N] reject", "info");
+export function promptCommandApproval(command: string, requester?: string): Promise<"once" | "always" | "reject"> {
+  print(requesterPrefix(requester) + "Allow terminal command? " + command + "\n[Y] once  [A] always for this exact command  [N] reject", "info");
   return new Promise((resolve) => {
     let done = false;
     let stop: () => void = () => undefined;

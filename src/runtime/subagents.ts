@@ -6,6 +6,11 @@
 // module can start, stop or alter a run, so no view can interrupt one.
 // =============================================================================
 
+import type { TokenUsage } from '../types/index.js';
+
+/** Reserved stable id for the main agent. Names are display labels only. */
+export const MAIN_AGENT_ID = 'main';
+
 export type SubAgentStatus = 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled';
 
 export interface SubAgentToolCall {
@@ -23,6 +28,8 @@ export interface SubAgentActivity {
 	id: string;
 	/** User turn (run) this sub-agent was spawned in. */
 	runId: number;
+	/** Parent agent id; MAIN_AGENT_ID for every spawn today. */
+	parentId: string;
 	agent: string;
 	task: string;
 	status: SubAgentStatus;
@@ -38,9 +45,13 @@ export interface SubAgentActivity {
 	progress: string[];
 	output?: string;
 	error?: string;
+	/** Cumulative usage for this agent (NimClient.getUsage()). */
+	usage?: TokenUsage;
+	/** Messages waiting for the next turn (0..10). */
+	queued: number;
 }
 
-export type SubAgentEventType = 'run' | 'spawned' | 'activity' | 'tool-start' | 'tool-end' | 'progress' | 'waiting' | 'finished';
+export type SubAgentEventType = 'run' | 'spawned' | 'activity' | 'tool-start' | 'tool-end' | 'progress' | 'waiting' | 'finished' | 'resumed' | 'usage' | 'queued';
 
 export interface SubAgentEvent {
 	type: SubAgentEventType;
@@ -102,13 +113,15 @@ export function getSubAgent(idOrAgent: string): SubAgentActivity | undefined {
 }
 
 /** Register a spawned sub-agent and its task. Returns the id to report further events under. */
-export function spawnSubAgent(requestId: string, agent: string, task: string, budget = 0): string {
+export function spawnSubAgent(requestId: string, agent: string, task: string, budget = 0, parentId = MAIN_AGENT_ID): string {
 	const base = requestId.slice(0, 12) || 'agent';
 	let id = base;
-	for (let n = 2; activities.has(id); n++) id = `${base}-${n}`;
+	// A child id must never equal its parent id (nor an existing sibling id).
+	for (let n = 2; activities.has(id) || id === parentId; n++) id = `${base}-${n}`;
 	activities.set(id, {
 		id,
 		runId: currentRun,
+		parentId,
 		agent,
 		task,
 		status: 'running',
@@ -118,6 +131,7 @@ export function spawnSubAgent(requestId: string, agent: string, task: string, bu
 		startedAt: Date.now(),
 		tools: [],
 		progress: [],
+		queued: 0,
 	});
 	emit({ type: 'spawned', id });
 	return id;
@@ -192,6 +206,50 @@ export function finishSubAgent(id: string, status: 'completed' | 'failed' | 'can
 	if (status === 'completed') activity.output = detail?.slice(0, MAX_OUTPUT);
 	else if (detail) activity.error = detail.slice(0, MAX_OUTPUT);
 	emit({ type: 'finished', id });
+}
+
+/** Resume a finished sub-agent for a follow-up turn. Returns false unless the agent was terminal. */
+export function resumeSubAgent(id: string): boolean {
+	const activity = activities.get(id);
+	if (!activity) return false;
+	if (activity.status === 'running' || activity.status === 'waiting') return false;
+	const now = Date.now();
+	for (const tool of activity.tools) {
+		if (tool.endedAt === undefined) {
+			tool.endedAt = now;
+			tool.ok = false;
+			tool.result = 'interrupted';
+		}
+	}
+	activity.status = 'running';
+	activity.activity = 'resuming';
+	activity.endedAt = undefined;
+	activity.error = undefined;
+	activity.output = undefined;
+	emit({ type: 'resumed', id });
+	return true;
+}
+
+/** Cumulative token usage for one agent. */
+export function setSubAgentUsage(id: string, usage: TokenUsage): void {
+	const activity = activities.get(id);
+	if (!activity) return;
+	activity.usage = usage;
+	emit({ type: 'usage', id });
+}
+
+/** Number of messages waiting for this agent's next turn. */
+export function setSubAgentQueued(id: string, count: number): void {
+	const activity = activities.get(id);
+	if (!activity) return;
+	activity.queued = Math.max(0, Math.floor(count) || 0);
+	emit({ type: 'queued', id });
+}
+
+/** Clear every row (used by /clear) while keeping listeners subscribed. */
+export function clearSubAgentActivity(): void {
+	activities.clear();
+	emit({ type: 'run' });
 }
 
 /** Forget everything (tests only). */

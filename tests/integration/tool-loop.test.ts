@@ -40,6 +40,7 @@ describe('agent tool-loop orchestration', () => {
 			},
 			complete: async () => ({ content: '', toolCalls: [] }),
 			formatUsage: () => '0 tokens',
+			getUsage: () => ({ promptTokens: 0, completionTokens: 0, totalTokens: 0 }),
 			getModel: () => 'test-model',
 		} as unknown as NimClient;
 
@@ -99,6 +100,7 @@ describe('agent tool-loop orchestration', () => {
 			},
 			complete: async () => ({ content: '', toolCalls: [] }),
 			formatUsage: () => '0 tokens',
+			getUsage: () => ({ promptTokens: 0, completionTokens: 0, totalTokens: 0 }),
 			getModel: () => 'test-model',
 		} as unknown as NimClient;
 		const conversation: ConversationMessage[] = [
@@ -141,6 +143,7 @@ describe('agent tool-loop orchestration', () => {
 			},
 			complete: async () => ({ content: '', toolCalls: [] }),
 			formatUsage: () => '0 tokens',
+			getUsage: () => ({ promptTokens: 0, completionTokens: 0, totalTokens: 0 }),
 			getModel: () => 'test-model',
 		} as unknown as NimClient;
 		const conversation: ConversationMessage[] = [
@@ -194,6 +197,7 @@ describe('agent tool-loop orchestration', () => {
 			},
 			complete: async () => ({ content: '', toolCalls: [] }),
 			formatUsage: () => '0 tokens',
+			getUsage: () => ({ promptTokens: 0, completionTokens: 0, totalTokens: 0 }),
 			getModel: () => 'test-model',
 		} as unknown as NimClient;
 		const conversation: ConversationMessage[] = [
@@ -246,6 +250,7 @@ describe('agent tool-loop orchestration', () => {
 			},
 			complete: async () => ({ content: '', toolCalls: [] }),
 			formatUsage: () => '0 tokens',
+			getUsage: () => ({ promptTokens: 0, completionTokens: 0, totalTokens: 0 }),
 			getModel: () => 'test-model',
 		} as unknown as NimClient;
 

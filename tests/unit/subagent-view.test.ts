@@ -15,6 +15,7 @@ const plain = (s: string): string => s.replace(/\x1b\[[0-9;]*m/g, '');
 const agent = (over: Partial<SubAgentActivity> = {}): SubAgentActivity => ({
   id: 'abc',
   runId: 1,
+  parentId: 'main',
   agent: 'backend-developer',
   task: 'Implement the REST API',
   status: 'running',
@@ -27,6 +28,7 @@ const agent = (over: Partial<SubAgentActivity> = {}): SubAgentActivity => ({
     { name: 'bash:run', args: 'npm test', startedAt: 2000 },
   ],
   progress: ['Reading the project layout'],
+  queued: 0,
   ...over,
 });
 

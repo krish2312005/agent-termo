@@ -43,7 +43,15 @@ export interface InputController {
   questionSecret: (prompt?: string) => Promise<string | null>;
   close: () => void;
   showPrompt: () => void;
+  /** Resolve a pending question() with this text; false when no question is pending. */
+  submitExternal: (text: string) => boolean;
+  /** Blur the composer, preserving the draft and any pending question. */
+  suspend: () => void;
+  /** Restore the composer focus that was active before suspend(). */
+  resume: () => void;
 }
+/** The approval modal currently owns the keyboard; the label names the requester. */
+export interface ApprovalPromptState { label?: string }
 export interface ScreenContext { usedTokens: number; budgetTokens: number; }
 export interface ScreenState {
   model: string;
@@ -70,6 +78,7 @@ const [picker, setPicker] = createSignal<PickerState | null>(null);
 const [completionSelected, setCompletionSelected] = createSignal(0);
 const [secretMode, setSecretMode] = createSignal(false);
 const [secretDraft, setSecretDraft] = createSignal("");
+const [approvalPromptState, setApprovalPromptState] = createSignal<ApprovalPromptState | null>(null);
 let secretResolver: ((value: string | null) => void) | null = null;
 let nextId = 1;
 let renderer: CliRenderer | null = null;
@@ -77,6 +86,7 @@ let clipboard: ClipboardService | null = null;
 let textarea: TextareaRenderable | undefined;
 let inputResolver: ((value: string) => void) | null = null;
 let pickerResolver: ((value: string | null) => void) | null = null;
+let suspendedInputActive = false;
 let historyIndex = -1;
 let historyDraft = "";
 let nextInput = "";
@@ -85,6 +95,16 @@ let keyInterceptor: ((key: Key) => boolean) | null = null;
 let terminalStopHandler: (() => void | Promise<void>) | null = null;
 export function setTerminalStopHandler(handler: (() => void | Promise<void>) | null): void {
   terminalStopHandler = handler;
+}
+
+/** The approval modal owns the keyboard; `label` names the requesting agent. */
+export function setApprovalPrompt(active: boolean, label?: string): void {
+  setApprovalPromptState(active ? { label } : null);
+}
+
+/** Reactive read for the workspace banner (empty when no approval is active). */
+export function approvalPrompt(): ApprovalPromptState | null {
+  return approvalPromptState();
 }
 
 export function permissionBarColor(mode: PermissionMode): string {
@@ -923,6 +943,35 @@ export function createInput(): InputController {
       resolve?.("");
     },
     showPrompt(): void { setInputActive(true); textarea?.focus(); },
+    submitExternal(text: string): boolean {
+      if (!inputResolver) return false;
+      const trimmed = text.trim();
+      if (trimmed && history[0] !== trimmed) history.unshift(trimmed);
+      if (history.length > 100) history.pop();
+      const resolve = inputResolver;
+      inputResolver = null;
+      setInputActive(false);
+      setDraft("");
+      setCompletionHiddenFor("");
+      historyIndex = -1;
+      textarea?.setText("");
+      resolve(trimmed);
+      return true;
+    },
+    suspend(): void {
+      suspendedInputActive = inputActive();
+      setInputActive(false);
+      textarea?.blur();
+    },
+    resume(): void {
+      const wasActive = suspendedInputActive;
+      suspendedInputActive = false;
+      if (!wasActive) return;
+      // A picker, secret prompt or another approval may still own the keyboard.
+      if (pickerResolver || secretResolver || approvalPromptState()) return;
+      setInputActive(true);
+      textarea?.focus();
+    },
   };
 }
 

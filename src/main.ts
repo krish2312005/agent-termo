@@ -13,6 +13,8 @@ import { appendToMemory, loadMemory, loadMemorySync, loadTimeline, loadTimelineS
 import { createApprovalQueue } from './runtime/approval-queue.js';
 
 const withApprovalPrompt = createApprovalQueue();
+// Set by the workspace's stop-all for the main agent; reset at each main turn.
+let mainStopRequested = false;
 import { buildSystemPrompt, filterAgentTools, resolveDelegation } from './agents/index.js';
 import { resolveProjectRoot, saveNimModel, saveNimThinking, savePermissionMode, listSavedProviders, activateProvider, saveProviderConfig } from './utils/config.js';
 import { BUILTIN_PROVIDERS, groupProviders, isProviderConnected, providerActivationModel, type ProviderDefinition, type StoredProviderConfig } from './llm/providers.js';
@@ -34,11 +36,27 @@ import {
 	beginSubAgentRun,
 	endSubAgentTool,
 	finishSubAgent,
+	getSubAgent,
+	resumeSubAgent,
 	setSubAgentActivity,
+	setSubAgentQueued,
+	setSubAgentUsage,
 	setSubAgentWaiting,
 	spawnSubAgent,
 	startSubAgentTool,
+	MAIN_AGENT_ID,
 } from './runtime/subagents.js';
+import { agentTranscripts, summarizeToolArgs, type AgentTranscriptEvent } from './runtime/agent-transcript.js';
+import { workspaceStatusOf, type WorkspaceStatus } from './runtime/agent-tree.js';
+import {
+	MAX_QUEUED_MESSAGES_PER_AGENT,
+	agentWorkspace,
+	resetAgentWorkspace,
+	setMainAgentState,
+	takeQueuedMainMessage,
+	type AgentMessageResult,
+} from './runtime/agent-workspace.js';
+import { getSelectedAgentId } from './runtime/agent-selection.js';
 import {
 	printWelcome,
 	printUserMessage,
@@ -77,6 +95,7 @@ import {
 	printSubAgents,
 	startBackgroundCommandListener,
 	setTerminalStopHandler,
+	setApprovalPrompt,
 } from './ui/index.js';
 import type { ConversationMessage, ToolCall, ToolResult, ToolDef, ProposedFileChange, PermissionMode } from './types/index.js';
 
@@ -460,8 +479,9 @@ function buildContinueMessage(state: TaskState): string {
 	return lines.join('\n');
 }
 
-async function withEscapeCancellation<T>(nimClient: NimClient, operation: () => Promise<T>): Promise<T> {
+async function withEscapeCancellation<T>(nimClient: NimClient, operation: () => Promise<T>, shouldCancel?: () => boolean): Promise<T> {
 	if (!process.stdin.isTTY) return operation();
+	const allowed = (): boolean => !shouldCancel || shouldCancel();
 	let cancelled = false;
 	let rejectCancellation: ((error: Error) => void) | undefined;
 	const cancellation = new Promise<T>((_, reject) => {
@@ -469,13 +489,15 @@ async function withEscapeCancellation<T>(nimClient: NimClient, operation: () => 
 	});
 	const stop = listenKeys((key) => {
 		if (key.name === 'escape' || key.name === 'ctrl+c') {
-			if (cancelled) return;
+			if (cancelled || !allowed()) return;
 			cancelled = true;
 			nimClient.cancelCurrentRequest();
 			printInfo(key.name === 'ctrl+c' ? 'Response interrupted.' : 'Response cancelled.');
 			rejectCancellation?.(new RequestCancelledError());
 		}
-	}, () => rejectCancellation?.(new RequestCancelledError()), { background: true });
+	}, () => {
+		if (allowed()) rejectCancellation?.(new RequestCancelledError());
+	}, { background: true });
 	try {
 		const result = await Promise.race([operation(), cancellation]);
 		if (cancelled) throw new RequestCancelledError();
@@ -515,7 +537,21 @@ function describeToolActivity(toolName: string, args: Record<string, unknown>, o
 interface InputController {
 	close(): void;
 	showPrompt(): void;
+	/** Optional so existing test stubs keep compiling. */
+	suspend?(): void;
+	resume?(): void;
 }
+
+interface ToolReviewOptions {
+	/** Sub-agent path: suppress tool/diff prints in the main log. */
+	quiet?: boolean;
+	/** Checked after approval and before executing/applying (stop-all). */
+	shouldAbort?: () => boolean;
+	/** Display name of the agent requesting approval; 'main' for the REPL. */
+	requester?: string;
+}
+
+const CANCELLED_TOOL_RESULT = { success: false, error: 'Cancelled by the user.' };
 
 async function applyWithCheckpoint(
   change: ProposedFileChange,
@@ -558,29 +594,38 @@ async function executeToolWithReview(
 	/** Called with true while the user is being asked to approve something (sub-agents show "waiting"). */
 	onWaiting?: (waiting: boolean) => void,
 	getCheckpointId?: () => string,
+	options: ToolReviewOptions = {},
 ): Promise<{ toolResult: { success: boolean; output?: string; error?: string }; change?: ProposedFileChange; applied: boolean }> {
-	printToolCall(toolName, args);
+	const { quiet = false, shouldAbort, requester } = options;
+	const aborted = (): boolean => shouldAbort?.() === true;
+	/** Suspend the composer (not close it) so a pending REPL question and its draft survive. */
+	const withPrompt = async <T>(prompt: () => Promise<T>): Promise<T> => withApprovalPrompt(async () => {
+		input.suspend?.();
+		onWaiting?.(true);
+		setApprovalPrompt(true, requester);
+		try {
+			return await prompt();
+		} finally {
+			onWaiting?.(false);
+			setApprovalPrompt(false);
+			input.resume?.();
+		}
+	});
+	if (!quiet) printToolCall(toolName, args);
 	const approvalKey = commandApprovalKey(toolName, args);
 	const hasPersistentApproval = !toolName.startsWith('mcp_') && allowedCommands.has(approvalKey);
 	if (permissionMode !== 'auto' && isCommandApprovalRequired(toolName) && !hasPersistentApproval) {
-		const decision = await withApprovalPrompt(async () => {
-			input.close();
-			onWaiting?.(true);
-			try {
-				return await promptCommandApproval(typeof args.command === 'string' ? args.command : approvalKey);
-			} finally {
-				onWaiting?.(false);
-				input.showPrompt();
-			}
-		});
+		const decision = await withPrompt(() => promptCommandApproval(typeof args.command === 'string' ? args.command : approvalKey, requester));
 		if (decision === 'reject') return { toolResult: { success: false, error: 'Command rejected by user' }, applied: false };
 		if (decision === 'always' && !toolName.startsWith('mcp_')) {
 			allowedCommands.add(approvalKey);
-			try { saveAllowedCommands(projectRoot, allowedCommands); } catch { printInfo('Command allowed for this session but could not be saved.'); }
+			try { saveAllowedCommands(projectRoot, allowedCommands); } catch { if (!quiet) printInfo('Command allowed for this session but could not be saved.'); }
 		} else if (decision === 'always') {
-			printInfo('MCP tool approval is per call and will not be saved with its arguments.');
+			if (!quiet) printInfo('MCP tool approval is per call and will not be saved with its arguments.');
 		}
 	}
+	// A stop-all that arrived while the approval was pending must not still run this call.
+	if (aborted()) return { toolResult: CANCELLED_TOOL_RESULT, applied: false };
 	startSpinner('Running ' + toolName);
 	const toolResult = isMcpToolName(toolName)
 		? await executeMcpTool(toolName, args)
@@ -591,46 +636,42 @@ async function executeToolWithReview(
 
 	if (proposedChange) {
 		if (permissionMode === 'auto' || permissionMode === 'files') {
+			if (aborted()) return { toolResult: CANCELLED_TOOL_RESULT, change: proposedChange, applied: false };
 			const applyResult = await applyWithCheckpoint(proposedChange, projectRoot, getCheckpointId);
 			if (applyResult.success) {
-				printSuccess('Auto-applied: ' + (applyResult.output ?? proposedChange.path));
-				printToolResult(toolName, applyResult, { needsApproval: true, proposedChange });
+				if (!quiet) {
+					printSuccess('Auto-applied: ' + (applyResult.output ?? proposedChange.path));
+					printToolResult(toolName, applyResult, { needsApproval: true, proposedChange });
+				}
 				refreshContextFiles(projectRoot);
-			} else printError(applyResult.error ?? 'Failed to auto-apply change');
+			} else if (!quiet) printError(applyResult.error ?? 'Failed to auto-apply change');
 			return { toolResult: applyResult, change: proposedChange, applied: applyResult.success };
 		}
 			// Only one delegated worker may own the shared interactive approval prompt at a time.
-		printToolResult(toolName, { success: toolResult.success, output: toolResult.output, error: toolResult.error }, { needsApproval: true, proposedChange });
-		const decision = await withApprovalPrompt(async () => {
-			input.close();
-			onWaiting?.(true);
-			try {
-				return await promptAcceptReject('Accept this change?');
-			} finally {
-				onWaiting?.(false);
-				input.showPrompt();
-			}
-		});
+		if (!quiet) printToolResult(toolName, { success: toolResult.success, output: toolResult.output, error: toolResult.error }, { needsApproval: true, proposedChange });
+		const decision = await withPrompt(() => promptAcceptReject('Accept this change?', requester));
 
 		if (decision === 'accept') {
+			// Checked after approval and before applying so stop-all cannot still write.
+			if (aborted()) return { toolResult: CANCELLED_TOOL_RESULT, change: proposedChange, applied: false };
 			startSpinner('Writing to disk');
 			const applyResult = await applyWithCheckpoint(proposedChange, projectRoot, getCheckpointId);
 			stopSpinner(applyResult.success);
 			if (applyResult.success) {
-				printSuccess(applyResult.output ?? 'Change applied');
+				if (!quiet) printSuccess(applyResult.output ?? 'Change applied');
 				refreshContextFiles(projectRoot);
 				return { toolResult: applyResult, change: proposedChange, applied: true };
 			} else {
-				printError(applyResult.error ?? 'Failed to apply change');
+				if (!quiet) printError(applyResult.error ?? 'Failed to apply change');
 				return { toolResult: applyResult, change: proposedChange, applied: false };
 			}
 		} else {
-			printInfo('Change rejected — file was not modified');
+			if (!quiet) printInfo('Change rejected — file was not modified');
 			return { toolResult, change: proposedChange, applied: false };
 		}
 	}
 
-	printToolResult(toolName, toolResult);
+	if (!quiet) printToolResult(toolName, toolResult);
 	if (toolResult.success && (toolName === 'file:write' || toolName === 'file:edit' || toolName === 'file:delete')) {
 		refreshContextFiles(projectRoot);
 	}
@@ -639,9 +680,330 @@ async function executeToolWithReview(
 
 const DELEGATED_TIME_BUDGET_MS = 10 * 60 * 1000;
 
-/** One-line summary of a tool call's arguments for the sub-agent monitor. */
-function describeArgs(args: Record<string, unknown>): string {
-	return String(args.path ?? args.command ?? args.pattern ?? args.glob ?? args.message ?? '').slice(0, 160);
+/**
+ * Persistent record of one delegated agent. The same session (client, messages,
+ * agent definition, permissions, root) is reused for every follow-up turn, so a
+ * follow-up never creates a new agent, conversation or NimClient.
+ */
+interface DelegatedAgentSession {
+	id: string;
+	agentName: string;
+	task: string;
+	parentId: string;
+	client: NimClient;
+	messages: ConversationMessage[];
+	input: InputController;
+	permissionMode: PermissionMode;
+	allowedCommands: Set<string>;
+	projectRoot: string;
+	toolDefs: ToolDef[];
+	/** FIFO of messages waiting for the next turn boundary (max 10). */
+	queue: string[];
+	/** True while a turn owns the session, including a queued follow-up turn. */
+	running: boolean;
+	cancelRequested: boolean;
+	disposed: boolean;
+	startedAt: number;
+	lastTurnEndedAt?: number;
+	/** Namespaces tool-call ids so follow-up turns cannot collide. */
+	turnSeq: number;
+	/** Detached from the parent for follow-ups; never mutated by them. */
+	taskState: TaskState;
+	/** Parent checkpoint closure; used by the initial turn only. */
+	initialCheckpointId: () => string;
+	/** Per-agent checkpoint, created lazily by the first follow-up turn. */
+	checkpointId?: string;
+	toolCallId: string;
+	toolName: string;
+}
+
+const delegatedSessions = new Map<string, DelegatedAgentSession>();
+
+/** Never write into a transcript after /clear disposed the session. */
+function appendDelegatedTranscript(session: DelegatedAgentSession, event: (agentId: string) => AgentTranscriptEvent): void {
+	if (session.disposed) return;
+	agentTranscripts.append(event(session.id));
+}
+
+function appendDelegatedStatus(session: DelegatedAgentSession, status: WorkspaceStatus, detail?: string): void {
+	appendDelegatedTranscript(session, (agentId) => ({ type: 'status', agentId, status, detail, at: Date.now() }));
+}
+
+function appendDelegatedError(session: DelegatedAgentSession, message: string): void {
+	appendDelegatedTranscript(session, (agentId) => ({ type: 'error', agentId, message, at: Date.now() }));
+}
+
+/** What one tool call contributed, for the agent's own transcript. */
+function transcriptToolResult(
+	toolCall: ToolCall,
+	execution: { toolResult: { success: boolean; output?: string; error?: string }; change?: ProposedFileChange; applied: boolean },
+): string {
+	const result = execution.toolResult;
+	if (execution.change) {
+		const stats = execution.change.diff ? ` +${execution.change.diff.additions} -${execution.change.diff.deletions}` : '';
+		return `${execution.applied ? 'applied' : 'not applied'} ${execution.change.path}${stats}`;
+	}
+	if (toolCall.name === 'bash:execute') return result.output ?? result.error ?? '(no output)';
+	if (result.success) return result.output ?? 'ok';
+	return result.error ?? result.output ?? 'failed';
+}
+
+function ensureDelegatedCheckpoint(session: DelegatedAgentSession): string {
+	if (session.checkpointId) return session.checkpointId;
+	const checkpoint = createCheckpoint(session.projectRoot, `Sub-agent ${session.agentName}: ${session.task}`.slice(0, 200), 'automatic');
+	session.checkpointId = checkpoint.id;
+	return checkpoint.id;
+}
+
+function cancelDelegatedSession(session: DelegatedAgentSession): void {
+	session.cancelRequested = true;
+	session.client.cancelCurrentRequest();
+	if (session.queue.length > 0) {
+		session.queue.length = 0;
+		setSubAgentQueued(session.id, 0);
+	}
+}
+
+/** Queue for a running/waiting session, or resume the same session for a follow-up turn. */
+function deliverMessageToSession(session: DelegatedAgentSession, text: string): AgentMessageResult {
+	const trimmed = typeof text === 'string' ? text.trim() : '';
+	if (!trimmed) return { ok: false, reason: 'empty', message: 'The message is empty.' };
+	if (session.disposed) return { ok: false, reason: 'unavailable', message: 'This agent is no longer part of the session.' };
+	if (session.running) {
+		if (session.queue.length >= MAX_QUEUED_MESSAGES_PER_AGENT) {
+			return {
+				ok: false,
+				reason: 'queue_full',
+				message: `@${session.agentName} already has ${MAX_QUEUED_MESSAGES_PER_AGENT} queued messages; wait for the current turn to finish.`,
+			};
+		}
+		if (session.queue.some((queued) => queued === trimmed)) {
+			return { ok: false, reason: 'duplicate', message: `@${session.agentName} already received this message; wait for it to finish.` };
+		}
+		session.queue.push(trimmed);
+		setSubAgentQueued(session.id, session.queue.length);
+		return { ok: true, disposition: 'queued', queueLength: session.queue.length };
+	}
+	startFollowUpTurn(session, [trimmed]);
+	return { ok: true, disposition: 'dispatched', queueLength: session.queue.length };
+}
+
+/** A queued message must never be dropped or duplicated at the turn boundary. */
+function drainDelegatedQueue(session: DelegatedAgentSession): void {
+	if (session.disposed || session.running || session.queue.length === 0) return;
+	const instructions = session.queue.splice(0, session.queue.length);
+	setSubAgentQueued(session.id, 0);
+	startFollowUpTurn(session, instructions);
+}
+
+function startFollowUpTurn(session: DelegatedAgentSession, instructions: string[]): void {
+	if (session.disposed || session.running || instructions.length === 0) return;
+	session.running = true;
+	session.cancelRequested = false;
+	session.turnSeq += 1;
+	resumeSubAgent(session.id);
+	const now = Date.now();
+	for (const text of instructions) {
+		session.messages.push({ id: crypto.randomUUID(), role: 'user', content: text, timestamp: new Date() });
+		appendDelegatedTranscript(session, (agentId) => ({ type: 'user', agentId, text, at: now }));
+	}
+	appendDelegatedStatus(session, 'running', 'resumed');
+	// Follow-ups never mutate the parent's task state.
+	session.taskState = newTaskState();
+	session.taskState.goal = instructions.join('\n\n').replace(/\s+/g, ' ').slice(0, 300);
+	session.taskState.status = 'running';
+	void runDelegatedTurn(session, instructions.join('\n\n'));
+}
+
+function failDelegatedTurn(session: DelegatedAgentSession, started: number, detail: string): ToolResult {
+	finishSubAgent(session.id, 'failed', detail);
+	appendDelegatedStatus(session, 'failed');
+	appendDelegatedError(session, detail);
+	logAgentTermoTimeline(`Sub-agent ${session.agentName} failed: ${detail.slice(0, 120)}`, session.projectRoot);
+	return { id: session.toolCallId, name: session.toolName, success: false, error: detail, durationMs: Date.now() - started };
+}
+
+function cancelDelegatedTurn(session: DelegatedAgentSession, started: number, detail: string): ToolResult {
+	finishSubAgent(session.id, 'cancelled', detail);
+	appendDelegatedStatus(session, 'stopped');
+	return { id: session.toolCallId, name: session.toolName, success: false, error: 'Sub-agent run cancelled.', durationMs: Date.now() - started };
+}
+
+/**
+ * One delegated turn. Follow-up turns reuse the session's client, messages and
+ * agent definition; every turn ends with the same completion/evidence gate and
+ * one finally drain for messages that arrived while it ran.
+ */
+async function runDelegatedTurn(session: DelegatedAgentSession, verificationText: string): Promise<ToolResult> {
+	const started = Date.now();
+	const { id: subId, client: delegatedClient, messages: delegatedMessages, projectRoot } = session;
+	// Initial runs keep the existing global Escape/Ctrl+C cancellation. A
+	// follow-up is cancelled only while its own agent is selected.
+	const shouldCancel = session.turnSeq > 1 ? (): boolean => getSelectedAgentId() === session.id : undefined;
+	const getCheckpointId = (): string => session.turnSeq > 1 ? ensureDelegatedCheckpoint(session) : session.initialCheckpointId();
+	let finalText = '';
+	let lastNarration = '';
+	// Evidence for the completion gate: what the run actually wrote and ran,
+	// not what it claims in its final report. Keyed by path so only each
+	// file's last applied content is kept.
+	const changedFiles = new Map<string, string>();
+	const ranChecks: RanCheck[] = [];
+	const stopped = (): boolean => session.cancelRequested || session.disposed;
+
+	try {
+		for (let iteration = 0; Date.now() - started < DELEGATED_TIME_BUDGET_MS; iteration++) {
+			if (stopped()) return cancelDelegatedTurn(session, started, 'Stopped by the user.');
+			setSubAgentActivity(subId, 'waiting for the model', iteration + 1);
+			let result: { content: string; toolCalls: ToolCall[] };
+			const messageId = crypto.randomUUID();
+			appendDelegatedTranscript(session, (agentId) => ({ type: 'assistant.start', agentId, messageId, at: Date.now() }));
+			try {
+				result = await withEscapeCancellation(delegatedClient, () =>
+					completeWithContextRecovery(delegatedClient, delegatedMessages, delegatedClient.buildToolDefs(session.toolDefs), (chunk) => {
+						if (chunk) appendDelegatedTranscript(session, (agentId) => ({ type: 'assistant.delta', agentId, messageId, text: chunk, at: Date.now() }));
+					}),
+					shouldCancel,
+				);
+				appendDelegatedTranscript(session, (agentId) => ({ type: 'assistant.end', agentId, messageId, finalText: result.content, at: Date.now() }));
+				setScreenStatus({ usage: delegatedClient.formatUsage() });
+				setSubAgentUsage(subId, delegatedClient.getUsage());
+			} catch (err) {
+				appendDelegatedTranscript(session, (agentId) => ({ type: 'assistant.end', agentId, messageId, at: Date.now() }));
+				if (isRequestCancelled(err)) return cancelDelegatedTurn(session, started, 'Cancelled by the user.');
+				// The model may not support native tool calling — plain text fallback.
+				const fallbackMessageId = crypto.randomUUID();
+				appendDelegatedTranscript(session, (agentId) => ({ type: 'assistant.start', agentId, messageId: fallbackMessageId, at: Date.now() }));
+				const fallback = await withEscapeCancellation(delegatedClient, () =>
+					completeWithContextRecovery(delegatedClient, delegatedMessages, undefined, (chunk) => {
+						if (chunk) appendDelegatedTranscript(session, (agentId) => ({ type: 'assistant.delta', agentId, messageId: fallbackMessageId, text: chunk, at: Date.now() }));
+					}),
+					shouldCancel,
+				);
+				appendDelegatedTranscript(session, (agentId) => ({ type: 'assistant.end', agentId, messageId: fallbackMessageId, finalText: fallback.content, at: Date.now() }));
+				setSubAgentUsage(subId, delegatedClient.getUsage());
+				result = {
+					content: fallback.content,
+					toolCalls: fallback.toolCalls.length > 0 ? fallback.toolCalls : parseToolCallsFromText(fallback.content),
+				};
+			}
+
+			const toolCalls = dedup(result.toolCalls);
+			if (toolCalls.length === 0) {
+				finalText = result.content.trim();
+				break;
+			}
+			if (result.content.trim()) {
+				lastNarration = result.content.trim();
+				addSubAgentProgress(subId, lastNarration);
+			}
+
+			// Namespaced per turn so a follow-up cannot collide with an earlier turn.
+			const namespacedCalls = toolCalls.map((call, index) => ({ ...call, id: `${session.turnSeq}-${call.id || index}` }));
+			delegatedMessages.push({
+				id: crypto.randomUUID(),
+				role: 'assistant',
+				content: result.content || '',
+				toolCalls: namespacedCalls,
+				timestamp: new Date(),
+			});
+
+			for (const tc of namespacedCalls) {
+				if (stopped()) break;
+				const argsSummary = summarizeToolArgs(tc.name, tc.arguments);
+				startSubAgentTool(subId, tc.name, argsSummary || verificationText);
+				appendDelegatedTranscript(session, (agentId) => ({ type: 'tool.start', agentId, callId: tc.id, name: tc.name, args: argsSummary, at: Date.now() }));
+				const execution = await executeToolWithReview(
+					tc.name,
+					tc.arguments,
+					projectRoot,
+					session.input,
+					session.permissionMode,
+					session.allowedCommands,
+					(waiting) => {
+						setSubAgentWaiting(subId, waiting);
+						appendDelegatedStatus(session, waiting ? 'waiting' : 'running');
+					},
+					getCheckpointId,
+					{ quiet: true, shouldAbort: stopped, requester: session.agentName },
+				);
+				const toolResult = execution.toolResult;
+				if (execution.applied) ranChecks.length = 0;
+				if (execution.applied && execution.change) changedFiles.set(execution.change.path, execution.change.proposedContent);
+				if (tc.name === 'bash:execute') {
+					ranChecks.push({
+						command: typeof tc.arguments.command === 'string' ? tc.arguments.command : '[invalid command arguments]',
+						success: toolResult.success,
+						output: toolResult.output ?? toolResult.error ?? '',
+					});
+				}
+				const target = String(tc.arguments.path ?? tc.arguments.command ?? verificationText).slice(0, 80);
+				endSubAgentTool(
+					subId,
+					toolResult.success,
+					execution.change
+						? `${execution.applied ? 'applied' : 'not applied'} ${execution.change.path}`
+						: toolResult.success ? (toolResult.output ?? 'ok') : (toolResult.error ?? 'failed'),
+				);
+				appendDelegatedTranscript(session, (agentId) => ({
+					type: 'tool.end',
+					agentId,
+					callId: tc.id,
+					ok: toolResult.success,
+					result: transcriptToolResult(tc, execution),
+					at: Date.now(),
+				}));
+				recordTaskAction(session.taskState, `[${session.agentName}] ${tc.name} ${target} ${toolResult.success ? 'ok' : 'failed'}`);
+				delegatedMessages.push({
+					id: tc.id,
+					role: 'tool',
+					content: formatToolResultForModel(toolResult),
+					timestamp: new Date(),
+				});
+				logAgentTermoTimeline(`Sub-agent ${session.agentName} tool: ${tc.name} -- ${toolResult.success ? 'OK' : 'ERR'}`, projectRoot);
+			}
+		}
+
+		if (stopped()) return cancelDelegatedTurn(session, started, 'Stopped by the user.');
+
+		// A delegated agent must return a final report. Reaching the time budget
+		// after tool calls is not completion: the parent must see the failure and recover.
+		const output = finalText.trim();
+		if (!output) {
+			const detail =
+				`Sub-agent ${session.agentName} reached its 10-minute time budget without a final report.` +
+				(lastNarration ? ` Last progress: ${lastNarration.replace(/\s+/g, ' ').slice(0, 500)}` : '');
+			logAgentTermoTimeline(`Sub-agent ${session.agentName} exhausted its budget before completing: ${verificationText.slice(0, 120)}`, projectRoot);
+			return failDelegatedTurn(session, started, detail);
+		}
+		// Completion gate: the final report is a claim. Only accept it once the
+		// evidence actually collected during this run (files it wrote, commands
+		// it ran) backs it up — no stub implementations, and a real check command
+		// for any code work the task called for. See runtime/verify.ts, runtime/checks.ts.
+		const verification = await verifyCompletionWithChecks(verificationText, changedFiles, ranChecks, () => runProjectChecks(projectRoot));
+		if (!verification.ok) {
+			const detail =
+				`Sub-agent ${session.agentName} reported completion, but its own evidence does not support that claim — rejected:\n` +
+				`${formatIssues(verification.issues)}\n\nSub-agent's report (not accepted as-is):\n${output}`;
+			logAgentTermoTimeline(`Sub-agent ${session.agentName} claimed completion but failed the evidence gate: ${verificationText.slice(0, 120)}`, projectRoot);
+			return failDelegatedTurn(session, started, detail);
+		}
+
+		finishSubAgent(subId, 'completed', output);
+		appendDelegatedStatus(session, 'completed');
+		logAgentTermoTimeline(`Sub-agent ${session.agentName} completed delegated task: ${verificationText.slice(0, 120)}`, projectRoot);
+		void appendToTimeline(projectRoot, session.agentName, 'Delegated task completed', [`Task: ${verificationText.slice(0, 300)}`], [`Summary: ${output.replace(/\s+/g, ' ').slice(0, 400)}`]);
+		return { id: session.toolCallId, name: session.toolName, success: true, output: `[${session.agentName}]\n${output}`, durationMs: Date.now() - started };
+	} catch (error) {
+		if (isRequestCancelled(error)) return cancelDelegatedTurn(session, started, 'Cancelled by the user.');
+		return failDelegatedTurn(session, started, error instanceof Error ? error.message : String(error));
+	} finally {
+		session.running = false;
+		session.lastTurnEndedAt = Date.now();
+		// The initial turn lets its ToolResult reach the parent before any queued
+		// follow-up starts; later turns drain immediately.
+		if (session.turnSeq === 1) setTimeout(() => drainDelegatedQueue(session), 0);
+		else drainDelegatedQueue(session);
+	}
 }
 
 /**
@@ -683,7 +1045,7 @@ async function runDelegatedAgent(
 		return { id: toolCall.id, name: toolCall.name, success: false, error, durationMs: Date.now() - started };
 	}
 
-	const subId = spawnSubAgent(toolCall.id, agent.name, task, 0);
+	const subId = spawnSubAgent(toolCall.id, agent.name, task, 0, MAIN_AGENT_ID);
 	printInfo('Delegating to ' + agent.name + '…');
 	// Each parallel worker gets its own client/controller so cancelling one request
 	// or updating its usage cannot interrupt a sibling worker.
@@ -709,123 +1071,54 @@ async function runDelegatedAgent(
 
 	// Sub-agents cannot delegate further; they get every other tool.
 	const delegatedToolDefs = filterAgentTools(agent, [...TOOL_DEFINITIONS, ...getMcpToolDefinitions()]);
-	let finalText = '';
-	let lastNarration = '';
-	// Evidence for the completion gate below: what the run actually wrote and
-	// ran, not what it claims in its final report. Keyed by path so only each
-	// file's last applied content is kept.
-	const changedFiles = new Map<string, string>();
-	const ranChecks: RanCheck[] = [];
+	const session: DelegatedAgentSession = {
+		id: subId,
+		agentName: agent.name,
+		task,
+		parentId: MAIN_AGENT_ID,
+		client: delegatedClient,
+		messages: delegatedMessages,
+		input,
+		permissionMode,
+		allowedCommands,
+		projectRoot,
+		toolDefs: delegatedToolDefs,
+		queue: [],
+		running: true,
+		cancelRequested: false,
+		disposed: false,
+		startedAt: Date.now(),
+		turnSeq: 1,
+		// The initial turn keeps recording into the parent's task state; follow-up
+		// turns replace this with a detached, per-session state.
+		taskState,
+		initialCheckpointId: getCheckpointId,
+		toolCallId: toolCall.id,
+		toolName: toolCall.name,
+	};
+	delegatedSessions.set(subId, session);
+	agentWorkspace.registerHandle({
+		id: subId,
+		kind: 'subagent',
+		status: () => workspaceStatusOf(getSubAgent(subId)?.status ?? 'cancelled'),
+		send: (text) => deliverMessageToSession(session, text),
+		cancel: () => cancelDelegatedSession(session),
+	});
+	// The transcript's first user entry is the delegated task plus the context
+	// the parent supplied, never the full system-prompt wrapper.
+	appendDelegatedTranscript(session, (agentId) => ({ type: 'user', agentId, text: [task, context].filter(Boolean).join('\n\n'), at: Date.now() }));
+	appendDelegatedStatus(session, 'running');
+	return runDelegatedTurn(session, task);
+}
 
-	try {
-		for (let iteration = 0; Date.now() - started < DELEGATED_TIME_BUDGET_MS; iteration++) {
-			setSubAgentActivity(subId, 'waiting for the model', iteration + 1);
-			let result: { content: string; toolCalls: ToolCall[] };
-			try {
-				result = await withEscapeCancellation(delegatedClient, () =>
-					completeWithContextRecovery(delegatedClient, delegatedMessages, delegatedClient.buildToolDefs(delegatedToolDefs)),
-				);
-				setScreenStatus({ usage: delegatedClient.formatUsage() });
-			} catch (err) {
-				if (isRequestCancelled(err)) {
-					finishSubAgent(subId, 'cancelled', 'Cancelled by the user.');
-					return { id: toolCall.id, name: toolCall.name, success: false, error: 'Sub-agent run cancelled.', durationMs: Date.now() - started };
-				}
-				// The model may not support native tool calling — plain text fallback.
-				const fallback = await withEscapeCancellation(delegatedClient, () => completeWithContextRecovery(delegatedClient, delegatedMessages, undefined));
-				result = {
-					content: fallback.content,
-					toolCalls: fallback.toolCalls.length > 0 ? fallback.toolCalls : parseToolCallsFromText(fallback.content),
-				};
-			}
-
-			const toolCalls = dedup(result.toolCalls);
-			if (toolCalls.length === 0) {
-				finalText = result.content.trim();
-				break;
-			}
-			if (result.content.trim()) {
-				lastNarration = result.content.trim();
-				addSubAgentProgress(subId, lastNarration);
-			}
-
-			delegatedMessages.push({
-				id: crypto.randomUUID(),
-				role: 'assistant',
-				content: result.content || '',
-				toolCalls,
-				timestamp: new Date(),
-			});
-
-			for (const tc of toolCalls) {
-				startSubAgentTool(subId, tc.name, describeArgs(tc.arguments) || task);
-				const execution = await executeToolWithReview(tc.name, tc.arguments, projectRoot, input, permissionMode, allowedCommands, (waiting) => setSubAgentWaiting(subId, waiting), getCheckpointId);
-				const toolResult = execution.toolResult;
-				if (execution.applied) ranChecks.length = 0;
-				if (execution.applied && execution.change) changedFiles.set(execution.change.path, execution.change.proposedContent);
-				if (tc.name === 'bash:execute') {
-					ranChecks.push({
-						command: typeof tc.arguments.command === 'string' ? tc.arguments.command : '[invalid command arguments]',
-						success: toolResult.success,
-						output: toolResult.output ?? toolResult.error ?? '',
-					});
-				}
-				const target = String(tc.arguments.path ?? tc.arguments.command ?? task).slice(0, 80);
-				endSubAgentTool(
-					subId,
-					toolResult.success,
-					execution.change
-						? `${execution.applied ? 'applied' : 'not applied'} ${execution.change.path}`
-						: toolResult.success ? (toolResult.output ?? 'ok') : (toolResult.error ?? 'failed'),
-				);
-				recordTaskAction(taskState, `[${agent.name}] ${tc.name} ${target} ${toolResult.success ? 'ok' : 'failed'}`);
-				delegatedMessages.push({
-					id: tc.id,
-					role: 'tool',
-					content: formatToolResultForModel(toolResult),
-					timestamp: new Date(),
-				});
-				logAgentTermoTimeline(`Sub-agent ${agent.name} tool: ${tc.name} -- ${toolResult.success ? 'OK' : 'ERR'}`, projectRoot);
-			}
-		}
-
-		// A delegated agent must return a final report. Reaching the time budget
-		// after tool calls is not completion: the parent must see the failure and recover.
-		const output = finalText.trim();
-		if (!output) {
-			const detail =
-				`Sub-agent ${agent.name} reached its 10-minute time budget without a final report.` +
-				(lastNarration ? ` Last progress: ${lastNarration.replace(/\s+/g, ' ').slice(0, 500)}` : '');
-			finishSubAgent(subId, 'failed', detail);
-			logAgentTermoTimeline(`Sub-agent ${agent.name} exhausted its budget before completing: ${task.slice(0, 120)}`, projectRoot);
-			return { id: toolCall.id, name: toolCall.name, success: false, error: detail, durationMs: Date.now() - started };
-		}
-		// Completion gate: the final report is a claim. Only accept it once the
-		// evidence actually collected during this run (files it wrote, commands
-		// it ran) backs it up — no stub implementations, and a real check command
-		// for any code work the task called for. If the agent didn't run one
-		// itself, run the project's own test/lint/typecheck scripts for real
-		// rather than trust the narration. See runtime/verify.ts, runtime/checks.ts.
-		const verification = await verifyCompletionWithChecks(task, changedFiles, ranChecks, () => runProjectChecks(projectRoot));
-		if (!verification.ok) {
-			const detail =
-				`Sub-agent ${agent.name} reported completion, but its own evidence does not support that claim — rejected:\n` +
-				`${formatIssues(verification.issues)}\n\nSub-agent's report (not accepted as-is):\n${output}`;
-			finishSubAgent(subId, 'failed', detail);
-			logAgentTermoTimeline(`Sub-agent ${agent.name} claimed completion but failed the evidence gate: ${task.slice(0, 120)}`, projectRoot);
-			return { id: toolCall.id, name: toolCall.name, success: false, error: detail, durationMs: Date.now() - started };
-		}
-
-		finishSubAgent(subId, 'completed', output);
-		logAgentTermoTimeline(`Sub-agent ${agent.name} completed delegated task: ${task.slice(0, 120)}`, projectRoot);
-		void appendToTimeline(projectRoot, agent.name, 'Delegated task completed', [`Task: ${task.slice(0, 300)}`], [`Summary: ${output.replace(/\s+/g, ' ').slice(0, 400)}`]);
-		return { id: toolCall.id, name: toolCall.name, success: true, output: `[${agent.name}]\n${output}`, durationMs: Date.now() - started };
-	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		finishSubAgent(subId, 'failed', message);
-		logAgentTermoTimeline(`Sub-agent ${agent.name} failed: ${message.slice(0, 120)}`, projectRoot);
-		return { id: toolCall.id, name: toolCall.name, success: false, error: message, durationMs: Date.now() - started };
+/** /clear: stop and forget every delegated session. */
+function disposeDelegatedSessions(): void {
+	for (const session of delegatedSessions.values()) {
+		session.disposed = true;
+		session.queue.length = 0;
+		session.client.cancelCurrentRequest();
 	}
+	delegatedSessions.clear();
 }
 
 
@@ -881,6 +1174,13 @@ export async function runToolLoop(
 
 	// Continue looping while the LLM keeps issuing tool calls
 	while (toolCalls.length > 0) {
+		// Stop-all: do not start another iteration after a cancellation request.
+		if (mainStopRequested) {
+			taskState.status = 'interrupted';
+			taskState.reason = 'stopped by user';
+			printInfo('Task stopped. Type "continue" to resume from where it stopped.');
+			return finishTurn('cancelled');
+		}
 		const budgetStopReason = getToolLoopStopReason(Date.now() - runStartedAt);
 		if (budgetStopReason) {
 			// Preserve pending model intent as a complete assistant/tool exchange.
@@ -995,7 +1295,9 @@ export async function runToolLoop(
 				} else {
 					execution = tc.name === 'agent:delegate'
 						? { toolResult: await runDelegatedAgent(projectRoot, tc, nimClient, input, permissionMode, allowedCommands, taskState, getCheckpointId, parentContextExcerpt(conversation)), applied: false }
-						: await executeToolWithReview(tc.name, tc.arguments, projectRoot, input, permissionMode, allowedCommands, undefined, getCheckpointId);
+						: await executeToolWithReview(tc.name, tc.arguments, projectRoot, input, permissionMode, allowedCommands, (waiting) => {
+							setMainAgentState({ status: waiting ? 'waiting' : 'running', activity: waiting ? 'waiting for your approval' : 'working' });
+						}, getCheckpointId, { requester: MAIN_AGENT_ID, shouldAbort: () => mainStopRequested });
 				}
 				events.publish({ type: 'tool.completed', sessionId, turnId, toolCallId: tc.id, name: tc.name, success: execution.toolResult.success, at: Date.now() });
 				executions.push(execution);
@@ -1046,6 +1348,14 @@ export async function runToolLoop(
 			printInfo('Task paused: the same failed tool call was requested again. Inspect the diagnostic and type "continue" after correcting the approach.');
 			return finishTurn('paused');
 		}
+		// Stop-all arrived while the tools were running: stop before the next request.
+		if (mainStopRequested) {
+			taskState.status = 'interrupted';
+			taskState.reason = 'stopped by user';
+			onConversationChanged();
+			printInfo('Task stopped. Type "continue" to resume from where it stopped.');
+			return finishTurn('cancelled');
+		}
 
 			// Send conversation (including tool results) back to the LLM
 			// The LLM will either produce text or more tool calls
@@ -1062,6 +1372,7 @@ export async function runToolLoop(
 					if (fallbackText && !fallbackText.includes('"tool_calls"') && !fallbackText.includes('<tool_call>')) printAssistantMessage(fallbackText);
 				}
 				setScreenStatus({ usage: nimClient.formatUsage() });
+				setMainAgentState({ usage: nimClient.getUsage() });
 				events.publish({ type: 'usage.updated', sessionId, turnId, usage: nimClient.formatUsage(), at: Date.now() });
 				events.publish({ type: 'context.updated', sessionId, turnId, usedTokens: estimateContextTokens(conversation, tools, nimClient.getModel()), budgetTokens: resolveContextBudget(nimClient.getModel()).inputBudgetTokens, at: Date.now() });
 			} catch (err) {
@@ -1088,6 +1399,7 @@ export async function runToolLoop(
 					fallbackStream.end();
 					if (!fallbackStream.printed) stopSpinner();
 				setScreenStatus({ usage: nimClient.formatUsage() });
+				setMainAgentState({ usage: nimClient.getUsage() });
 				events.publish({ type: 'usage.updated', sessionId, turnId, usage: nimClient.formatUsage(), at: Date.now() });
 				// The fallback request is sent without tool definitions, so this
 				// estimate omits tool schemas to match what is actually sent.
@@ -1668,6 +1980,15 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 	void logToTimeline(projectRoot, 'Commands: /help /clear /memory /timeline /model /thinking /agents /history');
 
 	const input = createInput();
+	// Main is built in: the workspace owns its state/queue; the REPL supplies I/O.
+	agentWorkspace.registerMainAgent({
+		submitExternal: (text) => input.submitExternal(text),
+		cancel: () => {
+			mainStopRequested = true;
+			nimClient.cancelCurrentRequest();
+		},
+	});
+	setMainAgentState({ status: 'idle', activity: 'ready', usage: nimClient.getUsage() });
 
 	const activateAgent = (name: string, seedInput = true): boolean => {
 		const selected = customAgents.find((agent) => agent.name === name);
@@ -1778,7 +2099,9 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 	mainLoop: while (true) {
 		try {
 			let stopBackgroundCommands: () => void = () => undefined;
-				const rawInput = await input.question('');
+				// A message queued while main was running is processed at this loop top.
+				const queuedMainMessage = takeQueuedMainMessage();
+				const rawInput = queuedMainMessage ?? await input.question('');
 				let userInput = rawInput;
 				if (!userInput) continue;
 				if (userInput.includes('"mcpServers"')) {
@@ -2008,6 +2331,10 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				}
 				if (cmd === '/clear' || cmd === '/cls') {
 					persistSession();
+					// /clear also resets the multi-agent workspace (registry rows,
+					// transcripts, queues, main state and selection).
+					disposeDelegatedSessions();
+					resetAgentWorkspace();
 					conversation.length = 1;
 					taskState = newTaskState();
 					activePlan = undefined;
@@ -2574,6 +2901,8 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				void appendToTimeline(projectRoot, activeAgentName || 'Agent-Termo', 'User request', ['Request: ' + userInput.replace(/\s+/g, ' ').slice(0, 700)], []);
 				if (!displayedInput) printUserMessage(userInput);
 				beginSubAgentRun();
+				mainStopRequested = false;
+				setMainAgentState({ status: 'running', activity: 'working', goal: taskState.goal, activeAgentName: activeAgentName || undefined });
 				stopBackgroundCommands = startBackgroundCommandListener((command) => {
 					printSubAgents(command.slice('/subagents'.length).trim() || undefined);
 				});
@@ -2598,6 +2927,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						streamed.end();
 						if (!streamed.printed) stopSpinner();
 						setScreenStatus({ usage: nimClient.formatUsage() });
+						setMainAgentState({ usage: nimClient.getUsage() });
 					const fullText = result.content;
 						const toolCalls = dedup(result.toolCalls);
 					stopSpinner();
@@ -2655,6 +2985,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					fallbackStream.end();
 					if (!fallbackStream.printed) stopSpinner();
 							setScreenStatus({ usage: nimClient.formatUsage() });
+							setMainAgentState({ usage: nimClient.getUsage() });
 						const toolCalls = dedup(
 							fallback.toolCalls.length > 0 ? fallback.toolCalls : parseToolCallsFromText(fallback.content),
 						);
@@ -2715,6 +3046,10 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				appendToSessionLog('### Interrupted task\n\nGoal: ' + taskState.goal + '\nReason: ' + taskState.reason + '\nLast actions: ' + taskState.lastActions.join('; '), projectRoot);
 				printInfo('The task was interrupted. Type "continue" to resume from where it stopped.');
 			}
+		} finally {
+			// Every way out of a turn (including failure/cancel) returns main to idle
+			// before the REPL awaits input again.
+			setMainAgentState({ status: 'idle', activity: 'ready', usage: nimClient.getUsage() });
 		}
 	}
 }
