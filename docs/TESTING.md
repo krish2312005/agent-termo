@@ -134,8 +134,51 @@ Vitest configuration lives in `vitest.config.ts`. Tests live in `tests/unit/` an
   path validation. Integration suites cover sessions, skills, browser verification,
   and the packaged runtime.
 
-Current baseline after the security hardening regression slice: **446 passed / 2 skipped**
-(45 test files passed, 1 skipped).
+### Carbon Forge UI (live TUI theme)
+
+- **Theme tokens** (`tests/unit/theme.test.ts`): the eight exact foundation colors and
+  the documented derived tokens; semantic roles (selection/focus lime, brand/tool
+  copper, info/subagent teal, error red, composer border `#27332C` unfocused /
+  `#B5D98A` focused); no role is `#FF5555` and every role value comes from the
+  palette. A static scan of `src/ui/tui.tsx`, `src/ui/index.ts` and
+  `src/ui/subagent-view.ts` proves they contain no hex literals, none of the 25
+  legacy hexes listed in DESIGN_SYSTEM §11.7, and no legacy Chalk named colors
+  (`cyan`/`magenta`/`yellow`/`green`/`red`/`dim`); `src/ui/theme.ts` is the only
+  hex source under `src/ui`. It also asserts the transcript `UiKind` map, markdown
+  `SyntaxStyle` roles and the focus-based composer border.
+- **One-line footer** (`tests/unit/footer.test.ts`): the exact canonical composer
+  line (context 11700/23000, thinking `low`, permission `auto`, usage
+  `~130,851 tokens`, width 200); dynamic meter/token/thinking/permission/usage
+  values; absent context/thinking/usage omitted; a trailing ` tokens` stripped
+  while `~` is kept. The documented whole-segment drop order is asserted at its
+  exact widths (session -> thinking -> `↑/↓ select` -> context meter -> `Esc
+  parent` -> `Enter send` -> `Ctrl+X navigate` -> stop all -> `12k/23k`), with
+  permission never dropped, no newline, and code-point length <= width at
+  1/5/20/38/40/60/80/120/200. Navigator and modal variants, the
+  `Ctrl+K stop terminal`-before-stop-all order, and transient status (replaces the
+  shortcut cluster, keeps the context meter and permission, drops `12k/23k`
+  first, then clips with `…`) are covered.
+- **`/help`** (`tests/unit/help.test.ts`): one Commands section then one Shortcuts
+  section; every `COMMANDS` entry exactly once and `/mcp` exactly once; project
+  commands marked (`project`); all five aliases (`/`, `/cls`, `/tl`, `/hist`,
+  `/quit`) and the plain `exit`/`quit` note; corrected descriptions; the six
+  shortcut groups in order with representative real bindings. A static parse of
+  `src/main.ts` slash-command literals (`cmd ===`, `cmd.startsWith`, plus the
+  `/report` and secondary `/subagents` branches) proves every dispatched command
+  and alias is registered and every registered command has a dispatch branch. The
+  non-TUI `printHelp` output is captured from stdout and must contain both
+  sections; the live-registry seam (`setCommands`/`getCommands`) is reset between
+  tests.
+- **Terminal title** (`tests/unit/terminal-title.test.ts`): exact OSC 2
+  (`\x1b]2;Agent-Termo\x07`) and title-stack (`\x1b[22;2t` / `\x1b[23;2t`)
+  sequences, control-character stripping, non-TTY no-op, ordered save+set on
+  install, `process.title` set/restore, idempotent install/restore, the single
+  `process.once("exit")` fallback (invoked through injected IO), the reset seam,
+  and static CLI/`runRepl`/cleanup wiring. No test writes to the real terminal.
+
+Current baseline after the Carbon Forge UI slice: **514 passed / 2 skipped**
+(49 test files passed, 1 skipped); the prior baseline was 446 passed / 2 skipped
+(45 files passed, 1 skipped).
 
 ## Known gaps
 
@@ -212,3 +255,10 @@ Current baseline after the security hardening regression slice: **446 passed / 2
   no width library); CJK/emoji lines can occupy more terminal cells than the
   requested budget. Asserted widths therefore match the navigator/transcript
   convention used elsewhere in `workspace-view.ts`.
+- **Carbon Forge UI, manual-only:** the theme/footer/help/title suites test pure
+  formatters, tokens and source wiring. The OpenTUI footer row painting and
+  variant switching, the composer border in a real terminal, `/help` scrolling in
+  the transcript scrollbox, and the host interpretation of the OSC 2/title-stack
+  sequences (VS Code integrated terminal vs other emulators) require a real TTY.
+  The live `/help` registry is exercised through the `setCommands`/`getCommands`
+  seam, not by running `refreshCommandCompletion` in `src/main.ts`.
