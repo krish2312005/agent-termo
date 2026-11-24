@@ -11,8 +11,8 @@ This document tracks the project's memory and context for all agents to ensure c
 
 ## Current Phase
 
-- **Phase:** Implemented; typed runtime event stream (first vertical slice) landed on `local-branch`
-- **Status:** Live runtime is `src/main.ts` (`runRepl` + `runToolLoop`). The agent loop now publishes a typed `AgentEvent` stream consumed only for observability (usage + context status); the TUI shows a context meter and a compact bordered header. Prior reliability fixes (context auto-compaction, tool-loop retry gate, loop symptom) remain in place. A degenerate raw-control-token guard now rejects malformed model output, and the user's Nemotron model is registered at a 262K context window. The masked provider API-key prompt now accepts pasted text. Connected saved providers are grouped separately and fast-switch with their saved key/model, with an explicit option to enter a new key.
+- **Phase:** Multi-agent workspace implemented, tested, security-reviewed, and locally verified on `feat/subagent-workspace`
+- **Status:** Live runtime is `src/main.ts` (`runRepl` + `runToolLoop`). The agent loop publishes a typed `AgentEvent` stream consumed for observability (usage + context status); the TUI shows a context meter and a compact bordered header. Prior reliability fixes (context auto-compaction, tool-loop retry gate, loop symptom, degenerate output guard, 262K Nemotron window) remain in place. The provider UI now accepts pasted API keys; connected saved providers are grouped separately and fast-switch with their saved key/model, with an explicit option to enter a new key. This build flow added a Claude Code-style multi-agent workspace: an agent navigator directly below the composer, per-agent conversation/activity workspaces, and direct follow-up messaging to an exact sub-agent id on the existing delegated runtime. See "Multi-agent workspace" below for decisions, verification, and limitations.
 
 ## Technology Decisions (current, verified against `package.json`)
 
@@ -47,7 +47,7 @@ This document tracks the project's memory and context for all agents to ensure c
 | Category | Technology | Status |
 |----------|-----------|--------|
 | **LLM API** | Nvidia NIM (OpenAI-compatible) + other OpenAI-compatible providers | DECIDED |
-| **CI/CD** | GitHub Actions | DECIDED |
+| **CI/CD** | GitHub Actions (CI pins Bun 1.3.14; publish on `v*` tags with `NPM_TOKEN`) | DECIDED |
 | **Distribution** | npm | DECIDED |
 
 ## Configuration Files
@@ -69,10 +69,10 @@ This document tracks the project's memory and context for all agents to ensure c
 ### Core Components
 
 1. **CLI Layer:** `src/cli.ts` (commander) -> `src/main.ts`.
-2. **Terminal UI Layer:** `src/ui/` — @opentui/solid-based TUI (`tui.tsx`, `screen.ts`, `selection-copy.ts`).
+2. **Terminal UI Layer:** `src/ui/` — @opentui/solid-based TUI (`tui.tsx`, `screen.ts`, `selection-copy.ts`, `workspace-view.ts`, `display-text.ts`).
 3. **LLM Integration:** `src/llm/` — `NimClient`, provider/model limits, streaming + tool-call normalization.
 4. **Agent System:** prompts loaded from `.claude/agents/*.md` at runtime; 12 specialist agents.
-5. **Tool System:** `src/tools/` (execute/tool defs) with runtime safety in `src/runtime/` (permissions, context, sessions, checkpoints, verify, terminal-sessions, subagents, mcp, skills, plans).
+5. **Tool System:** `src/tools/` (execute/tool defs) with runtime safety in `src/runtime/` (permissions, context, sessions, checkpoints, verify, terminal-sessions, subagents, agent-tree, agent-transcript, agent-selection, agent-workspace, mcp, skills, plans).
 6. **Memory / timeline:** `docs/MEMORY.md`, `docs/TIMELINE.md`, `docs/changes/*.md` (written by `.claude/scripts/log.sh`).
 
 ## Security Considerations
@@ -80,6 +80,7 @@ This document tracks the project's memory and context for all agents to ensure c
 - Bash execution is sandboxed behind permission review with allowed-command filtering, timeouts, and path validation against `process.cwd()`.
 - API keys come from environment variables (e.g. `NIM_API_KEY`); never log or commit secrets.
 - Destructive operations are warned/confirmed; terminal process trees are killed on cancellation (`src/runtime/terminal-sessions.ts`).
+- `docs/SECURITY.md` is the security audit record (baseline + re-audit). Current gate: no open critical/high under the trusted-project-directory model; SEC-16 must be re-rated High if cloned repositories are untrusted.
 
 ## Reliability fixes applied this build flow (2026-11-23)
 
@@ -93,7 +94,7 @@ Verification: `bun run typecheck` clean; `bun run test` = **215 passed / 2 skipp
 
 - **Contract** (`src/runtime/events.ts`): flat discriminated union `AgentEvent` — `turn.started`, `tool.started`, `tool.completed`, `usage.updated`, `context.updated`, `turn.completed`; every event carries `sessionId`, `turnId`, and `at: number` (`Date.now()`). No persistence or replay.
 - **Hub:** `AgentEventHub.subscribe(listener)` returns an idempotent unsubscribe; `publish(event)` dispatches synchronously over a snapshot of listeners and wraps each listener call in `try/catch`, so a UI bug can never break the agent loop. No dependencies.
-- **Wiring** (additive, `src/main.ts`): `runToolLoop` takes trailing `sessionId = '', events: AgentEventHub = new AgentEventHub()`; `observeAgentEvents` maps only `usage.updated` -> `setScreenStatus({ usage })` and `context.updated` -> `setScreenStatus({ context: { usedTokens, budgetTokens } })`. Existing `print*`, spinner, and direct `setScreenStatus` calls are unchanged.
+- **Wiring** (additive, `src/main.ts`): `runToolLoop` takes trailing `sessionId = ''`, `events: AgentEventHub = new AgentEventHub()`; `observeAgentEvents` maps only `usage.updated` -> `setScreenStatus({ usage })` and `context.updated` -> `setScreenStatus({ context: { usedTokens, budgetTokens } })`. Existing `print*`, spinner, and direct `setScreenStatus` calls are unchanged.
 - **Publication:** `turn.started` at loop entry; `tool.started`/`tool.completed` immediately around each executed call in both the parallel-delegation and sequential branches (blocked and budget-skipped calls publish nothing); `usage.updated`/`context.updated` after each successful primary and fallback model response (the fallback estimate omits tool schemas because that request carries none); `turn.completed` at every loop-exit return with `completed | failed | cancelled | paused`. Both `runRepl` call sites pass the real `session.id`.
 - **Context meter:** `formatContextMeter(usedTokens, budgetTokens)` in `src/ui/tui.tsx` (7 cells, `▰`/`▱`, ratio clamped 0–1, percent rounded, non-finite or `budgetTokens <= 0` treated as 100%), re-exported by `src/ui/index.ts`. Screen state gained `context?: { usedTokens; budgetTokens }` (`ScreenContext`/`ScreenState`). The bottom status line prefixes `context <meter>` when present; `/context` prints the same meter.
 - **UI polish:** top header row wrapped in one rounded `#6D625A` bordered box; `printWelcome` is a compact four-line block with no box-drawing characters and no separator lines.
@@ -136,6 +137,22 @@ Verification: `bun run typecheck` clean; `bun run test` = **215 passed / 2 skipp
 - **Unverified:** interactive TUI rendering/keyboard behavior of the group headers; the "Use saved API key" vs "Enter a new API key" choice and unconnected-provider key enforcement (inside unexported `handleProvidersCommand`) are not automated; real terminal key replacement, live endpoints, and bracketed paste in the new-key path need manual checks.
 - **Branch state:** commits `6819770` (pre-existing runtime session log entries), `f51f46a` (fix), `c5e5e1a` (tests), plus the following docs commit, are local on `fix/ui-paste-api-keys`; unpushed, not merged, `master` still at `680ed66`.
 
+## Multi-agent workspace (2026-11-23 build flow)
+
+- **Goal:** a Claude Code-style multi-agent UI where selecting an agent (main or any sub-agent) enters that agent's own workspace: its actual conversation/activity fills the main content area, and the composer routes the next message to that exact stable agent id. The navigator is a compact hierarchy directly below the composer, not a sidebar/modal/read-only monitor.
+- **Contract:** `docs/architecture.md` §21 (current state, decisions D1-D5, TypeScript contracts, data flows, lifecycle, UI/keyboard spec, file plan, test seams, limitations). Visual spec: `docs/DESIGN_SYSTEM.md` §10 (live palette only; no new theme).
+- **Identity/hierarchy:** `MAIN_AGENT_ID = "main"`; sub-agent ids are registry ids for life, never names; `SubAgentActivity.parentId` (main today); tree builder is generic but nesting is **not enabled** (sub-agents cannot delegate). The illustrative `main > project-manager > frontend-expert` is not truthful in this runtime: project-manager is main's active-prompt label; frontend-expert is a direct child of main. No fake nodes. Status vocabulary: idle/running/waiting/completed/failed/stopped; no invented "Thinking".
+- **Transcripts:** main keeps the existing `entries` log. Sub-agents write to `src/runtime/agent-transcript.ts`, a bounded in-memory store per agent id (500 entries, 256 KiB, 8,000 chars/entry, one truncation marker); snapshot reads + subscriptions mean late mounts/switches never lose history. `AgentEventHub` was deliberately not extended (run-local, no replay).
+- **Follow-up dispatch:** `src/runtime/agent-workspace.ts` `sendAgentMessage(agentId, text)` is synchronous and id-only. Idle main resolves a pending REPL question via `input.submitExternal` or queues at the REPL top. Running/waiting agents queue (max 10) and drain at the turn boundary; completed/failed/stopped resume the same `DelegatedAgentSession` (same `NimClient`, messages, agent definition, permissions, root) with no new agent/conversation. Unknown ids never fall back to a parent; duplicate (same text queued or within 2 s), empty, queue-full, and unavailable are explicit rejections. Follow-up results stay in the sub-agent session and do not re-enter the parent model context; the parent `TaskState` is not mutated.
+- **Main runtime integration** (`src/main.ts`): persistent `DelegatedAgentSession`, per-turn namespaced tool-call ids, detached `TaskState`, per-agent lazy checkpoint, finally-drain queue, transcript recording, quiet sub-agent prints (review/approvals still run), main state/usage updates, `/clear` workspace reset, and cancellation scoped to the selected agent for follow-ups. Stop-all (`stopAllAgents`) cancels main + live sub-agents, clears queues, and blocks a just-approved apply via `shouldAbort`; it does not kill an already-running tool call.
+- **UI** (`src/ui/tui.tsx`, `src/ui/workspace-view.ts`, `src/ui/display-text.ts`): navigator directly below the composer (≤7 agent rows + overflow + hint), selected-content status row, main vs sub-agent content switching, per-agent drafts/scroll with tail-follow only at the bottom, composer prefix/placeholder `@name`, routed submit, approval panel with real command/path/±stats/diff lines visible in any workspace, and a shared terminal-control sanitizer on new and existing surfaces.
+- **Keyboard:** default composer focus; `Ctrl+X` enters navigator focus (and arms the stop-all chord); navigator `↑/↓` switch selection immediately, `Enter` focuses the composer, `Esc` selects the parent (composer at main); `Ctrl+X` then `Ctrl+K` within 1.5 s stops all agents. Plain `Ctrl+K` keeps terminal-stop behavior under the documented conditions; `Ctrl+C`, pickers, secret entry, completion, history, Tab/Shift+Enter, `Ctrl+O`/`Ctrl+T`, and `/subagents` are preserved. Navigator keys are consumed before cancellation listeners. Modals own the keyboard and freeze navigation.
+- **Security:** `docs/SECURITY.md` baseline + re-audit. SEC-01 (content-free sub-agent file approvals) and SEC-02 (background shell/browser tools bypassing ask-mode approval) are closed. SEC-03/04 partially fixed, SEC-05 bounded, SEC-06 open medium (unbounded sessions/checkpoints), SEC-08 partial, SEC-10 low open, SEC-15/16 medium pre-existing (raw render paths; project-script execution), SEC-17/18 low. No open critical/high under the trusted-project-directory model. `bun audit`: 2 moderate pre-existing advisories, 0 high/critical.
+- **Verification (exact, final HEAD):** `bun run typecheck` exit 0; `bun run test` = **45 files passed / 1 skipped (46)**, **446 passed / 2 skipped (448)**; `bun run build` exit 0 (`dist/cli.js`, 271,741 bytes); `bun dist/cli.js --version` -> **2.0.7**; `bun dist/cli.js --help` exit 0; `bun bin/agent-termo.js --version` -> 2.0.7; `bun run test:package` -> "Packed npm CLI passed: agent-termo@2.0.7"; `bun install --frozen-lockfile` no changes. Local Bun 1.4.5 (CI pins 1.3.14; both >= minimum).
+- **Feature commits:** `694f983` docs/architecture §21, `21cf5b8` design §10, `5191664` runtime, `ec9ecb7` live TUI, `129c453` unit coverage, `d8e4893` narrow-row invariant, `cc1f347` security audit, `6cb962c` approval/identity hardening, `e19b209` UI sanitization/approval panel, `6278313` security regression tests, `aeea675` re-audit/gate, plus the deployment/docs commits on `feat/subagent-workspace`.
+- **Limitations (honest):** one delegation level; registry/transcripts are in-memory and lost on restart; follow-up messages wait for the turn boundary (up to the 10-minute budget) with no mid-turn injection; follow-up results do not flow back to the parent automatically; stop-all does not kill an in-flight tool call; the terminal panel is shared across agents; provider/model changes apply to newly spawned sessions only; **the live TUI is dark-only — there is no theme/light mode to verify**; no live TTY was available in this flow, so rendering, focus, scroll, approval-panel painting/keys, real escape handling, and live provider streaming remain manual-only; residual display spoofing via Unicode/zero-width homoglyphs and sibling duplicate labels; synthetic tree depths far beyond the runtime's one level can exceed narrow row widths; at extreme narrow widths the hard width invariant drops `N queued` even though the design lists it as always kept; scroll-position maps are not pruned on agent removal (drafts are).
+- **Branch state:** implemented on `feat/subagent-workspace`; the user/coordinator directed the final push to GitHub and merge into `master` after this memory entry (see `docs/TIMELINE.md` and the final response for remote hashes).
+
 ## NIM API Validation Results (historical, 2026-07-04)
 
 - URL: `https://integrate.api.nvidia.com/v1/chat/completions`
@@ -153,10 +170,14 @@ Verification: `bun run typecheck` clean; `bun run test` = **215 passed / 2 skipp
 
 - `CLAUDE.md` — agent workflow / rules
 - `.claude/workflow.md` — agents and flows
+- `docs/architecture.md` — architecture contract (multi-agent workspace in §21)
 - `docs/architecture/architecture-comparison.md` — OpenCode / Codex / Agent-Termo comparison (source-backed)
 - `docs/architecture/current-architecture-audit.md` — actual current architecture + root-cause findings
 - `docs/architecture/target-architecture.md` — target design with implemented/partial/not-yet markers
 - `docs/architecture/implementation-plan.md` — phases, completed work, outstanding work, risks
 - `plan.md` — remediation plan and defect record
 - `docs/TECH_STACK.md`, `docs/PROVIDERS.md`, `docs/CONTEXT_AND_MEMORY.md`, `docs/MCP.md`, `docs/TESTING.md`
+- `docs/SECURITY.md` — security audit and re-audit gate
+- `docs/DEPLOY.md` — local setup/verification and manual TTY checklist
+- `docs/DESIGN_SYSTEM.md` — visual design system (multi-agent workspace in §10)
 - `docs/TIMELINE.md` — activity log (auto-appended by `.claude/scripts/log.sh`)
