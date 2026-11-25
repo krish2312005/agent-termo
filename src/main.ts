@@ -1627,6 +1627,7 @@ export async function runToolLoop(
 			const details = formatIssues(verification.issues);
 			taskState.status = 'interrupted';
 			taskState.reason = 'Completion verification failed: ' + details.replace(/\s+/g, ' ').slice(0, 500);
+			onConversationChanged();
 			printError('Completion blocked: required verification did not pass.', details);
 			printInfo('Task paused. Type "continue" to address the findings and rerun verification.');
 			logAgentTermoTimeline('Evidence gate blocked completion: ' + details.replace(/\s+/g, ' ').slice(0, 300), projectRoot);
