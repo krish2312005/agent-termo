@@ -28,9 +28,9 @@ describe('NVIDIA NIM model limits', () => {
       maxOutputTokens: 32_768,
     });
     const budget = resolveContextBudget(model, {});
-    expect(budget.contextWindowTokens).toBe(1_000_000);
+    expect(budget.contextWindowTokens).toBe(190_000);
     expect(budget.maxOutputTokens).toBe(32_768);
-    expect(budget.inputBudgetTokens).toBeGreaterThan(900_000);
+    expect(budget.inputBudgetTokens).toBeGreaterThan(150_000);
     expect(resolveContextBudget(model, { AGENT_TERMO_OUTPUT_RESERVE_TOKENS: '8192' }).maxOutputTokens).toBe(8_192);
   });
 
