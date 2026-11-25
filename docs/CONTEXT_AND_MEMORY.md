@@ -14,18 +14,18 @@ Delegated agents receive project memory and timeline plus a bounded excerpt of t
 
 Before every model request—including requests after tool execution—Agent-Termo estimates the serialized messages, assistant tool-call JSON, tool schemas, and message framing. The estimate is a conservative character-based heuristic, not the model's tokenizer. Provider-reported usage remains the authoritative usage figure.
 
-Agent-Termo uses NVIDIA's published per-model limits for verified NIM model IDs. The default code model, Step-3.7-Flash, has a 262,144-token context window; the `.env.example` model, Llama 3.1 8B, has 131,072 tokens. Llama 3.3 and Kimi K2 Instruct are also documented at 128K, while Qwen2.5-Coder 32B is 32K and GPT-OSS 120B is 128K. Models without a verified entry use a conservative 32,768-token fallback.
+Agent-Termo targets a 190,000-token (190K) context window by default. For known NVIDIA NIM model IDs, the selected value is capped at that model's verified provider limit: Step-3.7-Flash supports 262,144 tokens, Llama 3.1 8B supports 131,072, and Qwen2.5-Coder 32B supports 32,768. Models without a verified entry use the 190K default because their provider limit is not known to Agent-Termo; choose a lower value yourself if required by the provider.
 
 The default output reserve is 8,192 tokens and the safety margin is 2,048 tokens. Provider-specific generation limits are applied separately: the input budget retains the configured reserve, while the outgoing `max_tokens` is capped to the selected model's documented generation maximum. This prevents a context reserve from being mistaken for an API-permitted output length.
 
-- `AGENT_TERMO_CONTEXT_WINDOW` — optional total context-window override for custom or unlisted deployments. Leave unset to use the provider model catalogue.
+- `AGENT_TERMO_CONTEXT_WINDOW` — optional global fallback/override when the current model has no saved per-model value. A saved value set with `/context` takes precedence.
 - `AGENT_TERMO_OUTPUT_RESERVE_TOKENS` — output tokens reserved when calculating the input budget (default 8,192).
 - `AGENT_TERMO_TOOL_TIMEOUT_MS` — optional request timeout for native tool-calling requests (15,000–300,000 ms); by default the timeout scales with estimated prompt size.
 - `AGENT_TERMO_CONTEXT_SAFETY_MARGIN` — additional input headroom (default 2,048).
 
-NVIDIA's OpenAI-compatible `/v1/models` endpoint supplies the model IDs, not a dependable context-window field; known limits are therefore maintained against NVIDIA's per-model API references in `src/llm/models.ts`. Unknown model IDs retain the conservative fallback rather than inheriting another model's capacity.
+NVIDIA's OpenAI-compatible `/v1/models` endpoint supplies model IDs, not a dependable context-window field; known limits are maintained against NVIDIA's per-model API references in `src/llm/models.ts`. Context overrides are saved per exact model ID in `~/.agent-termo/config.json`, so switching models restores each model's own setting.
 
-The `/context` command displays the estimated input, total context window, output reserve, safety margin, and resulting input budget. Token estimation remains heuristic and is not a provider tokenizer.
+The `/context` command displays the estimated input, total context window, output reserve, safety margin, and resulting input budget. Use `/context 190k` or `/context set 190k` to save a per-model value; use `/context reset` to remove that model's override. Sizes accept plain token counts plus `k` and `m` suffixes. Requests above a known provider limit are rejected. Token estimation remains heuristic and is not a provider tokenizer.
 
 ## Compaction and recovery
 
