@@ -92,13 +92,13 @@ function removeLegacyDocsFolder(root: string): void {
  * Safe to call on every launch: it only creates missing folders and moves
  * known legacy runtime files.
  */
-export function ensureAgentStructure(projectRoot: string): string {
+export function ensureAgentStructure(projectRoot: string, initializeProjectDocs = true): string {
   const root = agentTermoRoot(projectRoot);
   mkdirSync(agentTermoAgentsDir(projectRoot), { recursive: true });
   mkdirSync(agentTermoCommandsDir(projectRoot), { recursive: true });
   mkdirSync(agentTermoSkillsDir(projectRoot), { recursive: true });
   mkdirSync(agentTermoLogsDir(projectRoot), { recursive: true });
-  ensureProjectDocs(projectRoot);
+  if (initializeProjectDocs) ensureProjectDocs(projectRoot);
 
   moveLegacyLog(resolve(root, 'memory.md'), sessionLogPath(projectRoot));
   moveLegacyLog(resolve(root, 'timeline.md'), runtimeTimelinePath(projectRoot));
@@ -107,8 +107,12 @@ export function ensureAgentStructure(projectRoot: string): string {
   return root;
 }
 
-export function ensureAgentFolder(projectRoot: string): AgentFolderResult {
-  const root = ensureAgentStructure(projectRoot);
+export function ensureAgentFolder(
+  projectRoot: string,
+  options: { initializeProjectDocs?: boolean } = {},
+): AgentFolderResult {
+  const initializeProjectDocs = options.initializeProjectDocs ?? true;
+  const root = ensureAgentStructure(projectRoot, initializeProjectDocs);
   const agents = agentTermoAgentsDir(projectRoot);
   const commands = agentTermoCommandsDir(projectRoot);
 
@@ -129,7 +133,7 @@ export function ensureAgentFolder(projectRoot: string): AgentFolderResult {
     copyMarkdownDirectory(resolve(bundled, 'workflow'), root);
   }
 
-  ensureTermoFile(projectRoot);
+  if (initializeProjectDocs) ensureTermoFile(projectRoot);
   return { root, copiedAgents, copiedCommands };
 }
 

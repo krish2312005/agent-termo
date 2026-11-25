@@ -1,7 +1,8 @@
 import type { ConversationMessage } from '../types/index.js';
 import { getProviderModelLimits } from '../llm/models.js';
+import { getSavedContextWindow } from '../utils/config.js';
 
-export const DEFAULT_CONTEXT_WINDOW_TOKENS = 32_768;
+export const DEFAULT_CONTEXT_WINDOW_TOKENS = 190_000;
 export const DEFAULT_OUTPUT_RESERVE_TOKENS = 8_192;
 export const DEFAULT_CONTEXT_SAFETY_MARGIN_TOKENS = 2_048;
 const SUMMARY_HEADER = '\n\n## Compacted Conversation Context\n';
@@ -40,22 +41,34 @@ export function recordContextTokenUsage(model: string, estimatedTokens: number, 
 
 function positiveInteger(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(value ?? '', 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+/** Parse context sizes such as 190000, 190k, or 1.5m. */
+export function parseContextWindowTokens(value: string): number | undefined {
+  const match = /^([0-9]+(?:\.[0-9]+)?)\s*([km]?)$/i.exec(value.trim().replace(/,/g, ''));
+  if (!match) return undefined;
+  const multiplier = match[2]?.toLowerCase() === 'm' ? 1_000_000 : match[2]?.toLowerCase() === 'k' ? 1_000 : 1;
+  const parsed = Math.round(Number(match[1]) * multiplier);
+  return Number.isSafeInteger(parsed) && parsed >= 4_096 ? parsed : undefined;
 }
 
 /**
  * NIM does not expose a dependable context-window value in /v1/models.
- * Known model IDs use limits published in NVIDIA's per-model API references.
- * Explicit environment settings take precedence; unknown models stay conservative.
+ * Known model IDs are capped at verified provider limits. A saved per-model
+ * setting takes precedence over the legacy environment override and 190K default.
  */
 export function resolveContextBudget(
   model: string,
   env: NodeJS.ProcessEnv = process.env,
 ): ContextBudget {
   const providerLimits = getProviderModelLimits(model);
+  // A model-specific saved value is the user's explicit choice. The legacy
+  // environment override remains the fallback when no per-model value exists.
+  const savedContextWindow = getSavedContextWindow(model);
   const configuredContextWindow = positiveInteger(
-    env.AGENT_TERMO_CONTEXT_WINDOW,
-    providerLimits?.contextWindowTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS,
+    savedContextWindow?.toString() ?? env.AGENT_TERMO_CONTEXT_WINDOW,
+    DEFAULT_CONTEXT_WINDOW_TOKENS,
   );
   // An override may lower a documented limit, but must never make a known
   // model appear to support more context than its provider actually allows.

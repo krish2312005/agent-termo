@@ -182,6 +182,36 @@ export function saveNimThinking(thinking: string): void {
   updateStoredConfig({ nimThinking: thinking });
 }
 
+/** Read the context-window override saved for one exact model ID. */
+export function getSavedContextWindow(model: string): number | undefined {
+  if (!model.trim()) return undefined;
+  const configured = readStoredConfig().contextWindows;
+  if (!configured || typeof configured !== 'object' || Array.isArray(configured)) return undefined;
+  const value = (configured as Record<string, unknown>)[model];
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 4_096 ? value : undefined;
+}
+
+/** Save a context-window override independently for each model. */
+export function saveContextWindow(model: string, tokens: number): void {
+  if (!model.trim()) throw new Error('A model ID is required.');
+  if (!Number.isSafeInteger(tokens) || tokens < 4_096) throw new Error('Context size must be at least 4,096 tokens.');
+  const stored = readStoredConfig();
+  const current = stored.contextWindows && typeof stored.contextWindows === 'object' && !Array.isArray(stored.contextWindows)
+    ? stored.contextWindows as Record<string, number>
+    : {};
+  updateStoredConfig({ contextWindows: { ...current, [model]: tokens } });
+}
+
+/** Remove one model override so it uses the 190K default (capped by provider limits). */
+export function clearSavedContextWindow(model: string): void {
+  const stored = readStoredConfig();
+  const current = stored.contextWindows && typeof stored.contextWindows === 'object' && !Array.isArray(stored.contextWindows)
+    ? { ...stored.contextWindows as Record<string, unknown> }
+    : {};
+  delete current[model];
+  updateStoredConfig({ contextWindows: current });
+}
+
 export function savePermissionMode(permissionMode: 'ask' | 'files' | 'auto'): void {
   updateStoredConfig({ permissionMode, autoApprove: permissionMode === 'auto' });
 }

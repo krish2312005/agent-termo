@@ -16,8 +16,9 @@ const withApprovalPrompt = createApprovalQueue();
 // Set by the workspace's stop-all for the main agent; reset at each main turn.
 let mainStopRequested = false;
 import { buildSystemPrompt, filterAgentTools, resolveDelegation } from './agents/index.js';
-import { resolveProjectRoot, saveNimModel, saveNimThinking, savePermissionMode, listSavedProviders, activateProvider, saveProviderConfig } from './utils/config.js';
+import { resolveProjectRoot, saveNimModel, saveNimThinking, savePermissionMode, listSavedProviders, activateProvider, saveProviderConfig, getSavedContextWindow, saveContextWindow, clearSavedContextWindow } from './utils/config.js';
 import { BUILTIN_PROVIDERS, groupProviders, isProviderConnected, providerActivationModel, type ProviderDefinition, type StoredProviderConfig } from './llm/providers.js';
+import { getProviderModelLimits } from './llm/models.js';
 import { resolve, relative, sep } from 'node:path';
 import { existsSync, realpathSync, readdirSync, readFileSync } from 'node:fs';
 import { ensureAgentFolder, loadProjectAgents, loadAgentCommands, type AgentCommand } from './runtime/agent-folder.js';
@@ -28,7 +29,7 @@ import { commandApprovalKey, isCommandApprovalRequired, loadAllowedCommands, sav
 import { verifyCompletionWithChecks, formatIssues, type RanCheck } from './runtime/verify.js';
 import { runProjectChecks } from './runtime/checks.js';
 import { appendSessionArchive, createSession, forkSession, listSessions, loadLatestSession, loadSession, saveSession, searchSessionHistory, type StoredSession } from './runtime/sessions.js';
-import { compactConversation, estimateContextTokens, isContextWindowError, prepareConversationForRequest, resolveContextBudget } from './runtime/context.js';
+import { DEFAULT_CONTEXT_WINDOW_TOKENS, compactConversation, estimateContextTokens, isContextWindowError, parseContextWindowTokens, prepareConversationForRequest, resolveContextBudget } from './runtime/context.js';
 import { listTerminalSessions, stopTerminalSession } from './runtime/terminal-sessions.js';
 import { AgentEventHub } from './runtime/events.js';
 import {
@@ -158,6 +159,10 @@ function discoverProjectFiles(projectRoot: string): string[] {
 function expandContextMentions(input: string, projectRoot: string): { text: string; attached: string[] } {
 	const attached: string[] = [];
 	const text = input.replace(/(^|\s)@([^\s]+)/g, (whole, prefix: string, name: string) => {
+		// @names are often agent/user mentions. Only path-shaped references are files.
+		if (!name.includes('/') && !name.startsWith('.') && !/\.[a-z0-9_-]{1,12}$/i.test(name) && !/^(?:Makefile|Dockerfile|LICENSE|README|CHANGELOG|Gemfile|Procfile|Justfile)$/i.test(name)) {
+			return whole;
+		}
 		const filePath = resolve(projectRoot, name);
 		// Check if the file exists and is within the project directory (security check)
 		let isAllowed = false;
@@ -205,6 +210,10 @@ function dedup(arr: ToolCall[]): ToolCall[] {
 		}
 	}
 	return result;
+}
+
+export function getExecutableToolCalls(toolCalls: ToolCall[], toolsEnabled: boolean): ToolCall[] {
+	return toolsEnabled ? dedup(toolCalls) : [];
 }
 
 export function shouldRunDelegationsInParallel(toolCalls: ToolCall[]): boolean {
@@ -453,27 +462,57 @@ function splitCommandArgs(value: string): string[] {
 		.map((part) => part.replace(/^['"]|['"]$/g, ''));
 }
 
-function hasRelevantSkill(input: string, skills: SkillDefinition[]): boolean {
-	const words = new Set(input.toLowerCase().match(/[a-z0-9-]{3,}/g) ?? []);
-	const ignored = new Set(['about', 'after', 'also', 'and', 'application', 'build', 'code', 'from', 'into', 'make', 'need', 'project', 'that', 'this', 'with', 'your']);
-	return skills.some((skill) => {
-		if (skill.disableModelInvocation) return false;
-		if (words.has(skill.name)) return true;
-		const terms = skill.description.toLowerCase().match(/[a-z0-9]{4,}/g) ?? [];
-		const matches = new Set(terms.filter((term) => !ignored.has(term) && words.has(term)));
-		return matches.size >= 1;
-	});
+const TOOL_ACTION = /^(?:build|make|create|implement|code|debug|fix|edit|modify|update|refactor|develop|deploy|test|run|delete|remove|add|inspect|analy[sz]e|review|trace|search|find|locate|generate|read|summarize|extract|parse|convert|open|load|check|verify|validate)\b/i;
+const PROJECT_ACTION = /^(?:build|make|create|implement|code|debug|fix|edit|modify|update|refactor|develop|deploy|test|run|delete|remove|add|generate)\b/i;
+const GERUND_ACTION = /^(?:building|making|creating|implementing|coding|debugging|fixing|editing|modifying|updating|refactoring|developing|deploying|testing)\b/i;
+const CODING_OBJECT = /^(?:write|generate)\s+(?:some\s+)?(?:code|a\s+(?:program|script|function|file|website|app|application)|tests?|documentation|docs)\b/i;
+const CODING_CHANGES = /^(?:do|make)\s+(?:some\s+)?(?:coding|code|implementation|development)\s+(?:changes|work|updates?)\b/i;
+const CONVERSATION_PREFIXES = [
+	/^(?:can|could|would|will)\s+you(?:\s+please)?\s+(?:(?:go\s+ahead\s+and)\s+)?/i,
+	/^i\s+(?:want|need|would like)\s+you\s+to\s+/i,
+	/^(?:help|assist)\s+me(?:\s+to)?\s+/i,
+	/^i\s+(?:want|need|would like)\s+to\s+/i,
+	/^(?:let['’]s|lets)\s+/i,
+	/^(?:please|kindly)\s+(?:(?:go\s+ahead\s+and)\s+)?/i,
+];
+
+function startsWithRequestedAction(input: string, projectOnly = false): boolean {
+	const sentences = input.split(/[\n.!?;:]+/).map((part) => part.trim().replace(/^["'’]+/, '')).filter(Boolean);
+	for (const sentence of sentences) {
+		const action = projectOnly ? PROJECT_ACTION : TOOL_ACTION;
+		if (action.test(sentence) || CODING_CHANGES.test(sentence) || CODING_OBJECT.test(sentence)) return true;
+		// Bare gerunds are common shorthand task prompts; first-person descriptions are not.
+		if (GERUND_ACTION.test(sentence)) return true;
+		for (const prefix of CONVERSATION_PREFIXES) {
+			const remainder = sentence.replace(prefix, '');
+			if (remainder !== sentence && (action.test(remainder) || CODING_CHANGES.test(remainder) ||
+				CODING_OBJECT.test(remainder) || (!projectOnly && /^(?:search|find|inspect|analy[sz]e|review|trace|locate)\b/i.test(remainder)))) return true;
+		}
+	}
+	return false;
 }
 
-export function shouldUseTools(input: string, activeAgentName = '', continuing = false, hasMcpTools = false, hasRelevantSkills = false): boolean {
-	if (continuing || activeAgentName || hasMcpTools || hasRelevantSkills) return true;
-	return /\b(build(?:s|ing)?|mak(?:e|es|ing)|code|debug|deploy|edit|file|fix|implement|develop(?:s|ing)?|refactor|review|run|test|write|rewrite|creat(?:e|es|ing)|delete|inspect|analy[sz]e|documentation|docs|architecture|delegate|spawn|specialist|sub-?agent|software(?:s)?|application|app|website|webapp|program|project|feature|component)\b/i.test(input);
+function isProjectSpecificQuestion(input: string): boolean {
+	const projectReference = /\b(?:this|my|the)\s+(?:project|repo(?:sitory)?|codebase|application|app)\b/i.test(input);
+	return projectReference && /\b(?:how|what|where|why|which|explain|show|describe|find|understand|work|inspect|analy[sz]e|review|trace|audit|verify|implemented|configured|architecture|structure|uses?|handles?)\b/i.test(input);
+}
+
+export function shouldLoadSessionHistory(input: string): boolean {
+	return /\b(?:previously|earlier|last time|previous time|last session|previous session|session history|conversation history|chat history|past work|previous work|earlier work|what did we (?:build|make|create|implement|change|decide)|what have we (?:built|made|created|implemented|changed|decided))\b/i.test(input);
+}
+
+export function shouldLoadProjectContext(input: string): boolean {
+	return startsWithRequestedAction(input, true) || isProjectSpecificQuestion(input);
+}
+
+export function shouldUseTools(input: string, _activeAgentName = '', continuing = false, _hasMcpTools = false, _hasRelevantSkills = false): boolean {
+	// Tool availability, skill keyword overlap, and a selected agent are not user intent.
+	return continuing || startsWithRequestedAction(input) || isProjectSpecificQuestion(input);
 }
 
 export function shouldRequireInitialToolCall(input: string): boolean {
-	return /\b(build(?:s|ing)?|mak(?:e|es|ing)|code|debug|deploy|edit|fix|implement|develop(?:s|ing)?|refactor|write|rewrite|creat(?:e|es|ing)|delete|test)\b/i.test(input);
+	return startsWithRequestedAction(input) || isProjectSpecificQuestion(input);
 }
-
 export function isToolRequestTimeoutError(error: unknown): boolean {
 	if (!error || typeof error !== 'object') return false;
 	const value = error as { name?: unknown; message?: unknown; code?: unknown; toolRequestTimeout?: unknown };
@@ -1919,7 +1958,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 	// commands and private logs live under .agent-termo/. Older versions also
 	// wrote .agent-termo/memory.md and timeline.md; those are migrated here.
 	try {
-		ensureAgentFolder(projectRoot);
+		ensureAgentFolder(projectRoot, { initializeProjectDocs: false });
 	} catch {
 		// Read-only filesystem or similar: tools will surface the error.
 	}
@@ -1934,8 +1973,13 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 	const agentRoot = resolve(projectRoot, '.agent-termo');
 	let customAgents = loadProjectAgents(projectRoot);
 	setAgentNames(customAgents.map((agent) => agent.name));
-	const contextFiles = discoverProjectFiles(projectRoot);
-	setContextFiles(contextFiles);
+	let contextFilesLoaded = false;
+	const ensureContextFilesLoaded = (): void => {
+		if (contextFilesLoaded) return;
+		refreshContextFiles(projectRoot);
+		contextFilesLoaded = true;
+	};
+	setContextFiles([]);
 	// Stream live bash output into the terminal panel below the input box.
 	setTerminalHooks({
 		onStart: startTerminalPanel,
@@ -1985,11 +2029,22 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 	// If approval was saved just before a restart, keep the plan resumable.
 	if (activePlan?.status === 'approved' && taskState.status === 'interrupted') activePlan.status = 'in_progress';
 
+	let includeProjectContext = false;
+	let includeSessionHistory = false;
 	const buildSessionPrompt = (): string => {
-		const memory = loadMemorySync(projectRoot);
-		const timeline = loadTimelineSync(projectRoot);
-		const memoryContext = loadSessionLogContext(projectRoot, 6_000);
-		let prompt = buildSystemPrompt(memory, timeline, projectRoot, activeAgentPrompt, customAgents, loadTermoInstructions(projectRoot), loadSkillCatalogPrompt(projectRoot));
+		// Project docs and skill catalogs are loaded only for a task that needs them.
+		const memory = includeProjectContext ? loadMemorySync(projectRoot) : '';
+		const timeline = includeProjectContext ? loadTimelineSync(projectRoot) : '';
+		const memoryContext = includeSessionHistory ? loadSessionLogContext(projectRoot, 6_000) : '';
+		let prompt = buildSystemPrompt(
+			memory,
+			timeline,
+			projectRoot,
+			activeAgentPrompt,
+			customAgents,
+			includeProjectContext ? loadTermoInstructions(projectRoot) : '',
+			includeProjectContext ? loadSkillCatalogPrompt(projectRoot) : '',
+		);
 		if (memoryContext) prompt += '\n\n## Recent Session Log (previous sessions, may include interrupted tasks)\n' + memoryContext;
 		if (taskState.goal && taskState.status !== 'idle') {
 			prompt += '\n\n## Active Task\n' + taskState.goal.slice(0, 1_200) + '\nStatus: ' + taskState.status + (taskState.reason ? ' (' + taskState.reason.slice(0, 500) + ')' : '');
@@ -2012,7 +2067,9 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 	} else if (conversation[0]?.role !== 'system') {
 		conversation.unshift({ id: crypto.randomUUID(), role: 'system', content: buildSessionPrompt(), timestamp: new Date() });
 	}
-	const refreshSystemPrompt = (): void => {
+	const refreshSystemPrompt = (projectContext = includeProjectContext, sessionHistory = includeSessionHistory): void => {
+		includeProjectContext = projectContext;
+		includeSessionHistory = sessionHistory;
 		const compacted = conversation[0]?.content.match(/\n\n## Compacted Conversation Context[\s\S]*$/)?.[0] ?? '';
 		conversation[0]!.content = buildSessionPrompt() + compacted;
 	};
@@ -2094,6 +2151,8 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 			checkpointId: selected.taskState.checkpointId,
 		} : newTaskState();
 		if (activePlan?.status === 'approved' && taskState.status === 'interrupted') activePlan.status = 'in_progress';
+		includeProjectContext = false;
+		includeSessionHistory = false;
 		if (selected.model) nimClient.setModel(selected.model);
 		if (selected.thinkingCapacity) nimClient.setThinkingCapacity(selected.thinkingCapacity as ThinkingCapacity);
 		if (conversation.length === 0) conversation.push({ id: crypto.randomUUID(), role: 'system', content: buildSessionPrompt(), timestamp: new Date() });
@@ -2113,9 +2172,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 	}
 	persistSession();
 	logAgentTermoTimeline('Agent-Termo session started. Model: ' + nimClient.getModel(), projectRoot);
-	void logToTimeline(projectRoot, 'Agent-Termo session started. Model: ' + nimClient.getModel());
 	logAgentTermoTimeline('Commands: /help /clear /memory /timeline /model /thinking /agents /history', projectRoot);
-	void logToTimeline(projectRoot, 'Commands: /help /clear /memory /timeline /model /thinking /agents /history');
 
 	const input = createInput();
 	// Main is built in: the workspace owns its state/queue; the REPL supplies I/O.
@@ -2360,6 +2417,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 							// Refresh @mention file list so newly created files (e.g. PLAN.md)
 							// are discoverable without restarting the agent.
 							setContextFiles(discoverProjectFiles(projectRoot));
+							contextFilesLoaded = true;
 							refreshSystemPrompt();
 							persistSession();
 							printSuccess('Approved plan saved to PLAN.md. No implementation was started.');
@@ -2478,6 +2536,8 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					conversation.length = 1;
 					taskState = newTaskState();
 					activePlan = undefined;
+					includeProjectContext = false;
+					includeSessionHistory = false;
 					conversation[0]!.content = buildSessionPrompt();
 					session = createSession(projectRoot, conversation);
 					persistSession();
@@ -2509,12 +2569,14 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				}
 					if (cmd === '/providers' || cmd.startsWith('/providers ')) {
 						await handleProvidersCommand(userInput.trim().slice('/providers'.length).trim(), nimClient, projectRoot, input);
+						refreshContextMeter();
 						persistSession();
 						continue mainLoop;
 					}
 					if (cmd === '/model' || cmd.startsWith('/model ')) {
 						// Take the argument from the original text: model IDs are case-sensitive.
 						await handleModelCommand(userInput.trim().slice('/model'.length).trim(), nimClient, projectRoot);
+						refreshContextMeter();
 						persistSession();
 						continue mainLoop;
 					}
@@ -2781,19 +2843,53 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						}
 						continue mainLoop;
 					}
-					if (cmd === '/context') {
+					if (cmd === '/context' || cmd.startsWith('/context ')) {
+						const model = nimClient.getModel();
+						const argument = userInput.trim().slice('/context'.length).trim();
+						const values = argument.split(/\s+/).filter(Boolean);
+						const action = (values[0] ?? '').toLowerCase();
+						if (action === 'reset' || action === 'default') {
+							try {
+								clearSavedContextWindow(model);
+								printSuccess('Context override cleared for ' + model + '.');
+							} catch (error) {
+								printError('Could not reset context size: ' + (error instanceof Error ? error.message : String(error)));
+							}
+						} else if (values.length > 0) {
+							const sizeText = action === 'set' ? (values[1] ?? '') : values[0]!;
+							const requested = parseContextWindowTokens(sizeText);
+							if (requested === undefined) {
+								printError('Invalid context size: ' + (sizeText || '(missing)'), 'Usage: /context [190k | set 190k | reset]. Minimum: 4,096 tokens.');
+							} else {
+								const modelLimit = getProviderModelLimits(model)?.contextWindowTokens;
+								if (modelLimit !== undefined && requested > modelLimit) {
+									printError('This model supports at most ' + modelLimit.toLocaleString() + ' context tokens.', 'Requested: ' + requested.toLocaleString() + ' · Model: ' + model);
+								} else {
+									try {
+										saveContextWindow(model, requested);
+										printSuccess('Context window saved: ' + requested.toLocaleString() + ' tokens for ' + model + '.');
+									} catch (error) {
+										printError('Could not save context window: ' + (error instanceof Error ? error.message : String(error)));
+									}
+								}
+							}
+						}
 						const tools = nimClient.buildToolDefs([...TOOL_DEFINITIONS, ...getMcpToolDefinitions()]);
-						const estimated = estimateContextTokens(conversation, tools, nimClient.getModel());
-						const budget = resolveContextBudget(nimClient.getModel());
+						const estimated = estimateContextTokens(conversation, tools, model);
+						const budget = resolveContextBudget(model);
+						const saved = getSavedContextWindow(model);
+						const source = saved !== undefined ? 'saved for this model' : process.env.AGENT_TERMO_CONTEXT_WINDOW ? 'environment override' : 'default';
+						printInfo('Model: ' + model);
+						printInfo('Context window: ' + budget.contextWindowTokens.toLocaleString() + ' tokens (' + source + ').');
 						printInfo('Estimated input: ~' + estimated.toLocaleString() + ' tokens');
-						printInfo('Input budget: ' + budget.inputBudgetTokens.toLocaleString() + ' / ' + budget.contextWindowTokens.toLocaleString());
+						printInfo('Available input budget: ' + budget.inputBudgetTokens.toLocaleString() + ' / ' + budget.contextWindowTokens.toLocaleString());
 						printInfo('context ' + formatContextMeter(estimated, budget.inputBudgetTokens));
 						setScreenStatus({ context: { usedTokens: estimated, budgetTokens: budget.inputBudgetTokens } });
 						printInfo('Output reserve: ' + budget.outputReserveTokens.toLocaleString() + ' tokens; safety margin: ' + budget.safetyMarginTokens.toLocaleString());
 						printInfo('Messages: ' + (conversation.length - 1) + ' (tool-call JSON and tool schemas included)');
-						printInfo('Active agent: ' + (activeAgentName || '(default)'));
-						printInfo('Current goal: ' + (currentGoal || '(none)'));
-						printInfo('Set AGENT_TERMO_CONTEXT_WINDOW to the selected model documented limit when known.');
+						printInfo('Set with /context 190k (or /context set 190k); /context reset restores the 190K default unless an environment override is set.');
+						printInfo('Default: ' + DEFAULT_CONTEXT_WINDOW_TOKENS.toLocaleString() + ' tokens, capped at the documented model limit when known.');
+						refreshContextMeter();
 						continue mainLoop;
 					}
 					if (cmd === '/compact') {
@@ -3038,7 +3134,9 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				conversation.push(userMsg);
 				persistSession();
 				rememberChat(projectRoot, 'User', userInput);
-				void appendToTimeline(projectRoot, activeAgentName || 'Agent-Termo', 'User request', ['Request: ' + userInput.replace(/\s+/g, ' ').slice(0, 700)], []);
+				if (skillInvocation || shouldUseTools(userInput, activeAgentName, continuing) || activePlan?.status === 'in_progress') {
+					void appendToTimeline(projectRoot, activeAgentName || 'Agent-Termo', 'User request', ['Request: ' + userInput.replace(/\s+/g, ' ').slice(0, 700)], []);
+				}
 				if (!displayedInput) printUserMessage(userInput);
 				beginSubAgentRun();
 				mainStopRequested = false;
@@ -3050,17 +3148,23 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				// Plain conversation does not need a large tool schema. Keeping it out of
 				// the request also supports providers/models that reject tool mode.
 				
-				refreshSystemPrompt();
+				const requestUsesTools = skillInvocation || shouldUseTools(userInput, activeAgentName, continuing);
+				const planInProgress = activePlan?.status === 'in_progress';
+				if (shouldLoadProjectContext(userInput) || planInProgress) ensureContextFilesLoaded();
+				refreshSystemPrompt(
+					shouldLoadProjectContext(userInput) || skillInvocation || planInProgress || continuing,
+					shouldLoadSessionHistory(userInput) || continuing,
+				);
 				const selectedAgent = customAgents.find((agent) => agent.name === activeAgentName);
 				const activeAgentToolDefinitions = selectedAgent
 					? filterAgentTools(selectedAgent, [...TOOL_DEFINITIONS, ...getMcpToolDefinitions()], true)
 					: [...TOOL_DEFINITIONS, ...getMcpToolDefinitions()];
 				const recoveryToolDefinitions = [
 					...activeAgentToolDefinitions,
-					...(activePlan?.status === 'in_progress' ? [PLAN_PROGRESS_TOOL] : []),
+					...(planInProgress ? [PLAN_PROGRESS_TOOL] : []),
 				];
-				const tools = shouldUseTools(userInput, activeAgentName, continuing, getMcpToolDefinitions().length > 0, skillInvocation || hasRelevantSkill(userInput, listSkills(projectRoot))) || activePlan?.status === 'in_progress'
-					? nimClient.buildToolDefs([...activeAgentToolDefinitions, ...(activePlan?.status === 'in_progress' ? [PLAN_PROGRESS_TOOL] : [])])
+				const tools = requestUsesTools || planInProgress
+					? nimClient.buildToolDefs([...activeAgentToolDefinitions, ...(planInProgress ? [PLAN_PROGRESS_TOOL] : [])])
 					: undefined;
 
 				{
@@ -3080,7 +3184,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						setScreenStatus({ usage: nimClient.formatUsage() });
 						setMainAgentState({ usage: nimClient.getUsage() });
 					const fullText = result.content;
-						const toolCalls = dedup(result.toolCalls);
+						const toolCalls = getExecutableToolCalls(result.toolCalls, Boolean(tools));
 					stopSpinner();
 
 					if (toolCalls.length === 0 && tools && shouldRequireInitialToolCall(userInput)) {

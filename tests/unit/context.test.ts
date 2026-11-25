@@ -3,6 +3,7 @@ import type { ConversationMessage } from '../../src/types/index.js';
 import {
   compactConversation,
   estimateContextTokens,
+  parseContextWindowTokens,
   prepareConversationForRequest,
   recordContextTokenUsage,
   resolveContextBudget,
@@ -45,8 +46,18 @@ describe('context budgeting and compaction', () => {
     expect(estimateContextTokens(messages, undefined, 'calibration-test-model')).toBe(1_200);
   });
 
-  it('uses a conservative fallback and configurable model limits', () => {
-    expect(resolveContextBudget('unknown', {}).contextWindowTokens).toBe(32_768);
+  it('parses context sizes in tokens, thousands, and millions', () => {
+    expect(parseContextWindowTokens('190000')).toBe(190_000);
+    expect(parseContextWindowTokens('190k')).toBe(190_000);
+    expect(parseContextWindowTokens('1.5m')).toBe(1_500_000);
+    expect(parseContextWindowTokens('1,000,000')).toBe(1_000_000);
+    expect(parseContextWindowTokens('4.1k')).toBe(4_100);
+    expect(parseContextWindowTokens('2k')).toBeUndefined();
+    expect(parseContextWindowTokens('not-a-size')).toBeUndefined();
+  });
+
+  it('uses a 190K default and configurable model limits', () => {
+    expect(resolveContextBudget('unknown', {}).contextWindowTokens).toBe(190_000);
     const configured = resolveContextBudget('unknown', {
       AGENT_TERMO_CONTEXT_WINDOW: '65536',
       AGENT_TERMO_OUTPUT_RESERVE_TOKENS: '4096',
@@ -57,11 +68,11 @@ describe('context budgeting and compaction', () => {
 
   it('uses the context and output limits published for the selected NVIDIA model', () => {
     expect(resolveContextBudget('stepfun-ai/step-3.7-flash', {})).toMatchObject({
-      contextWindowTokens: 262_144,
+      contextWindowTokens: 190_000,
       outputReserveTokens: 8_192,
       maxOutputTokens: 8_192,
       safetyMarginTokens: 2_048,
-      inputBudgetTokens: 251_904,
+      inputBudgetTokens: 179_760,
     });
 
     expect(resolveContextBudget('meta/llama-3.1-8b-instruct', {})).toMatchObject({
@@ -77,7 +88,7 @@ describe('context budgeting and compaction', () => {
       maxOutputTokens: 4_000,
     });
     expect(resolveContextBudget('deepseek-ai/deepseek-v4-pro', {})).toMatchObject({
-      contextWindowTokens: 1_000_000,
+      contextWindowTokens: 190_000,
       maxOutputTokens: 8_192,
     });
     expect(resolveContextBudget('deepseek-ai/deepseek-r1', {})).toMatchObject({
@@ -258,11 +269,28 @@ describe('context budgeting and compaction', () => {
       message('assistant', 'Now check the latest result'),
       message('tool', 'latest result'),
     ];
-    const result = prepareConversationForRequest(conversation, 'test-model');
-    expect(result.compacted).toBe(true);
-    expect(result.archivedMessages.some((item) => item.content.length === 90_000)).toBe(true);
-    expect(conversation[2]?.content.length).toBeLessThan(10_000);
-    expect(conversation[4]?.content).toBe('latest result');
+    const model = 'tool-message-shortening-test-model';
+    const previousWindow = process.env.AGENT_TERMO_CONTEXT_WINDOW;
+    const previousOutput = process.env.AGENT_TERMO_OUTPUT_RESERVE_TOKENS;
+    const previousSafety = process.env.AGENT_TERMO_CONTEXT_SAFETY_MARGIN;
+    process.env.AGENT_TERMO_CONTEXT_WINDOW = '16384';
+    process.env.AGENT_TERMO_OUTPUT_RESERVE_TOKENS = '2048';
+    process.env.AGENT_TERMO_CONTEXT_SAFETY_MARGIN = '512';
+    try {
+      const result = prepareConversationForRequest(conversation, model);
+      expect(result.estimatedBeforeTokens).toBeGreaterThan(result.budget.inputBudgetTokens);
+      expect(result.compacted).toBe(true);
+      expect(result.archivedMessages.some((item) => item.content.length === 90_000)).toBe(true);
+      expect(conversation[2]?.content.length).toBeLessThan(10_000);
+      expect(conversation.at(-1)?.content).toBe('latest result');
+    } finally {
+      if (previousWindow === undefined) delete process.env.AGENT_TERMO_CONTEXT_WINDOW;
+      else process.env.AGENT_TERMO_CONTEXT_WINDOW = previousWindow;
+      if (previousOutput === undefined) delete process.env.AGENT_TERMO_OUTPUT_RESERVE_TOKENS;
+      else process.env.AGENT_TERMO_OUTPUT_RESERVE_TOKENS = previousOutput;
+      if (previousSafety === undefined) delete process.env.AGENT_TERMO_CONTEXT_SAFETY_MARGIN;
+      else process.env.AGENT_TERMO_CONTEXT_SAFETY_MARGIN = previousSafety;
+    }
   });
 
   it('does not compact when the estimate is under the reserved input budget (regression: premature 0.85 trigger)', () => {

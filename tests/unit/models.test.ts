@@ -21,27 +21,27 @@ describe('NVIDIA NIM model limits', () => {
     });
   });
 
-  it('uses the documented 1M context and 32K output limit for Nemotron 3 Ultra', () => {
+  it('uses a 190K default within the documented 1M context and 32K output limits for Nemotron 3 Ultra', () => {
     const model = 'nvidia/nemotron-3-ultra-550b-a55b';
     expect(getProviderModelLimits(model)).toMatchObject({
       contextWindowTokens: 1_000_000,
       maxOutputTokens: 32_768,
     });
     const budget = resolveContextBudget(model, {});
-    expect(budget.contextWindowTokens).toBe(1_000_000);
+    expect(budget.contextWindowTokens).toBe(190_000);
     expect(budget.maxOutputTokens).toBe(32_768);
-    expect(budget.inputBudgetTokens).toBeGreaterThan(900_000);
+    expect(budget.inputBudgetTokens).toBeGreaterThan(150_000);
     expect(resolveContextBudget(model, { AGENT_TERMO_OUTPUT_RESERVE_TOKENS: '8192' }).maxOutputTokens).toBe(8_192);
   });
 
-  it('reserves a 262K context window for nemotron-3.5-super-vl-120b-a12b', () => {
+  it('uses the 190K default within the 262K model limit for nemotron-3.5-super-vl-120b-a12b', () => {
     const model = 'nvidia/nemotron-3.5-super-vl-120b-a12b';
 
     expect(getProviderModelLimits(model)?.contextWindowTokens).toBe(262_144);
 
     const budget = resolveContextBudget(model, {});
-    expect(budget.contextWindowTokens).toBe(262_144);
-    expect(budget.inputBudgetTokens).toBeGreaterThan(200_000);
+    expect(budget.contextWindowTokens).toBe(190_000);
+    expect(budget.inputBudgetTokens).toBeGreaterThan(150_000);
   });
 });
 

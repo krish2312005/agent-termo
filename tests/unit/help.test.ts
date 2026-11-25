@@ -64,6 +64,29 @@ describe("helpMarkdown structure", () => {
     expect(doc).not.toContain("`project`");
   });
 
+  it("shows only useful usage hints and omits examples", () => {
+    expect(doc).toContain("  - **Usage:** `/context [size | set <size> | reset]`");
+    expect(doc).toContain("  - **Usage:** `/plan <task> | /plan approve | /plan cancel`");
+    expect(doc).toContain("  - **Usage:** `/resume [session-id]`");
+    expect(doc).toContain("  - **Usage:** `/remember <fact>`");
+    expect(doc).not.toContain("Example:");
+    expect(doc).not.toContain("examples,");
+    
+    for (const command of COMMANDS) {
+      expect(command.usage, command.name).toBeTruthy();
+      const usageLine = "  - **Usage:** `" + command.usage + "`";
+      if (command.usage === command.name) {
+        expect(commandsSection(doc), command.name).not.toContain(usageLine);
+      } else {
+        expect(commandsSection(doc), command.name).toContain(usageLine);
+      }
+    }
+  });
+
+  it("separates command entries with whitespace for easier scanning", () => {
+    expect(commandsSection(doc)).toContain("- `/help` (`/`) — show commands, usage for commands with arguments, and keyboard shortcuts\n\n- `/clear` (`/cls`) — clear the current conversation and screen");
+  });
+
   it("notes that plain exit and quit also quit", () => {
     expect(doc).toContain("Plain `exit` / `quit` also quit.");
   });
@@ -71,11 +94,11 @@ describe("helpMarkdown structure", () => {
   it("uses the corrected command descriptions", () => {
     const section = commandsSection(doc);
     const expected = [
-      "show commands and keyboard shortcuts",
-      "list agents and choose one",
-      "list recent conversation messages (default 12, max 50)",
-      "show estimated context usage and budget",
-      "list MCP servers and available tools",
+      "show commands, usage for commands with arguments, and keyboard shortcuts",
+      "list custom agents and choose the active agent",
+      "show recent conversation messages (default 12, max 50)",
+      "show context usage or set this model's saved context window",
+      "show configured MCP servers and their available tools",
     ];
     for (const description of expected) expect(section, description).toContain(description);
     expect(section).not.toContain("show message count");
