@@ -29,7 +29,8 @@ import { commandApprovalKey, isCommandApprovalRequired, loadAllowedCommands, sav
 import { verifyCompletionWithChecks, formatIssues, type RanCheck } from './runtime/verify.js';
 import { runProjectChecks } from './runtime/checks.js';
 import { appendSessionArchive, createSession, forkSession, listSessions, loadLatestSession, loadSession, saveSession, searchSessionHistory, type StoredSession } from './runtime/sessions.js';
-import { DEFAULT_CONTEXT_WINDOW_TOKENS, compactConversation, estimateContextTokens, isContextWindowError, parseContextWindowTokens, prepareConversationForRequest, resolveContextBudget } from './runtime/context.js';
+import { compactConversation, estimateContextTokens, isContextWindowError, parseContextWindowTokens, prepareConversationForRequest, resolveContextBudget } from './runtime/context.js';
+import { formatContextBar } from './runtime/context-display.js';
 import { listTerminalSessions, stopTerminalSession } from './runtime/terminal-sessions.js';
 import { AgentEventHub } from './runtime/events.js';
 import {
@@ -80,7 +81,6 @@ import {
 	createInput,
 	initScreen,
 	teardownScreen,
-	formatContextMeter,
 	pick,
 	setScreenStatus,
 	promptAcceptReject,
@@ -2844,10 +2844,21 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						continue mainLoop;
 					}
 					if (cmd === '/context' || cmd.startsWith('/context ')) {
-						const model = nimClient.getModel();
 						const argument = userInput.trim().slice('/context'.length).trim();
 						const values = argument.split(/\s+/).filter(Boolean);
 						const action = (values[0] ?? '').toLowerCase();
+						const model = nimClient.getModel();
+						const renderContext = (label: string, client: NimClient, messages: ConversationMessage[], tools: unknown[], status?: string): void => {
+							const agentModel = client.getModel();
+							const budget = resolveContextBudget(agentModel);
+							const used = estimateContextTokens(messages, tools, agentModel);
+							const percent = Math.round(Math.min(1, Math.max(0, used / budget.contextWindowTokens)) * 100);
+							const remaining = Math.max(0, budget.inputBudgetTokens - used);
+							printInfo(label + (status ? ' · ' + status : '') + ' · ' + agentModel);
+							printInfo(formatContextBar(used, budget.contextWindowTokens) + '  ' + percent + '%   ' + used.toLocaleString() + ' / ' + budget.contextWindowTokens.toLocaleString() + ' tokens');
+							printInfo('Input available: ' + remaining.toLocaleString() + ' tokens · input budget ' + budget.inputBudgetTokens.toLocaleString());
+							printInfo('Output reserve: ' + budget.outputReserveTokens.toLocaleString() + ' · safety margin: ' + budget.safetyMarginTokens.toLocaleString());
+						};
 						if (action === 'reset' || action === 'default') {
 							try {
 								clearSavedContextWindow(model);
@@ -2855,11 +2866,43 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 							} catch (error) {
 								printError('Could not reset context size: ' + (error instanceof Error ? error.message : String(error)));
 							}
+						} else if (action === 'all') {
+							const mainTools = nimClient.buildToolDefs([...TOOL_DEFINITIONS, ...getMcpToolDefinitions()]);
+							printInfo('Context usage · all agents');
+							renderContext('Main agent', nimClient, conversation, mainTools);
+							const active = [...delegatedSessions.values()].filter((agentSession) => {
+								const activity = getSubAgent(agentSession.id);
+								return activity?.status === 'running' || activity?.status === 'waiting';
+							});
+							if (active.length === 0) printInfo('No active sub-agents.');
+							for (const agentSession of active) {
+								const activity = getSubAgent(agentSession.id);
+								renderContext('Sub-agent: ' + agentSession.agentName, agentSession.client, agentSession.messages, agentSession.toolDefs, activity?.status);
+							}
+							setScreenStatus({ context: { usedTokens: estimateContextTokens(conversation, mainTools, model), budgetTokens: resolveContextBudget(model).inputBudgetTokens } });
+							continue mainLoop;
+						} else if (values.length > 0 && action !== 'set' && parseContextWindowTokens(values[0]!) === undefined) {
+							const query = action;
+							const matches = [...delegatedSessions.values()].filter((agentSession) =>
+								agentSession.agentName.toLowerCase() === query || agentSession.id.toLowerCase().startsWith(query),
+							).sort((a, b) => b.startedAt - a.startedAt);
+							const selected = matches.find((agentSession) => {
+								const status = getSubAgent(agentSession.id)?.status;
+								return status === 'running' || status === 'waiting';
+							}) ?? matches[0];
+							if (!selected) {
+								const known = [...delegatedSessions.values()].map((agentSession) => agentSession.agentName).filter((name, index, all) => all.indexOf(name) === index);
+								printError('No sub-agent found matching "' + query + '".', known.length ? 'Known agents: ' + known.join(', ') : 'No sub-agent sessions are available.');
+							} else {
+								const activity = getSubAgent(selected.id);
+								renderContext('Sub-agent: ' + selected.agentName, selected.client, selected.messages, selected.toolDefs, activity?.status ?? 'unknown');
+							}
+							continue mainLoop;
 						} else if (values.length > 0) {
 							const sizeText = action === 'set' ? (values[1] ?? '') : values[0]!;
 							const requested = parseContextWindowTokens(sizeText);
 							if (requested === undefined) {
-								printError('Invalid context size: ' + (sizeText || '(missing)'), 'Usage: /context [190k | set 190k | reset]. Minimum: 4,096 tokens.');
+								printError('Invalid context size: ' + (sizeText || '(missing)'), 'Usage: /context [all | agent-name | 190k | set 190k | reset]. Minimum: 4,096 tokens.');
 							} else {
 								const modelLimit = getProviderModelLimits(model)?.contextWindowTokens;
 								if (modelLimit !== undefined && requested > modelLimit) {
@@ -2875,21 +2918,14 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 							}
 						}
 						const tools = nimClient.buildToolDefs([...TOOL_DEFINITIONS, ...getMcpToolDefinitions()]);
-						const estimated = estimateContextTokens(conversation, tools, model);
 						const budget = resolveContextBudget(model);
 						const saved = getSavedContextWindow(model);
 						const source = saved !== undefined ? 'saved for this model' : process.env.AGENT_TERMO_CONTEXT_WINDOW ? 'environment override' : 'default';
-						printInfo('Model: ' + model);
-						printInfo('Context window: ' + budget.contextWindowTokens.toLocaleString() + ' tokens (' + source + ').');
-						printInfo('Estimated input: ~' + estimated.toLocaleString() + ' tokens');
-						printInfo('Available input budget: ' + budget.inputBudgetTokens.toLocaleString() + ' / ' + budget.contextWindowTokens.toLocaleString());
-						printInfo('context ' + formatContextMeter(estimated, budget.inputBudgetTokens));
-						setScreenStatus({ context: { usedTokens: estimated, budgetTokens: budget.inputBudgetTokens } });
-						printInfo('Output reserve: ' + budget.outputReserveTokens.toLocaleString() + ' tokens; safety margin: ' + budget.safetyMarginTokens.toLocaleString());
+						const used = estimateContextTokens(conversation, tools, model);
+						renderContext('Main agent (' + source + ')', nimClient, conversation, tools);
 						printInfo('Messages: ' + (conversation.length - 1) + ' (tool-call JSON and tool schemas included)');
-						printInfo('Set with /context 190k (or /context set 190k); /context reset restores the 190K default unless an environment override is set.');
-						printInfo('Default: ' + DEFAULT_CONTEXT_WINDOW_TOKENS.toLocaleString() + ' tokens, capped at the documented model limit when known.');
-						refreshContextMeter();
+						printInfo('Use /context all to inspect active sub-agents, or /context <agent-name> for one agent.');
+						setScreenStatus({ context: { usedTokens: used, budgetTokens: budget.inputBudgetTokens } });
 						continue mainLoop;
 					}
 					if (cmd === '/compact') {

@@ -62,7 +62,7 @@ export const COMMANDS: CommandInfo[] = [
   { name: "/goal", description: "set or show the current task goal", usage: "/goal [description]" },
   { name: "/status", description: "show project, model, permissions, token, agent, and task status", usage: "/status" },
   { name: "/terminal", description: "list terminal activity or stop running commands", usage: "/terminal [list | kill [session-id]]" },
-  { name: "/context", description: "show context usage or set this model's saved context window", usage: "/context [size | set <size> | reset]" },
+  { name: "/context", description: "inspect context usage for the main agent and sub-agents, or set this model's context window", usage: "/context [all | agent-name | size | set <size> | reset]" },
   { name: "/compact", description: "summarize and compact older conversation context", usage: "/compact" },
   { name: "/continue", description: "resume an interrupted task from where it stopped", usage: "/continue" },
   { name: "/report", description: "analyze the project and write a Markdown report", usage: "/report [output-path]" },
