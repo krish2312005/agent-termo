@@ -471,6 +471,39 @@ export function printAgentsList(agents: Array<{ name: string; description: strin
   print("Available agents\n" + rule() + "\n" + agents.map((agent) => agent.name.padEnd(30) + clipText(agent.description.replace(/\s+/g, " "), terminalWidth() - 34)).join("\n"), "markdown");
 }
 
-export function startSpinner(message: string): void { setActivityStatus("⠋ " + message + "…"); }
-export function stopSpinner(_success?: boolean): void { setActivityStatus(""); }
+const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const SPINNER_TICK_MS = 80;
+
+let spinnerTicker: ReturnType<typeof setInterval> | null = null;
+let spinnerFrame = 0;
+let spinnerMessage = "";
+
+function spinnerFrameText(message: string): string {
+  return SPINNER_FRAMES[spinnerFrame] + " " + message + "…";
+}
+
+/** Show the running spinner in the footer and rotate its frame every tick. */
+export function startSpinner(message: string): void {
+  stopSpinner();
+  spinnerMessage = message;
+  spinnerFrame = 0;
+  setActivityStatus(spinnerFrameText(message));
+  spinnerTicker = setInterval(() => {
+    spinnerFrame = (spinnerFrame + 1) % SPINNER_FRAMES.length;
+    setActivityStatus(spinnerFrameText(spinnerMessage));
+  }, SPINNER_TICK_MS);
+}
+
+/** Stop the spinner and clear the footer status. Safe to call when not spinning. */
+export function stopSpinner(_success?: boolean): void {
+  if (spinnerTicker) {
+    clearInterval(spinnerTicker);
+    spinnerTicker = null;
+  }
+  spinnerFrame = 0;
+  spinnerMessage = "";
+  setActivityStatus("");
+}
+
+export { SPINNER_FRAMES };
 export function clearScreen(): void { clearLog(); }
