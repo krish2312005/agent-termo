@@ -430,9 +430,9 @@ export function helpMarkdown(commands: readonly CommandInfo[]): string {
       ? " (" + command.aliases.map(inlineCode).join(", ") + ")"
       : "";
     const project = command.project ? " (`project`)" : "";
-    const usage = command.usage ? "\n  Usage: " + inlineCode(command.usage) : "";
+    const usage = command.usage ? "\n  - **Usage:** " + inlineCode(command.usage) : "";
     const examples = command.examples?.length
-      ? "\n  Example: " + command.examples.map(inlineCode).join(" · ")
+      ? "\n  - **Example:** " + command.examples.map(inlineCode).join(" · ")
       : "";
     return "- " + inlineCode(command.name) + aliases + " — " + command.description + project + usage + examples;
   });
