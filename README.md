@@ -708,7 +708,7 @@ project/
 
 These files are shared project documents and can be read or updated by the agent.
 
-The default specialist workflow is installed at `.agent-termo/workflow.md`. Bundled slash commands use this Agent-Termo workflow file rather than requiring a `.claude/workflow.md` file.
+The default specialist workflow is installed at `.agent-termo/workflow.md`. Bundled slash commands use this Agent-Termo workflow file.
 
 ### Agent-Termo Runtime Directory
 

@@ -36,11 +36,6 @@ function bundledDefaultRoots(): string[] {
   ];
 }
 
-function bundledClaudeRoots(): string[] {
-  const here = dirname(fileURLToPath(import.meta.url));
-  return [resolve(here, '.claude'), resolve(here, '..', '.claude'), resolve(process.cwd(), '.claude')];
-}
-
 function copyMarkdownDirectory(source: string, target: string): number {
   if (!existsSync(source)) return 0;
   mkdirSync(target, { recursive: true });
@@ -118,14 +113,6 @@ export function ensureAgentFolder(
 
   let copiedAgents = 0;
   let copiedCommands = 0;
-
-  // Bring forward legacy Claude assets first, then fill in Agent-Termo defaults.
-  // Existing project-specific files always win and are never overwritten.
-  for (const bundled of bundledClaudeRoots()) {
-    copiedAgents += copyMarkdownDirectory(resolve(bundled, 'agents'), agents);
-    copiedCommands += copyMarkdownDirectory(resolve(bundled, 'commands'), commands);
-  }
-
   for (const bundled of bundledDefaultRoots()) {
     copiedAgents += copyMarkdownDirectory(resolve(bundled, 'agents'), agents);
     copiedCommands += copyMarkdownDirectory(resolve(bundled, 'commands'), commands);
@@ -138,30 +125,21 @@ export function ensureAgentFolder(
 }
 
 export function loadProjectAgents(projectRoot: string): Agent[] {
-  // Bundled/legacy .claude agents plus project .agent-termo agents. A project
-  // agent with the same name overrides the bundled one instead of hiding the
-  // rest of the roster.
-  const byName = new Map<string, Agent>();
-  for (const agent of loadAllAgents(resolve(projectRoot, '.claude'))) byName.set(agent.name, agent);
-  for (const agent of loadAllAgents(agentTermoRoot(projectRoot))) byName.set(agent.name, agent);
-  return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+  return loadAllAgents(agentTermoRoot(projectRoot));
 }
 
 export function loadAgentCommands(projectRoot: string): AgentCommand[] {
-  const candidates = [agentTermoCommandsDir(projectRoot), resolve(projectRoot, '.claude', 'commands')];
-  for (const directory of candidates) {
-    if (!existsSync(directory)) continue;
-    const commands = readdirSync(directory)
-      .filter((file) => file.endsWith('.md'))
-      .map((file) => {
-        const raw = readFileSync(resolve(directory, file), 'utf-8');
-        return {
-          name: file.replace(/\.md$/, ''),
-          description: raw.match(/^description:\s*(.+)$/m)?.[1]?.trim() ?? '',
-          prompt: raw.replace(/^---[\s\S]+?---\n/, '').trim(),
-        };
-      });
-    if (commands.length > 0) return commands.sort((a, b) => a.name.localeCompare(b.name));
-  }
-  return [];
+  const directory = agentTermoCommandsDir(projectRoot);
+  if (!existsSync(directory)) return [];
+  return readdirSync(directory)
+    .filter((file) => file.endsWith('.md'))
+    .map((file) => {
+      const raw = readFileSync(resolve(directory, file), 'utf-8');
+      return {
+        name: file.replace(/\.md$/, ''),
+        description: raw.match(/^description:\s*(.+)$/m)?.[1]?.trim() ?? '',
+        prompt: raw.replace(/^---[\s\S]+?---\n/, '').trim(),
+      };
+    })
+    .sort((a, b) => a.name.localeCompare(b.name));
 }

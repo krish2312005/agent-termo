@@ -11,13 +11,14 @@ import {
   logToTimeline,
 } from '../../src/memory/index.js';
 import { loadAllAgents } from '../../src/agents/index.js';
-import { ensureAgentFolder, ensureAgentStructure, loadProjectAgents } from '../../src/runtime/agent-folder.js';
+import { ensureAgentFolder, ensureAgentStructure, loadAgentCommands, loadProjectAgents } from '../../src/runtime/agent-folder.js';
 
 describe('packaged-project runtime initialization', () => {
   it('keeps project docs outside .agent-termo and private logs inside it', async () => {
     const projectRoot = mkdtempSync(join(tmpdir(), 'agent-termo-empty-project-'));
     try {
       ensureAgentFolder(projectRoot);
+      expect(existsSync(join(projectRoot, '.claude'))).toBe(false);
       await logToTimeline(projectRoot, 'startup smoke test');
       await appendToMemory(projectRoot, 'memory smoke test');
       appendToSessionLog('### User\n\nsession smoke test', projectRoot);
@@ -69,19 +70,20 @@ describe('packaged-project runtime initialization', () => {
     }
   });
 
-  it('merges bundled and project agents so one custom agent does not hide the rest', () => {
+  it('loads agents and commands only from the Agent-Termo project directory', () => {
     const projectRoot = mkdtempSync(join(tmpdir(), 'agent-termo-agent-merge-'));
     try {
       mkdirSync(join(projectRoot, '.claude', 'agents'), { recursive: true });
+      mkdirSync(join(projectRoot, '.claude', 'commands'), { recursive: true });
       mkdirSync(join(projectRoot, '.agent-termo', 'agents'), { recursive: true });
-      writeFileSync(join(projectRoot, '.claude', 'agents', 'base.md'), 'You are the bundled base agent.', 'utf-8');
-      writeFileSync(join(projectRoot, '.claude', 'agents', 'shared.md'), 'You are the bundled shared agent.', 'utf-8');
-      writeFileSync(join(projectRoot, '.agent-termo', 'agents', 'custom.md'), 'You are the project custom agent.', 'utf-8');
-      writeFileSync(join(projectRoot, '.agent-termo', 'agents', 'shared.md'), 'You are the project shared agent.', 'utf-8');
+      mkdirSync(join(projectRoot, '.agent-termo', 'commands'), { recursive: true });
+      writeFileSync(join(projectRoot, '.claude', 'agents', 'legacy.md'), 'You are a legacy Claude agent.', 'utf-8');
+      writeFileSync(join(projectRoot, '.claude', 'commands', 'legacy.md'), 'Legacy command.', 'utf-8');
+      writeFileSync(join(projectRoot, '.agent-termo', 'agents', 'project.md'), 'You are the project agent.', 'utf-8');
+      writeFileSync(join(projectRoot, '.agent-termo', 'commands', 'project.md'), 'Project command.', 'utf-8');
 
-      const agents = loadProjectAgents(projectRoot);
-      expect(agents.map((agent) => agent.name)).toEqual(['base', 'custom', 'shared']);
-      expect(agents.find((agent) => agent.name === 'shared')?.systemPrompt).toContain('project shared');
+      expect(loadProjectAgents(projectRoot).map((agent) => agent.name)).toEqual(['project']);
+      expect(loadAgentCommands(projectRoot).map((command) => command.name)).toEqual(['project']);
     } finally {
       rmSync(projectRoot, { recursive: true, force: true });
     }

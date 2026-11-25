@@ -75,6 +75,15 @@ try {
     archiveEntries.has("package/dist/cli.js"),
     "the npm tarball must contain dist/cli.js",
   );
+  assert.equal(
+    existsSync(join(repositoryRoot, "dist", ".claude")),
+    false,
+    "the build must not copy the repository .claude directory into dist/",
+  );
+  assert(
+    ![...archiveEntries].some((entry) => entry === "package/dist/.claude" || entry.startsWith("package/dist/.claude/")),
+    "the npm tarball must not contain dist/.claude",
+  );
 
   const sourceDefaults = join(repositoryRoot, "src/runtime/defaults");
   const defaultFiles = listFiles(sourceDefaults);

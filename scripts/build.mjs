@@ -1,6 +1,6 @@
 import solidPlugin from "@opentui/solid/bun-plugin";
 import { copy } from "fs-extra";
-import { existsSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
 
 // Remove stale output so every package contains only files from this build.
 rmSync("dist", { recursive: true, force: true });
@@ -24,10 +24,6 @@ if (!result.success) {
   throw new Error("Agent-Termo build failed.");
 }
 
-if (existsSync(".claude")) {
-  await copy(".claude", "dist/.claude");
-  console.log("Copied .claude to dist/");
-}
 
 await copy("src/runtime/defaults", "dist/.agent-termo-defaults");
 console.log("Build complete: dist/cli.js");
