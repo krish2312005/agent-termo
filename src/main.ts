@@ -2848,8 +2848,12 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						const values = argument.split(/\s+/).filter(Boolean);
 						const action = (values[0] ?? '').toLowerCase();
 						if (action === 'reset' || action === 'default') {
-							clearSavedContextWindow(model);
-							printSuccess('Context override cleared for ' + model + '.');
+							try {
+								clearSavedContextWindow(model);
+								printSuccess('Context override cleared for ' + model + '.');
+							} catch (error) {
+								printError('Could not reset context size: ' + (error instanceof Error ? error.message : String(error)));
+							}
 						} else if (values.length > 0) {
 							const sizeText = action === 'set' ? (values[1] ?? '') : values[0]!;
 							const requested = parseContextWindowTokens(sizeText);
@@ -2882,7 +2886,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						setScreenStatus({ context: { usedTokens: estimated, budgetTokens: budget.inputBudgetTokens } });
 						printInfo('Output reserve: ' + budget.outputReserveTokens.toLocaleString() + ' tokens; safety margin: ' + budget.safetyMarginTokens.toLocaleString());
 						printInfo('Messages: ' + (conversation.length - 1) + ' (tool-call JSON and tool schemas included)');
-						printInfo('Set with /context 190k (or /context set 190k); /context reset restores the 190K default.');
+						printInfo('Set with /context 190k (or /context set 190k); /context reset restores the 190K default unless an environment override is set.');
 						printInfo('Default: ' + DEFAULT_CONTEXT_WINDOW_TOKENS.toLocaleString() + ' tokens, capped at the documented model limit when known.');
 						refreshContextMeter();
 						continue mainLoop;
