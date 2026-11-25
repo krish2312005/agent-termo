@@ -430,26 +430,26 @@ export function helpMarkdown(commands: readonly CommandInfo[]): string {
       : "";
     const project = command.project ? " (`project`)" : "";
     const usage = command.usage && command.usage !== command.name
-      ? "\\n  - **Usage:** " + inlineCode(command.usage)
+      ? "\n  - **Usage:** " + inlineCode(command.usage)
       : "";
     return "- " + inlineCode(command.name) + aliases + " — " + command.description + project + usage;
   });
   const shortcutSections = SHORTCUTS.map((section) =>
-    "## " + section.title + "\\n\\n" + section.items
+    "## " + section.title + "\n\n" + section.items
       .map(([key, description]) => "- " + inlineCode(key) + " — " + description)
-      .join("\\n"),
+      .join("\n"),
   );
   return [
     "# Commands",
     "",
-    commandLines.join("\\n\\n"),
+    commandLines.join("\n\n"),
     "",
     "Plain `exit` / `quit` also quit.",
     "",
     "# Shortcuts",
     "",
-    shortcutSections.join("\\n\\n"),
-  ].join("\\n");
+    shortcutSections.join("\n\n"),
+  ].join("\n");
 }
 
 export function printHelp(): void {
