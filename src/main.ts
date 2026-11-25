@@ -2569,6 +2569,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				}
 					if (cmd === '/providers' || cmd.startsWith('/providers ')) {
 						await handleProvidersCommand(userInput.trim().slice('/providers'.length).trim(), nimClient, projectRoot, input);
+						refreshContextMeter();
 						persistSession();
 						continue mainLoop;
 					}
