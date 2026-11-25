@@ -64,6 +64,20 @@ describe("helpMarkdown structure", () => {
     expect(doc).not.toContain("`project`");
   });
 
+  it("shows usage and examples beneath commands that accept arguments", () => {
+    expect(doc).toContain("Usage: `/context [size | set <size> | reset]`");
+    expect(doc).toContain("Example: `/context` · `/context 190k` · `/context reset`");
+    expect(doc).toContain("Usage: `/plan <task> | /plan approve | /plan cancel`");
+    expect(doc).toContain("Example: `/resume` · `/resume a1b2c3d4`");
+  });
+
+  it("documents usage for every built-in command", () => {
+    for (const command of COMMANDS) {
+      expect(command.usage, command.name).toBeTruthy();
+      expect(commandsSection(doc), command.name).toContain("Usage: `" + command.usage + "`");
+    }
+  });
+
   it("notes that plain exit and quit also quit", () => {
     expect(doc).toContain("Plain `exit` / `quit` also quit.");
   });
@@ -74,7 +88,7 @@ describe("helpMarkdown structure", () => {
       "show commands and keyboard shortcuts",
       "list agents and choose one",
       "list recent conversation messages (default 12, max 50)",
-      "show estimated context usage and budget",
+      "show context usage or set this model's saved context window",
       "list MCP servers and available tools",
     ];
     for (const description of expected) expect(section, description).toContain(description);
