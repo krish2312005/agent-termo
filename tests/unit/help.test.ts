@@ -97,7 +97,7 @@ describe("helpMarkdown structure", () => {
       "show commands, usage for commands with arguments, and keyboard shortcuts",
       "list custom agents and choose the active agent",
       "show recent conversation messages (default 12, max 50)",
-      "show context usage or set this model's saved context window",
+      "inspect context usage for the main agent and sub-agents, or set this model's context window",
       "show configured MCP servers and their available tools",
     ];
     for (const description of expected) expect(section, description).toContain(description);
