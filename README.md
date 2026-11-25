@@ -778,7 +778,7 @@ Summarizes older conversation context while preserving recent messages.
 /context
 ~~~
 
-Displays context statistics and the current model's available input budget. Use `/context 190k` to save a per-model window or `/context reset` to restore the default.
+Displays context statistics and the current model's available input budget. Use `/context 190k` to save a per-model window or `/context reset` to restore the default. Settings are saved in Agent-Termo's user configuration directory (by default `~/.agent-termo/config.json`; `AGENT_TERMO_DIR` can change it).
 
 ---
 
