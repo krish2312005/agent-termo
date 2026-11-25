@@ -55,6 +55,8 @@ describe('software-generation tool routing', () => {
     expect(shouldLoadProjectContext('How does authentication work in this project?')).toBe(true);
     expect(shouldLoadProjectContext('What did we implement previously?')).toBe(false);
     expect(shouldLoadSessionHistory('What did we implement previously?')).toBe(true);
+    expect(shouldLoadSessionHistory('Show me our conversation history')).toBe(true);
+    expect(shouldLoadSessionHistory('Explain the history of computer science')).toBe(false);
     expect(shouldLoadSessionHistory('Hello there')).toBe(false);
   });
 
