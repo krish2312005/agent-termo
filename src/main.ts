@@ -3296,7 +3296,8 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 							if (taskState.status === 'running') {
 								taskState.status = 'interrupted';
 								taskState.reason = 'cancelled by user';
-									printInfo('Task paused. Type "continue" to resume from where it stopped.');
+								persistSession();
+								printInfo('Task paused. Type "continue" to resume from where it stopped.');
 								}
 								stopBackgroundCommands();
 									continue mainLoop;
@@ -3308,6 +3309,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 								if (taskState.status === 'running') {
 									taskState.status = 'interrupted';
 									taskState.reason = providerError(err);
+									persistSession();
 								}
 								stopBackgroundCommands();
 								continue mainLoop;
