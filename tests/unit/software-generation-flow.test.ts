@@ -40,6 +40,15 @@ describe('software-generation tool routing', () => {
     expect(shouldRequireInitialToolCall('What is a Kanban board?')).toBe(false);
   });
 
+  it('activates tools for explicit file operations without loading the whole project', () => {
+    expect(shouldUseTools('Read package.json')).toBe(true);
+    expect(shouldRequireInitialToolCall('Read package.json')).toBe(true);
+    expect(shouldLoadProjectContext('Read package.json')).toBe(false);
+    expect(shouldUseTools('Summarize the README.md file')).toBe(true);
+    expect(shouldRequireInitialToolCall('Summarize the README.md file')).toBe(true);
+    expect(shouldLoadProjectContext('Summarize the README.md file')).toBe(false);
+  });
+
   it('activates tools and project context for explicit work requests', () => {
     expect(shouldUseTools('Build a simple Kanban application')).toBe(true);
     expect(shouldUseTools('Can you please fix the login bug?')).toBe(true);
