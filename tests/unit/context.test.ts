@@ -281,7 +281,7 @@ describe('context budgeting and compaction', () => {
       expect(result.estimatedBeforeTokens).toBeGreaterThan(result.budget.inputBudgetTokens);
       expect(result.compacted).toBe(true);
       expect(result.archivedMessages.some((item) => item.content.length === 90_000)).toBe(true);
-      expect(conversation.some((item) => item.content.length < 10_000 && item.role === 'assistant')).toBe(true);
+      expect(conversation[2]?.content.length).toBeLessThan(10_000);
       expect(conversation.at(-1)?.content).toBe('latest result');
     } finally {
       if (previousWindow === undefined) delete process.env.AGENT_TERMO_CONTEXT_WINDOW;
