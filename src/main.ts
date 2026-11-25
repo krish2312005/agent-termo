@@ -461,8 +461,8 @@ function splitCommandArgs(value: string): string[] {
 		.map((part) => part.replace(/^['"]|['"]$/g, ''));
 }
 
-const TOOL_ACTION = /^(?:build|make|create|implement|code|debug|fix|edit|modify|update|refactor|develop|deploy|test|run|delete|remove|add|inspect|analy[sz]e|review|trace|search|find|locate|generate)\b/i;
-const CODING_ACTION = /^(?:build|make|create|implement|code|debug|fix|edit|modify|update|refactor|develop|deploy|test|run|delete|remove|add|generate)\b/i;
+const TOOL_ACTION = /^(?:build|make|create|implement|code|debug|fix|edit|modify|update|refactor|develop|deploy|test|run|delete|remove|add|inspect|analy[sz]e|review|trace|search|find|locate|generate|read|summarize|extract|parse|convert|open|load|check|verify|validate)\b/i;
+const PROJECT_ACTION = /^(?:build|make|create|implement|code|debug|fix|edit|modify|update|refactor|develop|deploy|test|run|delete|remove|add|generate)\b/i;
 const GERUND_ACTION = /^(?:building|making|creating|implementing|coding|debugging|fixing|editing|modifying|updating|refactoring|developing|deploying|testing)\b/i;
 const CODING_OBJECT = /^(?:write|generate)\s+(?:some\s+)?(?:code|a\s+(?:program|script|function|file|website|app|application)|tests?|documentation|docs)\b/i;
 const CODING_CHANGES = /^(?:do|make)\s+(?:some\s+)?(?:coding|code|implementation|development)\s+(?:changes|work|updates?)\b/i;
@@ -475,10 +475,10 @@ const CONVERSATION_PREFIXES = [
 	/^(?:please|kindly)\s+(?:(?:go\s+ahead\s+and)\s+)?/i,
 ];
 
-function startsWithRequestedAction(input: string, codingOnly = false): boolean {
+function startsWithRequestedAction(input: string, projectOnly = false): boolean {
 	const sentences = input.split(/[\n.!?;:]+/).map((part) => part.trim().replace(/^["'’]+/, '')).filter(Boolean);
 	for (const sentence of sentences) {
-		const action = codingOnly ? CODING_ACTION : TOOL_ACTION;
+		const action = projectOnly ? PROJECT_ACTION : TOOL_ACTION;
 		if (action.test(sentence) || CODING_CHANGES.test(sentence) || CODING_OBJECT.test(sentence)) return true;
 		// Bare gerunds are common shorthand task prompts; first-person descriptions are not.
 		if (GERUND_ACTION.test(sentence)) return true;
@@ -493,7 +493,7 @@ function startsWithRequestedAction(input: string, codingOnly = false): boolean {
 
 function isProjectSpecificQuestion(input: string): boolean {
 	const projectReference = /\b(?:this|my|the)\s+(?:project|repo(?:sitory)?|codebase|application|app)\b/i.test(input);
-	return projectReference && /\b(?:how|what|where|why|which|explain|show|describe|find|understand|work|implemented|configured|architecture|structure|uses?|handles?)\b/i.test(input);
+	return projectReference && /\b(?:how|what|where|why|which|explain|show|describe|find|understand|work|inspect|analy[sz]e|review|trace|audit|verify|implemented|configured|architecture|structure|uses?|handles?)\b/i.test(input);
 }
 
 export function shouldLoadSessionHistory(input: string): boolean {
@@ -501,7 +501,7 @@ export function shouldLoadSessionHistory(input: string): boolean {
 }
 
 export function shouldLoadProjectContext(input: string): boolean {
-	return startsWithRequestedAction(input) || isProjectSpecificQuestion(input);
+	return startsWithRequestedAction(input, true) || isProjectSpecificQuestion(input);
 }
 
 export function shouldUseTools(input: string, _activeAgentName = '', continuing = false, _hasMcpTools = false, _hasRelevantSkills = false): boolean {
@@ -510,7 +510,7 @@ export function shouldUseTools(input: string, _activeAgentName = '', continuing 
 }
 
 export function shouldRequireInitialToolCall(input: string): boolean {
-	return startsWithRequestedAction(input, true);
+	return startsWithRequestedAction(input) || isProjectSpecificQuestion(input);
 }
 export function isToolRequestTimeoutError(error: unknown): boolean {
 	if (!error || typeof error !== 'object') return false;
@@ -3113,7 +3113,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				
 				const requestUsesTools = skillInvocation || shouldUseTools(userInput, activeAgentName, continuing);
 				const planInProgress = activePlan?.status === 'in_progress';
-				if (requestUsesTools || planInProgress) ensureContextFilesLoaded();
+				if (shouldLoadProjectContext(userInput) || planInProgress) ensureContextFilesLoaded();
 				refreshSystemPrompt(
 					shouldLoadProjectContext(userInput) || skillInvocation || planInProgress || continuing,
 					shouldLoadSessionHistory(userInput) || continuing,
