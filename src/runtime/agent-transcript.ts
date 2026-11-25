@@ -251,6 +251,7 @@ export function summarizeToolArgs(name: string, args: Record<string, unknown>): 
 			return pick(['command']);
 		case 'file:read':
 		case 'file:write':
+		case 'docs:write':
 		case 'file:edit':
 		case 'file:delete':
 		case 'skill:read':

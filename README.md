@@ -68,6 +68,7 @@ Agent-Termo is designed around a reviewable workflow: file changes can be previe
 | **Live Model Picker** | Browse the live model catalogue or enter a model ID directly. |
 | **Thinking Capacity** | Choose off, auto, low, medium, or high where supported by the model. |
 | **File Tools** | Read, create, edit, delete, glob, and search project files. |
+| **Agent Documentation** | Every specialist can write Markdown deliverables under `docs/`; delegated runs save required work reports and an activity log in `docs/agent-reports/` and `docs/agent-activity/`. |
 | **Diff Review** | Preview proposed file changes and accept or reject them in Ask mode. |
 | **Permission Modes** | Choose Ask, Files-auto, or Auto behavior for file and command approvals. |
 | **Terminal Execution** | Run shell commands and inspect live command output in the terminal panel. |

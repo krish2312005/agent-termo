@@ -71,7 +71,8 @@ Use these functions (JSON tool_calls format):
 
 Available functions:
 - file:read(path) → read a file
-- file:write(path, content) → overwrite a file completely
+- file:write(path, content) → overwrite a project file completely
+- docs:write(path, content) → create or update a Markdown document under docs/ (available to every agent; cannot write outside docs/)
 - file:edit(path, old_string, new_string, replace_all?) → edit a specific, unique section (set replace_all to replace every occurrence)
 - file:delete(path) → delete a file after explicit user instruction
 - file:glob(pattern) → list files matching a glob (e.g. "src/**/*.ts")
@@ -130,7 +131,8 @@ QUALITY GATE — MANDATORY FOR CODE AND PROJECT WORK:
 When the active agent is \`project-manager\`, it must run the test-agent and code-reviewer stage after implementation, coordinate repairs, and withhold completion until the gate passes. Apply the same standard to direct coding tasks without a project manager.
 
 DOCUMENTATION DELIVERABLES:
-- When the workflow or a delegated agent produces documentation (architecture, progress, design system, etc.), write it as a Markdown file into the project's docs/ directory with file:write (e.g. docs/PROJECT_PROGRESS.md, docs/TECH_STACK.md). Do not merely describe the documentation — actually write the files.
+- Every delegated agent must save the required Markdown work report at the exact docs/agent-reports path supplied in its task. Use docs:write and include the work actually performed, exact changed/created paths, verification commands and real results, and anything unfinished. A final chat summary without an applied report is incomplete.
+- When the workflow or an agent produces documentation (architecture, progress, design system, test results, review findings, etc.), write it as a Markdown file into the project's docs/ directory with docs:write (e.g. docs/ARCHITECTURE.md, docs/PROJECT_PROGRESS.md, docs/TECH_STACK.md). Do not merely describe the documentation — actually write the files.
 - When the active agent is project-manager, first inspect the relevant project instructions and docs and establish acceptance criteria; then delegate every required specialist task. Emit independent agent:delegate calls together so they can run in parallel.
 - A project-manager must not stop at a plan or narration when specialist work is required: after its short context-gathering stage, actually call agent:delegate with exact available agent names and focused tasks.
 - Shared project memory and timeline are only docs/MEMORY.md and docs/TIMELINE.md. Never create .agent-termo/docs, .agent-termo/MEMORY.md or .agent-termo/TIMELINE.md; .agent-termo/ is only for agents, commands and private logs.
@@ -155,7 +157,10 @@ export function filterAgentTools(agent: Agent, available: ToolDef[], allowDelega
     effectiveAllowed.add('bash:stop');
     effectiveAllowed.add('browser:verify');
   }
-  return available.filter((tool) => effectiveAllowed.has(tool.name) && (allowDelegation || tool.name !== 'agent:delegate'));
+  // Documentation is a core Agent-Termo capability: every specialist may write
+	// Markdown under docs/ without gaining general project-file write access.
+	effectiveAllowed.add('docs:write');
+	return available.filter((tool) => effectiveAllowed.has(tool.name) && (allowDelegation || tool.name !== 'agent:delegate'));
 }
 
 const delegateKey = (name: string): string => name.trim().replace(/^@/, '').toLowerCase().replace(/[\s_.]+/g, '-');

@@ -93,6 +93,7 @@ const TOOL_MAP: Record<string, (...args: any[]) => Promise<ToolResult>> = {
 	'memory:remember': toolMemoryRemember,
 	'file:read': toolFileRead,
 	'file:write': toolFileWrite,
+	'docs:write': toolDocsWrite,
 	'file:edit': toolFileEdit,
 	'file:delete': toolFileDelete,
 	'file:glob': toolFileGlob,
@@ -368,6 +369,21 @@ async function toolFileWrite(args: Record<string, unknown>, projectRoot: string)
 
 	const { result } = proposeFileChange(path, content, projectRoot, 'write', existingContent);
 	return result;
+}
+
+async function toolDocsWrite(args: Record<string, unknown>, projectRoot: string): Promise<ToolResult> {
+	const path = String(args.path ?? '').replace(/\\/g, '/');
+	const segments = path.split('/');
+	if (
+		isAbsolute(path) ||
+		!path.startsWith('docs/') ||
+		segments.some((segment) => !segment || segment === '.' || segment === '..') ||
+		!path.toLowerCase().endsWith('.md')
+	) {
+		return { id: '', name: 'docs:write', success: false, error: 'docs:write only accepts relative Markdown paths inside docs/ (for example docs/agent-reports/REPORT.md).', durationMs: 0 };
+	}
+	const result = await toolFileWrite({ ...args, path }, projectRoot);
+	return { ...result, name: 'docs:write' };
 }
 
 async function toolFileEdit(args: Record<string, unknown>, projectRoot: string): Promise<ToolResult> {

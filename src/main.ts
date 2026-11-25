@@ -33,6 +33,7 @@ import { compactConversation, estimateContextTokens, isContextWindowError, parse
 import { formatContextBar } from './runtime/context-display.js';
 import { listTerminalSessions, stopTerminalSession } from './runtime/terminal-sessions.js';
 import { AgentEventHub } from './runtime/events.js';
+import { agentActivityReportPath, agentWorkReportPath, writeAgentActivityReport } from './runtime/agent-reports.js';
 import {
 	addSubAgentProgress,
 	approvalRequesterLabel,
@@ -625,8 +626,12 @@ async function withEscapeCancellation<T>(nimClient: NimClient, operation: () => 
 	}
 }
 
+export function createRejectedFileChangeResult(path: string): { success: false; error: string } {
+	return { success: false, error: `Change rejected by user; ${path} was not modified.` };
+}
+
 function extractProposedChange(toolName: string, resultOutput: string): ProposedFileChange | undefined {
-	const isFileTool = toolName === 'file:write' || toolName === 'file:edit' || toolName === 'file:delete';
+	const isFileTool = toolName === 'file:write' || toolName === 'file:edit' || toolName === 'file:delete' || toolName === 'docs:write';
 	if (!isFileTool) return undefined;
 	try {
 		const parsed = JSON.parse(resultOutput);
@@ -813,12 +818,12 @@ async function executeToolWithReview(
 			}
 		} else {
 			if (!quiet) printInfo('Change rejected — file was not modified');
-			return { toolResult, change: proposedChange, applied: false };
+			return { toolResult: createRejectedFileChangeResult(proposedChange.path), change: proposedChange, applied: false };
 		}
 	}
 
 	if (!quiet) printToolResult(toolName, toolResult);
-	if (toolResult.success && (toolName === 'file:write' || toolName === 'file:edit' || toolName === 'file:delete')) {
+	if (toolResult.success && (toolName === 'file:write' || toolName === 'file:edit' || toolName === 'file:delete' || toolName === 'docs:write')) {
 		refreshContextFiles(projectRoot);
 	}
 	return { toolResult, applied: false };
@@ -861,6 +866,7 @@ interface DelegatedAgentSession {
 	checkpointId?: string;
 	toolCallId: string;
 	toolName: string;
+	workReportPath: string;
 }
 
 const delegatedSessions = new Map<string, DelegatedAgentSession>();
@@ -947,9 +953,11 @@ function startFollowUpTurn(session: DelegatedAgentSession, instructions: string[
 	session.running = true;
 	session.cancelRequested = false;
 	session.turnSeq += 1;
+	session.workReportPath = agentWorkReportPath(session.agentName, session.id, session.turnSeq);
 	resumeSubAgent(session.id);
 	const now = Date.now();
-	for (const text of instructions) {
+	const runInstructions = instructions.map((text) => `${text}\n\nRequired work report: Before finishing this follow-up, save a Markdown report to ${session.workReportPath} with docs:write. Include actual changes, validation commands/results, and anything unfinished.`);
+	for (const text of runInstructions) {
 		session.messages.push({ id: crypto.randomUUID(), role: 'user', content: text, timestamp: new Date() });
 		appendDelegatedTranscript(session, (agentId) => ({ type: 'user', agentId, text, at: now }));
 	}
@@ -958,7 +966,7 @@ function startFollowUpTurn(session: DelegatedAgentSession, instructions: string[
 	session.taskState = newTaskState();
 	session.taskState.goal = instructions.join('\n\n').replace(/\s+/g, ' ').slice(0, 300);
 	session.taskState.status = 'running';
-	void runDelegatedTurn(session, instructions.join('\n\n'));
+	void runDelegatedTurn(session, runInstructions.join('\n\n'));
 }
 
 function failDelegatedTurn(session: DelegatedAgentSession, started: number, detail: string): ToolResult {
@@ -966,13 +974,15 @@ function failDelegatedTurn(session: DelegatedAgentSession, started: number, deta
 	appendDelegatedStatus(session, 'failed');
 	appendDelegatedError(session, detail);
 	logAgentTermoTimeline(`Sub-agent ${session.agentName} failed: ${detail.slice(0, 120)}`, session.projectRoot);
-	return { id: session.toolCallId, name: session.toolName, success: false, error: detail, durationMs: Date.now() - started };
+	const activityPath = agentActivityReportPath(session.agentName, session.id, session.turnSeq);
+	return { id: session.toolCallId, name: session.toolName, success: false, error: `${detail}\nActivity log: ${activityPath}`, durationMs: Date.now() - started };
 }
 
 function cancelDelegatedTurn(session: DelegatedAgentSession, started: number, detail: string): ToolResult {
 	finishSubAgent(session.id, 'cancelled', detail);
 	appendDelegatedStatus(session, 'stopped');
-	return { id: session.toolCallId, name: session.toolName, success: false, error: 'Sub-agent run cancelled.', durationMs: Date.now() - started };
+	const activityPath = agentActivityReportPath(session.agentName, session.id, session.turnSeq);
+	return { id: session.toolCallId, name: session.toolName, success: false, error: `Sub-agent run cancelled. Activity log: ${activityPath}`, durationMs: Date.now() - started };
 }
 
 /**
@@ -1127,6 +1137,15 @@ async function runDelegatedTurn(session: DelegatedAgentSession, verificationText
 			logAgentTermoTimeline(`Sub-agent ${session.agentName} exhausted its budget before completing: ${verificationText.slice(0, 120)}`, projectRoot);
 			return failDelegatedTurn(session, started, detail);
 		}
+		// A delegated run is not complete until its required Markdown work report
+		// was actually applied to the project (not merely proposed or narrated).
+		if (!changedFiles.has(session.workReportPath)) {
+			return failDelegatedTurn(
+				session,
+				started,
+				`Required work report was not saved: ${session.workReportPath}. Use docs:write with the exact path and include actual changes, checks, and remaining work.`,
+			);
+		}
 		// Completion gate: the final report is a claim. Only accept it once the
 		// evidence actually collected during this run (files it wrote, commands
 		// it ran) backs it up — no stub implementations, and a real check command
@@ -1144,11 +1163,36 @@ async function runDelegatedTurn(session: DelegatedAgentSession, verificationText
 		appendDelegatedStatus(session, 'completed');
 		logAgentTermoTimeline(`Sub-agent ${session.agentName} completed delegated task: ${verificationText.slice(0, 120)}`, projectRoot);
 		void appendToTimeline(projectRoot, session.agentName, 'Delegated task completed', [`Task: ${verificationText.slice(0, 300)}`], [`Summary: ${output.replace(/\s+/g, ' ').slice(0, 400)}`]);
-		return { id: session.toolCallId, name: session.toolName, success: true, output: `[${session.agentName}]\n${output}`, durationMs: Date.now() - started };
+		const activityPath = agentActivityReportPath(session.agentName, session.id, session.turnSeq);
+		return {
+			id: session.toolCallId,
+			name: session.toolName,
+			success: true,
+			output: `[${session.agentName}]\n${output}\n\nWork report: ${session.workReportPath}\nActivity log: ${activityPath}`,
+			durationMs: Date.now() - started,
+		};
 	} catch (error) {
 		if (isRequestCancelled(error)) return cancelDelegatedTurn(session, started, 'Cancelled by the user.');
 		return failDelegatedTurn(session, started, error instanceof Error ? error.message : String(error));
 	} finally {
+		if (!session.disposed) {
+			try {
+				const activity = getSubAgent(subId);
+				await writeAgentActivityReport(projectRoot, {
+					agentName: session.agentName,
+					agentId: session.id,
+					task: verificationText,
+					turn: session.turnSeq,
+					status: activity?.status ?? 'failed',
+					startedAt: started,
+					endedAt: Date.now(),
+					detail: activity?.error,
+					entries: agentTranscripts.get(subId).filter((entry) => entry.at >= started),
+				});
+			} catch (error) {
+				printError(`Could not save the ${session.agentName} activity log: ${error instanceof Error ? error.message : String(error)}`);
+			}
+		}
 		session.running = false;
 		session.lastTurnEndedAt = Date.now();
 		// The initial turn lets its ToolResult reach the parent before any queued
@@ -1198,6 +1242,7 @@ async function runDelegatedAgent(
 	}
 
 	const subId = spawnSubAgent(toolCall.id, agent.name, task, 0, MAIN_AGENT_ID);
+	const workReportPath = agentWorkReportPath(agent.name, subId, 1);
 	printInfo('Delegating to ' + agent.name + '…');
 	// Each parallel worker gets its own client/controller so cancelling one request
 	// or updating its usage cannot interrupt a sibling worker.
@@ -1215,7 +1260,8 @@ async function runDelegatedAgent(
 			role: 'user',
 			content:
 				`You are a delegated sub-agent named ${agent.name}. Complete only this focused task using the available tools, then report concise findings for the parent agent.\n\n` +
-				`When the task produces documentation or deliverable files, write them into the project's docs/ directory with file:write — do not merely describe them.\n\n` +
+				`When the task produces documentation or deliverable files, write them into the project's docs/ directory with docs:write — do not merely describe them.\n\n` +
+				`REQUIRED WORK REPORT: Before finishing, create ${workReportPath} with docs:write. Include the task, exact files changed/created, validation commands and actual results, and remaining work. A final chat message alone is not completion.\n\n` +
 				`Task:\n${task}\n\nParent context:\n${[context, parentContext].filter(Boolean).join('\n\n') || '(none)'}`,
 			timestamp: new Date(),
 		},
@@ -1247,6 +1293,7 @@ async function runDelegatedAgent(
 		initialCheckpointId: getCheckpointId,
 		toolCallId: toolCall.id,
 		toolName: toolCall.name,
+		workReportPath,
 	};
 	delegatedSessions.set(subId, session);
 	agentWorkspace.registerHandle({

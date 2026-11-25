@@ -61,6 +61,18 @@ export const TOOL_DEFINITIONS: ToolDef[] = [
     },
   },
   {
+    name: 'docs:write',
+    description: 'Create or overwrite a Markdown document under docs/. Available to every agent for task deliverables and work reports; paths outside docs/ and non-Markdown files are rejected.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Markdown file path relative to the project root; must be inside docs/' },
+        content: { type: 'string', description: 'Complete Markdown document content' },
+      },
+      required: ['path', 'content'],
+    },
+  },
+  {
     name: 'file:write',
     description: 'Write or overwrite a complete file. Requires BOTH path and content as arguments; never call with empty or missing arguments. Use this to create new files or replace existing ones entirely.',
     parameters: {
