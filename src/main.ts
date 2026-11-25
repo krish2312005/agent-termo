@@ -2854,7 +2854,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 							const sizeText = action === 'set' ? (values[1] ?? '') : values[0]!;
 							const requested = parseContextWindowTokens(sizeText);
 							if (requested === undefined) {
-								printError('Invalid context size: ' + (sizeText || '(missing)'), 'Usage: /context [190k | set 190k | reset]. Minimum: 4k tokens.');
+								printError('Invalid context size: ' + (sizeText || '(missing)'), 'Usage: /context [190k | set 190k | reset]. Minimum: 4,096 tokens.');
 							} else {
 								const modelLimit = getProviderModelLimits(model)?.contextWindowTokens;
 								if (modelLimit !== undefined && requested > modelLimit) {
