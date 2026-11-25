@@ -445,7 +445,7 @@ Use /help inside Agent-Termo to display the available commands.
 | /terminal list | Show the foreground command and running background sessions (with session IDs). |
 | /terminal kill | Stop the foreground command and every background session. |
 | /terminal kill <id> | Stop one specific background session by its ID. |
-| /context | Show context information and project/runtime paths. |
+| /context [size] | Show context usage or set a per-model window, e.g. /context 190k. |
 | /compact | Compact older conversation context. |
 | /continue | Resume an interrupted task. |
 | /report [path] | Analyze the project and write a Markdown report. |
@@ -778,7 +778,7 @@ Summarizes older conversation context while preserving recent messages.
 /context
 ~~~
 
-Displays context statistics and relevant project paths.
+Displays context statistics and the current model's available input budget. Use `/context 190k` to save a per-model window or `/context reset` to restore the default.
 
 ---
 
