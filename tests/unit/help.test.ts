@@ -65,7 +65,7 @@ describe("helpMarkdown structure", () => {
   });
 
   it("shows only useful usage hints and omits examples", () => {
-    expect(doc).toContain("  - **Usage:** `/context [size | set <size> | reset]`");
+    expect(doc).toContain("  - **Usage:** `/context [all | agent-name | size | set <size> | reset]`");
     expect(doc).toContain("  - **Usage:** `/plan <task> | /plan approve | /plan cancel`");
     expect(doc).toContain("  - **Usage:** `/resume [session-id]`");
     expect(doc).toContain("  - **Usage:** `/remember <fact>`");
