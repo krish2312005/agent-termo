@@ -46,7 +46,7 @@ describe('context budgeting and compaction', () => {
   });
 
   it('uses a conservative fallback and configurable model limits', () => {
-    expect(resolveContextBudget('unknown', {}).contextWindowTokens).toBe(32_768);
+    expect(resolveContextBudget('unknown', {}).contextWindowTokens).toBe(190_000);
     const configured = resolveContextBudget('unknown', {
       AGENT_TERMO_CONTEXT_WINDOW: '65536',
       AGENT_TERMO_OUTPUT_RESERVE_TOKENS: '4096',
@@ -57,11 +57,11 @@ describe('context budgeting and compaction', () => {
 
   it('uses the context and output limits published for the selected NVIDIA model', () => {
     expect(resolveContextBudget('stepfun-ai/step-3.7-flash', {})).toMatchObject({
-      contextWindowTokens: 262_144,
+      contextWindowTokens: 190_000,
       outputReserveTokens: 8_192,
       maxOutputTokens: 8_192,
       safetyMarginTokens: 2_048,
-      inputBudgetTokens: 251_904,
+      inputBudgetTokens: 179_760,
     });
 
     expect(resolveContextBudget('meta/llama-3.1-8b-instruct', {})).toMatchObject({
@@ -77,7 +77,7 @@ describe('context budgeting and compaction', () => {
       maxOutputTokens: 4_000,
     });
     expect(resolveContextBudget('deepseek-ai/deepseek-v4-pro', {})).toMatchObject({
-      contextWindowTokens: 1_000_000,
+      contextWindowTokens: 190_000,
       maxOutputTokens: 8_192,
     });
     expect(resolveContextBudget('deepseek-ai/deepseek-r1', {})).toMatchObject({
