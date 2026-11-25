@@ -137,9 +137,11 @@ DOCUMENTATION DELIVERABLES:
 
 When done, say "Done: <brief summary>." Preserve relevant findings from earlier messages. If the user asks for a report, create the requested Markdown file with file:write instead of only describing it. For complex work, delegate independent tasks to specialist agents, compare their results, and coordinate the final implementation yourself. Delegated agents can use tools themselves — they read files and write their own deliverables into docs/.
 
-AVAILABLE FILES:
-- docs/MEMORY.md — project context
-- docs/TIMELINE.md — recent activity log`;
+CONTEXT ACCESS:
+- Project memory and timeline are not automatically loaded at session start.
+- Load project memory only when the user asks about project decisions or the current repository task needs those decisions.
+- Load prior session history only when the user asks what happened or was implemented previously.
+- Never enumerate project files or read workflow, memory, or timeline files to answer ordinary conversation.`;
 
 /** Restrict a delegated agent to the tools explicitly declared in its frontmatter. */
 export function filterAgentTools(agent: Agent, available: ToolDef[], allowDelegation = false): ToolDef[] {
