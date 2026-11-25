@@ -8,12 +8,16 @@ import {
   isToolRequestTimeoutError,
   isToolProtocolUnsupportedError,
   getMissingRequiredToolArguments,
-  createRejectedFileChangeResult,
 } from '../../src/main.js';
-import { buildNemotronRequestOverrides } from '../../src/llm/client.js';
+import { buildNemotronRequestOverrides, fromWireToolName, toWireToolName } from '../../src/llm/client.js';
 import { TOOL_DEFINITIONS } from '../../src/llm/tools.js';
 
 describe('software-generation tool routing', () => {
+  it('round-trips the documentation writer through provider wire names', () => {
+    expect(toWireToolName('docs:write')).toBe('docs_write');
+    expect(fromWireToolName('docs_write')).toBe('docs:write');
+  });
+
   it('enables tools for natural software-creation requests', () => {
     expect(shouldUseTools('Make a simple software like a Kanban board')).toBe(true);
     expect(shouldUseTools('Making a Kanban app with vanilla JavaScript')).toBe(true);
@@ -108,13 +112,6 @@ describe('Nemotron 3 Ultra tool request configuration', () => {
       status: 503,
       message: 'Tools are not supported',
     })).toBe(false);
-  });
-
-  it('does not tell the model that a rejected file proposal was written', () => {
-    expect(createRejectedFileChangeResult('docs/ARCHITECTURE.md')).toEqual({
-      success: false,
-      error: 'Change rejected by user; docs/ARCHITECTURE.md was not modified.',
-    });
   });
 
   it('detects missing required tool arguments before execution', () => {

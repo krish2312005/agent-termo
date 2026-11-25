@@ -37,6 +37,7 @@ function resolveToolRequestTimeoutMs(messages: ConversationMessage[], tools: NIM
 
 const TOOL_NAME_ALIASES: Record<string, string> = {
 	'skill:read': 'skill_read',
+	'docs:write': 'docs_write',
 	'memory:remember': 'memory_remember',
 	'file:read': 'file_read',
 	'file:write': 'file_write',
