@@ -30,45 +30,47 @@ export type { FooterOptions, FooterVariant } from "./tui.js";
 export interface CommandInfo {
   name: string;
   description: string;
+  usage?: string;
+  examples?: string[];
   aliases?: string[];
   project?: boolean;
 }
 
 export const COMMANDS: CommandInfo[] = [
-  { name: "/help", description: "show commands and keyboard shortcuts", aliases: ["/"] },
-  { name: "/clear", description: "clear conversation & screen", aliases: ["/cls"] },
-  { name: "/sessions", description: "browse saved conversations" },
-  { name: "/resume", description: "restore a saved conversation" },
-  { name: "/fork", description: "branch a conversation from a saved session" },
-  { name: "/plan", description: "create, approve, and track an execution plan" },
-  { name: "/checkpoint", description: "create a manual rollback checkpoint" },
-  { name: "/checkpoints", description: "list saved file-change checkpoints" },
-  { name: "/undo", description: "restore the latest or selected checkpoint" },
-  { name: "/redo", description: "reapply the most recently undone checkpoint" },
-  { name: "/memory", description: "view project memory (docs/MEMORY.md)" },
-  { name: "/remember", description: "save a durable project fact to memory" },
-  { name: "/recall", description: "search earlier saved sessions" },
-  { name: "/timeline", description: "view project timeline (docs/TIMELINE.md)", aliases: ["/tl"] },
-  { name: "/model", description: "switch the active provider model (or /model <id>)" },
-  { name: "/providers", description: "add, switch, and configure model API providers" },
-  { name: "/mcp", description: "list MCP servers and available tools" },
-  { name: "/thinking", description: "select NVIDIA reasoning capacity" },
-  { name: "/permissions", description: "ask, files, or auto; terminal approvals can be remembered with A" },
-  { name: "/agents", description: "list agents and choose one" },
-  { name: "/skill", description: "discover, use, create, import, and delete skills" },
-  { name: "/agent", description: "select a custom agent" },
-  { name: "/agent-folder", description: "create or refresh .agent-termo agents and commands" },
-  { name: "/goal", description: "set or show the current goal" },
-  { name: "/status", description: "show session status" },
-  { name: "/terminal", description: "manage agent terminal (list, kill)" },
-  { name: "/context", description: "show or set this model's context window (e.g. /context 190k)" },
-  { name: "/compact", description: "summarize and compact conversation context" },
-  { name: "/continue", description: "resume an interrupted task from where it stopped" },
-  { name: "/report", description: "analyze the project and create a report file" },
-  { name: "/history", description: "list recent conversation messages (default 12, max 50)", aliases: ["/hist"] },
-  { name: "/subagents", description: "show running and completed sub-agent work" },
-  { name: "/exit", description: "quit", aliases: ["/quit"] },
-];
+  { name: "/help", description: "show every command, its usage, examples, and keyboard shortcuts", usage: "/help", aliases: ["/"] },
+  { name: "/clear", description: "clear the current conversation and screen", usage: "/clear", aliases: ["/cls"] },
+  { name: "/sessions", description: "list saved conversations", usage: "/sessions" },
+  { name: "/resume", description: "restore a saved conversation by ID or choose one", usage: "/resume [session-id]", examples: ["/resume", "/resume a1b2c3d4"] },
+  { name: "/fork", description: "create a new conversation from the current or a saved session", usage: "/fork [session-id]", examples: ["/fork", "/fork a1b2c3d4"] },
+  { name: "/plan", description: "create, approve, or cancel an execution plan", usage: "/plan <task> | /plan approve | /plan cancel", examples: ["/plan Build a Kanban app", "/plan approve"] },
+  { name: "/checkpoint", description: "create a manual rollback checkpoint with an optional label", usage: "/checkpoint [label]", examples: ["/checkpoint Before refactor"] },
+  { name: "/checkpoints", description: "list saved file-change checkpoints", usage: "/checkpoints" },
+  { name: "/undo", description: "restore the latest or a selected checkpoint", usage: "/undo [checkpoint-id]", examples: ["/undo", "/undo 12"] },
+  { name: "/redo", description: "reapply the most recently undone checkpoint", usage: "/redo" },
+  { name: "/memory", description: "view project memory (docs/MEMORY.md)", usage: "/memory" },
+  { name: "/remember", description: "save a durable project fact or decision to memory", usage: "/remember <fact>", examples: ["/remember The API uses PostgreSQL."] },
+  { name: "/recall", description: "search earlier saved sessions and add matching excerpts to context", usage: "/recall <search text>", examples: ["/recall authentication design"] },
+  { name: "/timeline", description: "view project timeline (docs/TIMELINE.md)", usage: "/timeline", aliases: ["/tl"] },
+  { name: "/model", description: "choose a model or switch directly by model ID", usage: "/model [model-id]", examples: ["/model", "/model nvidia/nemotron-3-ultra-550b-a55b"] },
+  { name: "/providers", description: "add, switch, list, and configure model API providers", usage: "/providers [list | use <provider-id> | <provider-id>]", examples: ["/providers list", "/providers use nvidia"] },
+  { name: "/mcp", description: "show configured MCP servers and their available tools", usage: "/mcp" },
+  { name: "/thinking", description: "choose the model's reasoning capacity", usage: "/thinking [off | auto | low | medium | high]", examples: ["/thinking high"] },
+  { name: "/permissions", description: "set or cycle file and terminal permission behavior", usage: "/permissions [ask | files | auto]", examples: ["/permissions files", "/permissions auto"] },
+  { name: "/agents", description: "list custom agents and choose the active agent", usage: "/agents" },
+  { name: "/skill", description: "list, use, create, import, inspect, refresh, or delete skills", usage: "/skill <list | use | add | import | show | refresh | delete> [name] [arguments]", examples: ["/skill list", "/skill use testing Write unit tests for this module", "/skill add my-skill"] },
+  { name: "/agent", description: "choose a custom agent or assign a task to one", usage: "/agent [name [task]]", examples: ["/agent", "/agent frontend", "/agent frontend Improve the settings page"] },
+  { name: "/agent-folder", description: "create or refresh the project agent and command folders", usage: "/agent-folder" },
+  { name: "/goal", description: "set or show the current task goal", usage: "/goal [description]", examples: ["/goal Finish the authentication flow"] },
+  { name: "/status", description: "show project, model, permissions, token, agent, and task status", usage: "/status" },
+  { name: "/terminal", description: "list terminal activity or stop running commands", usage: "/terminal [list | kill [session-id]]", examples: ["/terminal list", "/terminal kill"] },
+  { name: "/context", description: "show context usage or set this model's saved context window", usage: "/context [size | set <size> | reset]", examples: ["/context", "/context 190k", "/context reset"] },
+  { name: "/compact", description: "summarize and compact older conversation context", usage: "/compact" },
+  { name: "/continue", description: "resume an interrupted task from where it stopped", usage: "/continue" },
+  { name: "/report", description: "analyze the project and write a Markdown report", usage: "/report [output-path]", examples: ["/report", "/report docs/review.md"] },
+  { name: "/history", description: "show recent conversation messages (default 12, max 50)", usage: "/history [count]", aliases: ["/hist"], examples: ["/history 20"] },
+  { name: "/subagents", description: "show running and completed sub-agent work", usage: "/subagents [agent-name]" },
+  { name: "/exit", description: "quit Agent-Termo", usage: "/exit", aliases: ["/quit"] },
+];;
 
 const c: typeof Chalk = Chalk as unknown as typeof Chalk;
 const rule = (): string => "─".repeat(Math.max(10, Math.min(terminalWidth() - 2, 100)));
@@ -428,7 +430,11 @@ export function helpMarkdown(commands: readonly CommandInfo[]): string {
       ? " (" + command.aliases.map(inlineCode).join(", ") + ")"
       : "";
     const project = command.project ? " (`project`)" : "";
-    return "- " + inlineCode(command.name) + aliases + " — " + command.description + project;
+    const usage = command.usage ? "\n  Usage: " + inlineCode(command.usage) : "";
+    const examples = command.examples?.length
+      ? "\n  Example: " + command.examples.map(inlineCode).join(" · ")
+      : "";
+    return "- " + inlineCode(command.name) + aliases + " — " + command.description + project + usage + examples;
   });
   const shortcutSections = SHORTCUTS.map((section) =>
     "## " + section.title + "\n\n" + section.items
