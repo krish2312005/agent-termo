@@ -3093,7 +3093,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				conversation.push(userMsg);
 				persistSession();
 				rememberChat(projectRoot, 'User', userInput);
-				if (requestUsesTools || activePlan?.status === 'in_progress') {
+				if (skillInvocation || shouldUseTools(userInput, activeAgentName, continuing) || activePlan?.status === 'in_progress') {
 					void appendToTimeline(projectRoot, activeAgentName || 'Agent-Termo', 'User request', ['Request: ' + userInput.replace(/\s+/g, ' ').slice(0, 700)], []);
 				}
 				if (!displayedInput) printUserMessage(userInput);
