@@ -94,7 +94,7 @@ describe("helpMarkdown structure", () => {
   it("uses the corrected command descriptions", () => {
     const section = commandsSection(doc);
     const expected = [
-      "show commands and keyboard shortcuts",
+      "show commands, usage for commands with arguments, and keyboard shortcuts",
       "list custom agents and choose the active agent",
       "show recent conversation messages (default 12, max 50)",
       "show context usage or set this model's saved context window",
