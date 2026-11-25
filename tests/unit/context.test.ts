@@ -3,6 +3,7 @@ import type { ConversationMessage } from '../../src/types/index.js';
 import {
   compactConversation,
   estimateContextTokens,
+  parseContextWindowTokens,
   prepareConversationForRequest,
   recordContextTokenUsage,
   resolveContextBudget,
@@ -45,7 +46,17 @@ describe('context budgeting and compaction', () => {
     expect(estimateContextTokens(messages, undefined, 'calibration-test-model')).toBe(1_200);
   });
 
-  it('uses a conservative fallback and configurable model limits', () => {
+  it('parses context sizes in tokens, thousands, and millions', () => {
+    expect(parseContextWindowTokens('190000')).toBe(190_000);
+    expect(parseContextWindowTokens('190k')).toBe(190_000);
+    expect(parseContextWindowTokens('1.5m')).toBe(1_500_000);
+    expect(parseContextWindowTokens('1,000,000')).toBe(1_000_000);
+    expect(parseContextWindowTokens('4k')).toBe(4_000);
+    expect(parseContextWindowTokens('2k')).toBeUndefined();
+    expect(parseContextWindowTokens('not-a-size')).toBeUndefined();
+  });
+
+  it('uses a 190K default and configurable model limits', () => {
     expect(resolveContextBudget('unknown', {}).contextWindowTokens).toBe(190_000);
     const configured = resolveContextBudget('unknown', {
       AGENT_TERMO_CONTEXT_WINDOW: '65536',
