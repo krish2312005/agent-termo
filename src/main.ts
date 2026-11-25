@@ -16,8 +16,9 @@ const withApprovalPrompt = createApprovalQueue();
 // Set by the workspace's stop-all for the main agent; reset at each main turn.
 let mainStopRequested = false;
 import { buildSystemPrompt, filterAgentTools, resolveDelegation } from './agents/index.js';
-import { resolveProjectRoot, saveNimModel, saveNimThinking, savePermissionMode, listSavedProviders, activateProvider, saveProviderConfig } from './utils/config.js';
+import { resolveProjectRoot, saveNimModel, saveNimThinking, savePermissionMode, listSavedProviders, activateProvider, saveProviderConfig, getSavedContextWindow, saveContextWindow, clearSavedContextWindow } from './utils/config.js';
 import { BUILTIN_PROVIDERS, groupProviders, isProviderConnected, providerActivationModel, type ProviderDefinition, type StoredProviderConfig } from './llm/providers.js';
+import { getProviderModelLimits } from './llm/models.js';
 import { resolve, relative, sep } from 'node:path';
 import { existsSync, realpathSync, readdirSync, readFileSync } from 'node:fs';
 import { ensureAgentFolder, loadProjectAgents, loadAgentCommands, type AgentCommand } from './runtime/agent-folder.js';
@@ -28,7 +29,7 @@ import { commandApprovalKey, isCommandApprovalRequired, loadAllowedCommands, sav
 import { verifyCompletionWithChecks, formatIssues, type RanCheck } from './runtime/verify.js';
 import { runProjectChecks } from './runtime/checks.js';
 import { appendSessionArchive, createSession, forkSession, listSessions, loadLatestSession, loadSession, saveSession, searchSessionHistory, type StoredSession } from './runtime/sessions.js';
-import { compactConversation, estimateContextTokens, isContextWindowError, prepareConversationForRequest, resolveContextBudget } from './runtime/context.js';
+import { DEFAULT_CONTEXT_WINDOW_TOKENS, compactConversation, estimateContextTokens, isContextWindowError, parseContextWindowTokens, prepareConversationForRequest, resolveContextBudget } from './runtime/context.js';
 import { listTerminalSessions, stopTerminalSession } from './runtime/terminal-sessions.js';
 import { AgentEventHub } from './runtime/events.js';
 import {
@@ -2574,6 +2575,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					if (cmd === '/model' || cmd.startsWith('/model ')) {
 						// Take the argument from the original text: model IDs are case-sensitive.
 						await handleModelCommand(userInput.trim().slice('/model'.length).trim(), nimClient, projectRoot);
+						refreshContextMeter();
 						persistSession();
 						continue mainLoop;
 					}
@@ -2840,19 +2842,49 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						}
 						continue mainLoop;
 					}
-					if (cmd === '/context') {
+					if (cmd === '/context' || cmd.startsWith('/context ')) {
+						const model = nimClient.getModel();
+						const argument = userInput.trim().slice('/context'.length).trim();
+						const values = argument.split(/\\s+/).filter(Boolean);
+						const action = (values[0] ?? '').toLowerCase();
+						if (action === 'reset' || action === 'default') {
+							clearSavedContextWindow(model);
+							printSuccess('Context override cleared for ' + model + '.');
+						} else if (values.length > 0) {
+							const sizeText = action === 'set' ? (values[1] ?? '') : values[0]!;
+							const requested = parseContextWindowTokens(sizeText);
+							if (requested === undefined) {
+								printError('Invalid context size: ' + (sizeText || '(missing)'), 'Usage: /context [190k | set 190k | reset]. Minimum: 4k tokens.');
+							} else {
+								const modelLimit = getProviderModelLimits(model)?.contextWindowTokens;
+								if (modelLimit !== undefined && requested > modelLimit) {
+									printError('This model supports at most ' + modelLimit.toLocaleString() + ' context tokens.', 'Requested: ' + requested.toLocaleString() + ' · Model: ' + model);
+								} else {
+									try {
+										saveContextWindow(model, requested);
+										printSuccess('Context window saved: ' + requested.toLocaleString() + ' tokens for ' + model + '.');
+									} catch (error) {
+										printError('Could not save context window: ' + (error instanceof Error ? error.message : String(error)));
+									}
+								}
+							}
+						}
 						const tools = nimClient.buildToolDefs([...TOOL_DEFINITIONS, ...getMcpToolDefinitions()]);
-						const estimated = estimateContextTokens(conversation, tools, nimClient.getModel());
-						const budget = resolveContextBudget(nimClient.getModel());
+						const estimated = estimateContextTokens(conversation, tools, model);
+						const budget = resolveContextBudget(model);
+						const saved = getSavedContextWindow(model);
+						const source = saved !== undefined ? 'saved for this model' : process.env.AGENT_TERMO_CONTEXT_WINDOW ? 'environment override' : 'default';
+						printInfo('Model: ' + model);
+						printInfo('Context window: ' + budget.contextWindowTokens.toLocaleString() + ' tokens (' + source + ').');
 						printInfo('Estimated input: ~' + estimated.toLocaleString() + ' tokens');
-						printInfo('Input budget: ' + budget.inputBudgetTokens.toLocaleString() + ' / ' + budget.contextWindowTokens.toLocaleString());
+						printInfo('Available input budget: ' + budget.inputBudgetTokens.toLocaleString() + ' / ' + budget.contextWindowTokens.toLocaleString());
 						printInfo('context ' + formatContextMeter(estimated, budget.inputBudgetTokens));
 						setScreenStatus({ context: { usedTokens: estimated, budgetTokens: budget.inputBudgetTokens } });
 						printInfo('Output reserve: ' + budget.outputReserveTokens.toLocaleString() + ' tokens; safety margin: ' + budget.safetyMarginTokens.toLocaleString());
 						printInfo('Messages: ' + (conversation.length - 1) + ' (tool-call JSON and tool schemas included)');
-						printInfo('Active agent: ' + (activeAgentName || '(default)'));
-						printInfo('Current goal: ' + (currentGoal || '(none)'));
-						printInfo('Set AGENT_TERMO_CONTEXT_WINDOW to the selected model documented limit when known.');
+						printInfo('Set with /context 190k (or /context set 190k); /context reset restores the 190K default.');
+						printInfo('Default: ' + DEFAULT_CONTEXT_WINDOW_TOKENS.toLocaleString() + ' tokens, capped at the documented model limit when known.');
+						refreshContextMeter();
 						continue mainLoop;
 					}
 					if (cmd === '/compact') {
