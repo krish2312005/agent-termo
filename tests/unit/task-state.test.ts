@@ -1,7 +1,19 @@
 import { describe, it, expect } from 'vitest';
-import { finishTaskState, getToolLoopStopReason, isTransientError, shouldClearFailedToolCalls, shouldPauseForRepeatedFailedToolCall, shouldRunDelegationsInParallel, withTransientRetries } from '../../src/main.js';
+import { finishTaskState, getToolLoopStopReason, isTransientError, shouldClearFailedToolCalls, shouldPauseForRepeatedFailedToolCall, shouldRunDelegationsInParallel, shouldRequireInitialToolCall, shouldUseTools, withTransientRetries } from '../../src/main.js';
 
 describe('task resumability', () => {
+	it('recognizes a follow-up phrased as go ahead and fix as a tool task', () => {
+		expect(shouldUseTools('go ahead and fix the issue')).toBe(true);
+		expect(shouldRequireInitialToolCall('go ahead and fix the issue')).toBe(true);
+	});
+
+	it('forces tool execution for expanded custom-command prompts', () => {
+		const expandedPrompt = 'Use the project-manager agent to run the fix flow for the broken buttons.';
+		expect(shouldUseTools(expandedPrompt)).toBe(false);
+		expect(shouldRequireInitialToolCall(expandedPrompt)).toBe(false);
+		expect(shouldUseTools(expandedPrompt, '', false, false, false, true)).toBe(true);
+		expect(shouldRequireInitialToolCall(expandedPrompt, true)).toBe(true);
+	});
 	it('keeps an interrupted task resumable instead of marking it idle', () => {
 		const state = { goal: 'build the site', status: 'interrupted' as const, reason: 'Connection error.', lastActions: ['bash:execute mkdir ok'] };
 		finishTaskState(state);
