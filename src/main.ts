@@ -3191,7 +3191,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				
 				const requestUsesTools = forceToolExecution || shouldUseTools(userInput, activeAgentName, continuing);
 				const planInProgress = activePlan?.status === 'in_progress';
-				if (shouldLoadProjectContext(userInput) || planInProgress) ensureContextFilesLoaded();
+				if (shouldLoadProjectContext(userInput) || forceToolExecution || planInProgress) ensureContextFilesLoaded();
 				refreshSystemPrompt(
 					shouldLoadProjectContext(userInput) || forceToolExecution || planInProgress || continuing,
 					shouldLoadSessionHistory(userInput) || continuing,
