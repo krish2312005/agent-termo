@@ -468,6 +468,7 @@ const GERUND_ACTION = /^(?:building|making|creating|implementing|coding|debuggin
 const CODING_OBJECT = /^(?:write|generate)\s+(?:some\s+)?(?:code|a\s+(?:program|script|function|file|website|app|application)|tests?|documentation|docs)\b/i;
 const CODING_CHANGES = /^(?:do|make)\s+(?:some\s+)?(?:coding|code|implementation|development)\s+(?:changes|work|updates?)\b/i;
 const CONVERSATION_PREFIXES = [
+	/^(?:go ahead and)\s+/i,
 	/^(?:can|could|would|will)\s+you(?:\s+please)?\s+(?:(?:go\s+ahead\s+and)\s+)?/i,
 	/^i\s+(?:want|need|would like)\s+you\s+to\s+/i,
 	/^(?:help|assist)\s+me(?:\s+to)?\s+/i,
@@ -505,13 +506,14 @@ export function shouldLoadProjectContext(input: string): boolean {
 	return startsWithRequestedAction(input, true) || isProjectSpecificQuestion(input);
 }
 
-export function shouldUseTools(input: string, _activeAgentName = '', continuing = false, _hasMcpTools = false, _hasRelevantSkills = false): boolean {
-	// Tool availability, skill keyword overlap, and a selected agent are not user intent.
-	return continuing || startsWithRequestedAction(input) || isProjectSpecificQuestion(input);
+export function shouldUseTools(input: string, _activeAgentName = '', continuing = false, _hasMcpTools = false, _hasRelevantSkills = false, force = false): boolean {
+	// Prompt-based commands (skills/custom commands) explicitly represent user intent,
+	// even when their expanded wording does not begin with an action verb.
+	return force || continuing || startsWithRequestedAction(input) || isProjectSpecificQuestion(input);
 }
 
-export function shouldRequireInitialToolCall(input: string): boolean {
-	return startsWithRequestedAction(input) || isProjectSpecificQuestion(input);
+export function shouldRequireInitialToolCall(input: string, force = false): boolean {
+	return force || startsWithRequestedAction(input) || isProjectSpecificQuestion(input);
 }
 export function isToolRequestTimeoutError(error: unknown): boolean {
 	if (!error || typeof error !== 'object') return false;
@@ -2341,12 +2343,14 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 
 				let displayedInput = false;
 				let skillInvocation = false;
+				let customCommandInvocation = false;
 					const lowerInput = userInput.toLowerCase().trim();
 					const customCommandMatch = /^\/([A-Za-z0-9_-]+)(?:\s+([\s\S]*))?$/.exec(userInput);
 					const customCommand = customCommandMatch && customCommandMatch[1]!.toLowerCase() !== 'skill'
 						? customCommands.find((command) => command.name.toLowerCase() === customCommandMatch[1]!.toLowerCase())
 						: undefined;
 					if (customCommand) {
+						customCommandInvocation = true;
 						printUserMessage(rawInput);
 						displayedInput = true;
 						const args = customCommandMatch?.[2]?.trim() ?? '';
@@ -3170,7 +3174,8 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				conversation.push(userMsg);
 				persistSession();
 				rememberChat(projectRoot, 'User', userInput);
-				if (skillInvocation || shouldUseTools(userInput, activeAgentName, continuing) || activePlan?.status === 'in_progress') {
+				const forceToolExecution = skillInvocation || customCommandInvocation;
+				if (forceToolExecution || shouldUseTools(userInput, activeAgentName, continuing) || activePlan?.status === 'in_progress') {
 					void appendToTimeline(projectRoot, activeAgentName || 'Agent-Termo', 'User request', ['Request: ' + userInput.replace(/\s+/g, ' ').slice(0, 700)], []);
 				}
 				if (!displayedInput) printUserMessage(userInput);
@@ -3184,11 +3189,11 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				// Plain conversation does not need a large tool schema. Keeping it out of
 				// the request also supports providers/models that reject tool mode.
 				
-				const requestUsesTools = skillInvocation || shouldUseTools(userInput, activeAgentName, continuing);
+				const requestUsesTools = forceToolExecution || shouldUseTools(userInput, activeAgentName, continuing);
 				const planInProgress = activePlan?.status === 'in_progress';
 				if (shouldLoadProjectContext(userInput) || planInProgress) ensureContextFilesLoaded();
 				refreshSystemPrompt(
-					shouldLoadProjectContext(userInput) || skillInvocation || planInProgress || continuing,
+					shouldLoadProjectContext(userInput) || forceToolExecution || planInProgress || continuing,
 					shouldLoadSessionHistory(userInput) || continuing,
 				);
 				const selectedAgent = customAgents.find((agent) => agent.name === activeAgentName);
@@ -3213,7 +3218,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					tools,
 					(chunk) => { setScreenStatus({ usage: nimClient.formatUsage() }); streamed.push(chunk); streamed.flushPartial(); },
 					(messages) => appendSessionArchive(projectRoot, session.id, messages),
-					{ requireToolCall: shouldRequireInitialToolCall(userInput) },
+					{ requireToolCall: shouldRequireInitialToolCall(userInput, forceToolExecution) },
 				));
 						streamed.end();
 						if (!streamed.printed) stopSpinner();
