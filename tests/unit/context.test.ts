@@ -51,7 +51,7 @@ describe('context budgeting and compaction', () => {
     expect(parseContextWindowTokens('190k')).toBe(190_000);
     expect(parseContextWindowTokens('1.5m')).toBe(1_500_000);
     expect(parseContextWindowTokens('1,000,000')).toBe(1_000_000);
-    expect(parseContextWindowTokens('4k')).toBe(4_000);
+    expect(parseContextWindowTokens('4.1k')).toBe(4_100);
     expect(parseContextWindowTokens('2k')).toBeUndefined();
     expect(parseContextWindowTokens('not-a-size')).toBeUndefined();
   });
