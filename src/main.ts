@@ -461,30 +461,33 @@ function splitCommandArgs(value: string): string[] {
 		.map((part) => part.replace(/^['"]|['"]$/g, ''));
 }
 
-const TOOL_ACTION_VERBS = '(?:build|make|create|implement|code|debug|fix|edit|modify|update|refactor|develop|deploy|test|run|delete|remove|add|inspect|analy[sz]e|review|trace|search|find|locate|generate)';
-const CODING_ACTION_VERBS = '(?:build|make|create|implement|code|debug|fix|edit|modify|update|refactor|develop|deploy|test|run|delete|remove|add|generate)';
+const TOOL_ACTION = /^(?:build|make|create|implement|code|debug|fix|edit|modify|update|refactor|develop|deploy|test|run|delete|remove|add|inspect|analy[sz]e|review|trace|search|find|locate|generate)\\b/i;
+const CODING_ACTION = /^(?:build|make|create|implement|code|debug|fix|edit|modify|update|refactor|develop|deploy|test|run|delete|remove|add|generate)\\b/i;
+const GERUND_ACTION = /^(?:building|making|creating|implementing|coding|debugging|fixing|editing|modifying|updating|refactoring|developing|deploying|testing)\\b/i;
+const CODING_OBJECT = /^(?:write|generate)\\s+(?:some\\s+)?(?:code|a\\s+(?:program|script|function|file|website|app|application)|tests?|documentation|docs)\\b/i;
+const CONVERSATION_PREFIXES = [
+	/^(?:can|could|would|will)\\s+you(?:\\s+please)?\\s+(?:(?:go\\s+ahead\\s+and)\\s+)?/i,
+	/^i\\s+(?:want|need|would like)\\s+you\\s+to\\s+/i,
+	/^(?:help|assist)\\s+me(?:\\s+to)?\\s+/i,
+	/^i\\s+(?:want|need|would like)\\s+to\\s+/i,
+	/^(?:let['’]s|lets)\\s+/i,
+	/^(?:please|kindly)\\s+(?:(?:go\\s+ahead\\s+and)\\s+)?/i,
+];
 
-function startsWithRequestedAction(input: string, verbs: string): boolean {
-	const action = new RegExp('^(?:' + verbs + ')\\b', 'i');
-	const prefixes = [
-		/^(?:can|could|would|will)\\s+you(?:\\s+please)?\\s+(?:(?:go\\s+ahead\\s+and)\\s+)?/i,
-		/^i\\s+(?:want|need|would like)\\s+you\\s+to\\s+/i,
-		/^(?:help|assist)\\s+me(?:\\s+to)?\\s+/i,
-		/^i\\s+(?:want|need|would like)\\s+to\\s+/i,
-		/^(?:let['’]s|lets)\\s+/i,
-		/^(?:please|kindly)\\s+(?:(?:go\\s+ahead\\s+and)\\s+)?/i,
-	];
+function startsWithRequestedAction(input: string, codingOnly = false): boolean {
 	const sentences = input.split(/[\\n.!?;:]+/).map((part) => part.trim().replace(/^[\\"'’`]+/, '')).filter(Boolean);
-
 	for (const sentence of sentences) {
+		const action = codingOnly ? CODING_ACTION : TOOL_ACTION;
 		if (action.test(sentence) || /^(?:do|make)\\s+(?:some\\s+)?(?:coding|code|implementation|development)\\s+(?:changes|work|updates?)\\b/i.test(sentence)) return true;
-		// A bare gerund is a common shorthand prompt; first-person descriptions are not.
-		if (/^(?:building|making|creating|implementing|coding|debugging|fixing|editing|modifying|updating|refactoring|developing|deploying|testing)\\b/i.test(sentence)) return true;
-		for (const prefix of prefixes) {
+		// A bare gerund is a common shorthand task ("Building a Kanban app").
+		// First-person descriptions ("I am building...") do not match this rule.
+		if (!codingOnly && GERUND_ACTION.test(sentence)) return true;
+		if (CODING_OBJECT.test(sentence)) return true;
+		for (const prefix of CONVERSATION_PREFIXES) {
 			const remainder = sentence.replace(prefix, '');
-			if (remainder !== sentence && (action.test(remainder) || /^(?:write|generate)\\s+(?:some\\s+)?(?:code|a\\s+(?:program|script|function|file|website|app|application)|tests?|documentation|docs)\\b/i.test(remainder))) return true;
+			if (remainder !== sentence && (action.test(remainder) || CODING_OBJECT.test(remainder) ||
+				(!codingOnly && /^(?:search|find|inspect|analy[sz]e|review|trace|locate)\\b/i.test(remainder)))) return true;
 		}
-		if (/^(?:write|generate)\\s+(?:some\\s+)?(?:code|a\\s+(?:program|script|function|file|website|app|application)|tests?|documentation|docs)\\b/i.test(sentence)) return true;
 	}
 	return false;
 }
@@ -499,18 +502,17 @@ export function shouldLoadSessionHistory(input: string): boolean {
 }
 
 export function shouldLoadProjectContext(input: string): boolean {
-	return startsWithRequestedAction(input, TOOL_ACTION_VERBS) || isProjectSpecificQuestion(input);
+	return startsWithRequestedAction(input) || isProjectSpecificQuestion(input);
 }
 
 export function shouldUseTools(input: string, _activeAgentName = '', continuing = false, _hasMcpTools = false, _hasRelevantSkills = false): boolean {
 	// Tool availability, skill keyword overlap, and a selected agent are not user intent.
-	return continuing || startsWithRequestedAction(input, TOOL_ACTION_VERBS) || isProjectSpecificQuestion(input);
+	return continuing || startsWithRequestedAction(input) || isProjectSpecificQuestion(input);
 }
 
 export function shouldRequireInitialToolCall(input: string): boolean {
-	return startsWithRequestedAction(input, CODING_ACTION_VERBS);
+	return startsWithRequestedAction(input, true);
 }
-
 export function isToolRequestTimeoutError(error: unknown): boolean {
 	if (!error || typeof error !== 'object') return false;
 	const value = error as { name?: unknown; message?: unknown; code?: unknown; toolRequestTimeout?: unknown };
