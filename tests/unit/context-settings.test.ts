@@ -18,6 +18,7 @@ describe('per-model context window settings', () => {
     home = mkdtempSync(join(tmpdir(), 'agent-termo-context-config-'));
     vi.stubEnv('HOME', home);
     vi.stubEnv('USERPROFILE', home);
+    vi.stubEnv('AGENT_TERMO_DIR', '.agent-termo');
     const configDir = join(home, '.agent-termo');
     mkdirSync(configDir, { recursive: true });
     writeFileSync(join(configDir, 'config.json'), JSON.stringify({ nimModel: 'model-a', permissionMode: 'auto' }));
