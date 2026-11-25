@@ -156,6 +156,7 @@ describe('agent tool-loop orchestration', () => {
 		];
 		const checkpoint = createCheckpoint(projectRoot, 'completion-gate regression');
 		const taskState = { goal: 'Implement the fixture handler.', status: 'running' as const, reason: '', lastActions: [] as string[] };
+		const persistedStatuses: string[] = [];
 
 		try {
 			const finalText = await runToolLoop(
@@ -168,12 +169,13 @@ describe('agent tool-loop orchestration', () => {
 				new Set(),
 				taskState,
 				() => checkpoint.id,
-				() => undefined,
+				() => persistedStatuses.push(taskState.status),
 			);
 
 			expect(finalText).toBe('');
 			expect(taskState.status).toBe('interrupted');
 			expect(taskState.reason).toContain('unit test failed');
+			expect(persistedStatuses.at(-1)).toBe('interrupted');
 		} finally {
 			rmSync(projectRoot, { recursive: true, force: true });
 		}
