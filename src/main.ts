@@ -3187,10 +3187,8 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					printSubAgents(command.slice('/subagents'.length).trim() || undefined);
 				});
 
-				// Plain conversation does not need a large tool schema. Keeping it out of
-				// the request also supports providers/models that reject tool mode.
-				
-				const requestUsesTools = forceToolExecution || shouldUseTools(userInput, activeAgentName, continuing);
+				// Keep the full tool set available on every main-agent turn. The model
+				// decides whether to call a tool; wording heuristics must not hide tools.
 				const planInProgress = activePlan?.status === 'in_progress';
 				if (shouldLoadProjectContext(userInput) || forceToolExecution || planInProgress) ensureContextFilesLoaded();
 				refreshSystemPrompt(
@@ -3205,9 +3203,10 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					...activeAgentToolDefinitions,
 					...(planInProgress ? [PLAN_PROGRESS_TOOL] : []),
 				];
-				const tools = requestUsesTools || planInProgress
-					? nimClient.buildToolDefs([...activeAgentToolDefinitions, ...(planInProgress ? [PLAN_PROGRESS_TOOL] : [])])
-					: undefined;
+				const tools = nimClient.buildToolDefs([
+					...activeAgentToolDefinitions,
+					...(planInProgress ? [PLAN_PROGRESS_TOOL] : []),
+				]);
 
 				{
 					startSpinner('Working');
@@ -3280,6 +3279,11 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 							rememberChat(projectRoot, 'Assistant', cleanText);
 							persistSession();
 							if (!streamed.printed) printAssistantMessage(cleanText);
+						} else {
+							taskState.status = 'interrupted';
+							taskState.reason = 'The model returned neither text nor tool calls.';
+							printError('The model returned an empty response and no tool calls.', 'The task was paused. Type /continue to retry.');
+							persistSession();
 						}
 					} else {
 						// Show any narration that came with the first tool calls
