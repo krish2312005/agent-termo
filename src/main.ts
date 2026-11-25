@@ -497,7 +497,7 @@ function isProjectSpecificQuestion(input: string): boolean {
 }
 
 export function shouldLoadSessionHistory(input: string): boolean {
-	return /\b(?:previously|earlier|last session|previous session|history|past work|what did we (?:build|make|create|implement|change|decide)|what have we (?:built|made|created|implemented|changed|decided))\b/i.test(input);
+	return /\b(?:previously|earlier|last time|previous time|last session|previous session|session history|conversation history|chat history|past work|previous work|earlier work|what did we (?:build|make|create|implement|change|decide)|what have we (?:built|made|created|implemented|changed|decided))\b/i.test(input);
 }
 
 export function shouldLoadProjectContext(input: string): boolean {
