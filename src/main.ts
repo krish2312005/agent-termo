@@ -159,7 +159,7 @@ function expandContextMentions(input: string, projectRoot: string): { text: stri
 	const attached: string[] = [];
 	const text = input.replace(/(^|\s)@([^\s]+)/g, (whole, prefix: string, name: string) => {
 		// @names are often agent/user mentions. Only path-shaped references are files.
-		if (!name.includes('/') && !name.startsWith('.') && !/\.(?:md|mdx|txt|json|ya?ml|toml|js|jsx|ts|tsx|py|css|html|sql|sh|log|xml|csv|env|lock)$/i.test(name)) {
+		if (!name.includes('/') && !name.startsWith('.') && !/\.[a-z0-9_-]{1,12}$/i.test(name) && !/^(?:Makefile|Dockerfile|LICENSE|README|CHANGELOG|Gemfile|Procfile|Justfile)$/i.test(name)) {
 			return whole;
 		}
 		const filePath = resolve(projectRoot, name);
@@ -3111,7 +3111,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				const planInProgress = activePlan?.status === 'in_progress';
 				if (requestUsesTools || planInProgress) ensureContextFilesLoaded();
 				refreshSystemPrompt(
-					shouldLoadProjectContext(userInput) || skillInvocation || planInProgress,
+					shouldLoadProjectContext(userInput) || skillInvocation || planInProgress || continuing,
 					shouldLoadSessionHistory(userInput) || continuing,
 				);
 				const selectedAgent = customAgents.find((agent) => agent.name === activeAgentName);
