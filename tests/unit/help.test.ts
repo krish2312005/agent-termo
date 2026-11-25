@@ -84,7 +84,7 @@ describe("helpMarkdown structure", () => {
   });
 
   it("separates command entries with whitespace for easier scanning", () => {
-    expect(commandsSection(doc)).toContain("- `/help` (`/`) — show commands, usage for commands with arguments, and keyboard shortcuts\\n\\n- `/clear` (`/cls`) — clear the current conversation and screen");
+    expect(commandsSection(doc)).toContain("- `/help` (`/`) — show commands, usage for commands with arguments, and keyboard shortcuts\n\n- `/clear` (`/cls`) — clear the current conversation and screen");
   });
 
   it("notes that plain exit and quit also quit", () => {
