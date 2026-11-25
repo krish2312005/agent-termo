@@ -46,7 +46,7 @@ function positiveInteger(value: string | undefined, fallback: number): number {
 
 /** Parse context sizes such as 190000, 190k, or 1.5m. */
 export function parseContextWindowTokens(value: string): number | undefined {
-  const match = /^([0-9]+(?:\\.[0-9]+)?)\\s*([km]?)$/i.exec(value.trim().replace(/,/g, ''));
+  const match = /^([0-9]+(?:\.[0-9]+)?)\s*([km]?)$/i.exec(value.trim().replace(/,/g, ''));
   if (!match) return undefined;
   const multiplier = match[2]?.toLowerCase() === 'm' ? 1_000_000 : match[2]?.toLowerCase() === 'k' ? 1_000 : 1;
   const parsed = Math.round(Number(match[1]) * multiplier);
@@ -55,8 +55,8 @@ export function parseContextWindowTokens(value: string): number | undefined {
 
 /**
  * NIM does not expose a dependable context-window value in /v1/models.
- * Known model IDs use limits published in NVIDIA's per-model API references.
- * Explicit environment settings take precedence; unknown models stay conservative.
+ * Known model IDs are capped at verified provider limits. A saved per-model
+ * setting takes precedence over the legacy environment override and 190K default.
  */
 export function resolveContextBudget(
   model: string,
