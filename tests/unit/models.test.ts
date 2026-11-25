@@ -34,14 +34,14 @@ describe('NVIDIA NIM model limits', () => {
     expect(resolveContextBudget(model, { AGENT_TERMO_OUTPUT_RESERVE_TOKENS: '8192' }).maxOutputTokens).toBe(8_192);
   });
 
-  it('reserves a 262K context window for nemotron-3.5-super-vl-120b-a12b', () => {
+  it('uses the 190K default within the 262K model limit for nemotron-3.5-super-vl-120b-a12b', () => {
     const model = 'nvidia/nemotron-3.5-super-vl-120b-a12b';
 
     expect(getProviderModelLimits(model)?.contextWindowTokens).toBe(262_144);
 
     const budget = resolveContextBudget(model, {});
-    expect(budget.contextWindowTokens).toBe(262_144);
-    expect(budget.inputBudgetTokens).toBeGreaterThan(200_000);
+    expect(budget.contextWindowTokens).toBe(190_000);
+    expect(budget.inputBudgetTokens).toBeGreaterThan(150_000);
   });
 });
 
