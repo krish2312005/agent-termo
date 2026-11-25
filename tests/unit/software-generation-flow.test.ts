@@ -20,6 +20,10 @@ describe('software-generation tool routing', () => {
     expect(shouldUseTools('Build an app with HTML, CSS, and JavaScript')).toBe(true);
     expect(shouldUseTools('Create a website')).toBe(true);
     expect(shouldRequireInitialToolCall('Make a simple software like a Kanban board')).toBe(true);
+    expect(shouldUseTools('Please fix the login bug')).toBe(true);
+    expect(shouldUseTools('Could you implement drag and drop?')).toBe(true);
+    expect(shouldUseTools('Can you please go ahead and fix this issue completely?')).toBe(true);
+    expect(shouldUseTools('do coding changes on this branch')).toBe(true);
   });
 
   it('does not mistake first-person descriptions or general conversation for coding requests', () => {
