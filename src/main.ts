@@ -2150,6 +2150,8 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 			checkpointId: selected.taskState.checkpointId,
 		} : newTaskState();
 		if (activePlan?.status === 'approved' && taskState.status === 'interrupted') activePlan.status = 'in_progress';
+		includeProjectContext = false;
+		includeSessionHistory = false;
 		if (selected.model) nimClient.setModel(selected.model);
 		if (selected.thinkingCapacity) nimClient.setThinkingCapacity(selected.thinkingCapacity as ThinkingCapacity);
 		if (conversation.length === 0) conversation.push({ id: crypto.randomUUID(), role: 'system', content: buildSessionPrompt(), timestamp: new Date() });
@@ -2533,6 +2535,8 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					conversation.length = 1;
 					taskState = newTaskState();
 					activePlan = undefined;
+					includeProjectContext = false;
+					includeSessionHistory = false;
 					conversation[0]!.content = buildSessionPrompt();
 					session = createSession(projectRoot, conversation);
 					persistSession();
