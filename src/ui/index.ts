@@ -61,7 +61,7 @@ export const COMMANDS: CommandInfo[] = [
   { name: "/goal", description: "set or show the current goal" },
   { name: "/status", description: "show session status" },
   { name: "/terminal", description: "manage agent terminal (list, kill)" },
-  { name: "/context", description: "show estimated context usage and budget" },
+  { name: "/context", description: "show or set this model's context window (e.g. /context 190k)" },
   { name: "/compact", description: "summarize and compact conversation context" },
   { name: "/continue", description: "resume an interrupted task from where it stopped" },
   { name: "/report", description: "analyze the project and create a report file" },
