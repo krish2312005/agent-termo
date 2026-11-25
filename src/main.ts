@@ -485,7 +485,7 @@ function startsWithRequestedAction(input: string, projectOnly = false): boolean 
 		for (const prefix of CONVERSATION_PREFIXES) {
 			const remainder = sentence.replace(prefix, '');
 			if (remainder !== sentence && (action.test(remainder) || CODING_CHANGES.test(remainder) ||
-				CODING_OBJECT.test(remainder) || (!codingOnly && /^(?:search|find|inspect|analy[sz]e|review|trace|locate)\b/i.test(remainder)))) return true;
+				CODING_OBJECT.test(remainder) || (!projectOnly && /^(?:search|find|inspect|analy[sz]e|review|trace|locate)\b/i.test(remainder)))) return true;
 		}
 	}
 	return false;
