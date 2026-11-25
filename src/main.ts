@@ -1957,7 +1957,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 	// commands and private logs live under .agent-termo/. Older versions also
 	// wrote .agent-termo/memory.md and timeline.md; those are migrated here.
 	try {
-		ensureAgentFolder(projectRoot);
+		ensureAgentFolder(projectRoot, { initializeProjectDocs: false });
 	} catch {
 		// Read-only filesystem or similar: tools will surface the error.
 	}
@@ -2169,9 +2169,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 	}
 	persistSession();
 	logAgentTermoTimeline('Agent-Termo session started. Model: ' + nimClient.getModel(), projectRoot);
-	void logToTimeline(projectRoot, 'Agent-Termo session started. Model: ' + nimClient.getModel());
 	logAgentTermoTimeline('Commands: /help /clear /memory /timeline /model /thinking /agents /history', projectRoot);
-	void logToTimeline(projectRoot, 'Commands: /help /clear /memory /timeline /model /thinking /agents /history');
 
 	const input = createInput();
 	// Main is built in: the workspace owns its state/queue; the REPL supplies I/O.
@@ -3095,7 +3093,9 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				conversation.push(userMsg);
 				persistSession();
 				rememberChat(projectRoot, 'User', userInput);
-				void appendToTimeline(projectRoot, activeAgentName || 'Agent-Termo', 'User request', ['Request: ' + userInput.replace(/\s+/g, ' ').slice(0, 700)], []);
+				if (requestUsesTools || activePlan?.status === 'in_progress') {
+					void appendToTimeline(projectRoot, activeAgentName || 'Agent-Termo', 'User request', ['Request: ' + userInput.replace(/\s+/g, ' ').slice(0, 700)], []);
+				}
 				if (!displayedInput) printUserMessage(userInput);
 				beginSubAgentRun();
 				mainStopRequested = false;
