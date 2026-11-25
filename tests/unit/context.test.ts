@@ -269,11 +269,28 @@ describe('context budgeting and compaction', () => {
       message('assistant', 'Now check the latest result'),
       message('tool', 'latest result'),
     ];
-    const result = prepareConversationForRequest(conversation, 'test-model');
-    expect(result.compacted).toBe(true);
-    expect(result.archivedMessages.some((item) => item.content.length === 90_000)).toBe(true);
-    expect(conversation[2]?.content.length).toBeLessThan(10_000);
-    expect(conversation[4]?.content).toBe('latest result');
+    const model = 'tool-message-shortening-test-model';
+    const previousWindow = process.env.AGENT_TERMO_CONTEXT_WINDOW;
+    const previousOutput = process.env.AGENT_TERMO_OUTPUT_RESERVE_TOKENS;
+    const previousSafety = process.env.AGENT_TERMO_CONTEXT_SAFETY_MARGIN;
+    process.env.AGENT_TERMO_CONTEXT_WINDOW = '16384';
+    process.env.AGENT_TERMO_OUTPUT_RESERVE_TOKENS = '2048';
+    process.env.AGENT_TERMO_CONTEXT_SAFETY_MARGIN = '512';
+    try {
+      const result = prepareConversationForRequest(conversation, model);
+      expect(result.estimatedBeforeTokens).toBeGreaterThan(result.budget.inputBudgetTokens);
+      expect(result.compacted).toBe(true);
+      expect(result.archivedMessages.some((item) => item.content.length === 90_000)).toBe(true);
+      expect(conversation.some((item) => item.content.length < 10_000 && item.role === 'assistant')).toBe(true);
+      expect(conversation.at(-1)?.content).toBe('latest result');
+    } finally {
+      if (previousWindow === undefined) delete process.env.AGENT_TERMO_CONTEXT_WINDOW;
+      else process.env.AGENT_TERMO_CONTEXT_WINDOW = previousWindow;
+      if (previousOutput === undefined) delete process.env.AGENT_TERMO_OUTPUT_RESERVE_TOKENS;
+      else process.env.AGENT_TERMO_OUTPUT_RESERVE_TOKENS = previousOutput;
+      if (previousSafety === undefined) delete process.env.AGENT_TERMO_CONTEXT_SAFETY_MARGIN;
+      else process.env.AGENT_TERMO_CONTEXT_SAFETY_MARGIN = previousSafety;
+    }
   });
 
   it('does not compact when the estimate is under the reserved input budget (regression: premature 0.85 trigger)', () => {
