@@ -2845,7 +2845,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					if (cmd === '/context' || cmd.startsWith('/context ')) {
 						const model = nimClient.getModel();
 						const argument = userInput.trim().slice('/context'.length).trim();
-						const values = argument.split(/\\s+/).filter(Boolean);
+						const values = argument.split(/\s+/).filter(Boolean);
 						const action = (values[0] ?? '').toLowerCase();
 						if (action === 'reset' || action === 'default') {
 							clearSavedContextWindow(model);
