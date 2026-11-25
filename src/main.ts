@@ -2848,7 +2848,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						const values = argument.split(/\s+/).filter(Boolean);
 						const action = (values[0] ?? '').toLowerCase();
 						const model = nimClient.getModel();
-						const renderContext = (label: string, client: NimClient, messages: ConversationMessage[], tools: ToolDef[], status?: string): void => {
+						const renderContext = (label: string, client: NimClient, messages: ConversationMessage[], tools: unknown[], status?: string): void => {
 							const agentModel = client.getModel();
 							const budget = resolveContextBudget(agentModel);
 							const used = estimateContextTokens(messages, tools, agentModel);
