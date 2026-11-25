@@ -31,7 +31,6 @@ export interface CommandInfo {
   name: string;
   description: string;
   usage?: string;
-  examples?: string[];
   aliases?: string[];
   project?: boolean;
 }
