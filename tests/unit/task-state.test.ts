@@ -8,7 +8,7 @@ describe('task resumability', () => {
 	});
 
 	it('forces tool execution for expanded custom-command prompts', () => {
-		const expandedPrompt = 'Use the project-manager agent to run the fix flow for the broken buttons.';
+		const expandedPrompt = 'Coordinate the requested repair through the configured workflow.';
 		expect(shouldUseTools(expandedPrompt)).toBe(false);
 		expect(shouldRequireInitialToolCall(expandedPrompt)).toBe(false);
 		expect(shouldUseTools(expandedPrompt, '', false, false, false, true)).toBe(true);
