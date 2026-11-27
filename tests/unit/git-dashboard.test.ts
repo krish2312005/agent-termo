@@ -55,7 +55,7 @@ describe("Git dashboard data", () => {
     execFileSync("git", ["commit", "-m", "feature branch"], { cwd: root, stdio: "ignore" });
     execFileSync("git", ["push", "-u", "origin", "feature/checkout"], { cwd: root, stdio: "ignore" });
     execFileSync("git", ["switch", "main"], { cwd: root });
-    execFileSync("git", ["branch", "--delete", "feature/checkout"], { cwd: root });
+    execFileSync("git", ["branch", "--delete", "--force", "feature/checkout"], { cwd: root });
     execFileSync("git", ["fetch", "origin"], { cwd: root });
 
     const data = await loadGitDashboardData(root);
