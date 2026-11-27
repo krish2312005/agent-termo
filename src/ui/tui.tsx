@@ -1203,9 +1203,9 @@ function App() {
         >
           <Show when={visibleEntries().length > 0} fallback={
             <box paddingX={1}>
-              <text fg={ROLES.dimText} wrapMode="none">
-                {selectedAgentIdSignal() === MAIN_AGENT_ID ? "" : "No activity yet for @" + selectedName() + "."}
-              </text>
+              <Show when={selectedAgentIdSignal() !== MAIN_AGENT_ID} fallback={<box height={0} />}>
+                <text fg={ROLES.dimText} wrapMode="none">No activity yet for @{selectedName()}.</text>
+              </Show>
             </box>
           }>
             <Index each={visibleEntries()}>
