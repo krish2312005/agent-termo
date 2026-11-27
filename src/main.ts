@@ -32,7 +32,7 @@ import { appendSessionArchive, createSession, forkSession, listSessions, loadLat
 import { compactConversation, estimateContextTokens, isContextWindowError, parseContextWindowTokens, prepareConversationForRequest, resolveContextBudget } from './runtime/context.js';
 import { formatContextBar } from './runtime/context-display.js';
 import { listTerminalSessions, stopTerminalSession } from './runtime/terminal-sessions.js';
-import { getGitCommitDetails, getGitHubSummary, loadGitSnapshot } from './runtime/git-graph.js';
+import { getGitCommitDetails, getGitHubSummary, loadGitDashboardData, loadGitSnapshot } from './runtime/git-graph.js';
 import { AgentEventHub } from './runtime/events.js';
 import { agentActivityReportPath, agentWorkReportPath, writeAgentActivityReport } from './runtime/agent-reports.js';
 import {
@@ -74,6 +74,7 @@ import {
 	printInfo,
 	printGitGraph,
 	printGitPanel,
+	openGitDashboard,
 	printHelp,
 	MarkdownPrinter,
 	printAgentsList,
@@ -2560,40 +2561,11 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					continue mainLoop;
 				}
 				if (cmd === '/git' || cmd.startsWith('/git ')) {
-					const gitArguments = userInput.trim().slice('/git'.length).trim().split(/\s+/).filter(Boolean);
-					const action = (gitArguments.shift() ?? 'graph').toLowerCase();
+					const gitArguments = userInput.trim().slice('/git'.length).trim().split(/\\s+/).filter(Boolean);
+					const requestedAction = gitArguments.shift();
+					const action = (requestedAction ?? 'overview').toLowerCase();
 					try {
-						if (action === 'graph') {
-							const limit = gitArguments[0] ? Number(gitArguments[0]) : 80;
-							if (!Number.isInteger(limit) || limit < 1 || limit > 300) {
-								printInfo('Usage: /git graph [limit] — choose 1 to 300 commits.');
-								continue mainLoop;
-							}
-							const snapshot = await loadGitSnapshot(projectRoot, limit);
-							if (snapshot.graphRows.length === 0) {
-								printInfo('This repository has no commits to display yet.');
-							} else {
-								printGitGraph('TERMO GITGRAPH  ·  ' + snapshot.name + '  ·  ' + snapshot.branch, snapshot.graphRows);
-								printInfo('Newest / HEAD at top · older ancestry toward the bottom · ' + snapshot.commits.length + ' commits shown of ' + snapshot.totalCommits + '. Scroll the transcript to explore.');
-							}
-						} else if (action === 'info') {
-							const snapshot = await loadGitSnapshot(projectRoot, 1);
-							printGitPanel('REPOSITORY OVERVIEW  ·  ' + snapshot.name, [
-								'Path: ' + snapshot.root,
-								'Branch: ' + snapshot.branch,
-								'Working tree: ' + (snapshot.workingTreeClean ? 'clean' : 'modified (' + snapshot.changedPaths + ' changed paths)'),
-								'Origin: ' + snapshot.origin,
-								'Commits: ' + snapshot.totalCommits,
-								'Branches: ' + snapshot.localBranchCount + ' local · ' + snapshot.remoteBranchCount + ' remote',
-								'Latest: ' + (snapshot.commits[0] ? snapshot.commits[0].hash + ' · ' + snapshot.commits[0].subject : 'no commits yet'),
-							]);
-						} else if (action === 'branches') {
-							const snapshot = await loadGitSnapshot(projectRoot, 1);
-							if (snapshot.branches.length === 0) printInfo('No branches found in this repository.');
-							else {
-								printGitPanel('BRANCHES  ·  ' + snapshot.name, snapshot.branches.map((line) => line.trimEnd()));
-							}
-						} else if (action === 'commit') {
+						if (action === 'commit') {
 							let selectedHash = gitArguments[0];
 							if (!selectedHash) {
 								const snapshot = await loadGitSnapshot(projectRoot, 100);
@@ -2611,46 +2583,35 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 								}) ?? undefined;
 							}
 							if (!selectedHash) printInfo('Commit selection cancelled.');
-							else {
-								const details = await getGitCommitDetails(projectRoot, selectedHash);
-								printGitPanel('COMMIT DETAILS  ·  ' + selectedHash.slice(0, 12), details.split(/\r?\n/));
-							}
-						} else if (action === 'github') {
-							const summary = await getGitHubSummary(projectRoot);
-							if (!summary.connected) printInfo(summary.message ?? 'GitHub CLI is not connected.');
-							else if (!summary.repository) printInfo(summary.message ?? 'GitHub repository could not be resolved.');
-							else {
-								const lines = [
-									'Account: @' + (summary.login ?? 'unknown'),
-									'Repository: ' + (summary.repository.nameWithOwner ?? 'unknown'),
-									'Visibility: ' + (summary.repository.isPrivate ? 'private' : 'public'),
-									'URL: ' + (summary.repository.url ?? 'unavailable'),
-									'',
-									'OPEN PULL REQUESTS (' + summary.pullRequests.length + ')',
-								];
-								if (summary.pullRequests.length === 0) lines.push('  No open pull requests.');
-								for (const pullRequest of summary.pullRequests) {
-									lines.push('  #' + pullRequest.number + ' ' + pullRequest.title + (pullRequest.isDraft ? ' [draft]' : '') + ' · ' + (pullRequest.headRefName ?? '?') + ' → ' + (pullRequest.baseRefName ?? '?'));
-									lines.push('    ' + pullRequest.url);
-								}
-								lines.push('', 'OPEN ISSUES (' + summary.issues.length + ')');
-								if (summary.issues.length === 0) lines.push('  No open issues.');
-								for (const issue of summary.issues) lines.push('  #' + issue.number + ' ' + issue.title + ' · ' + issue.url);
-								lines.push('', 'RECENT ACTIONS RUNS (' + summary.runs.length + ')');
-								if (summary.runs.length === 0) lines.push('  No recent Actions runs found or Actions access is unavailable.');
-								for (const run of summary.runs) lines.push('  ' + run.name + ' · ' + (run.status ?? 'unknown') + (run.conclusion ? ' / ' + run.conclusion : '') + ' · ' + run.url);
-								printGitPanel('GITHUB  ·  ' + summary.repository.nameWithOwner, lines);
-							}
-						} else if (action === 'help') {
-							printInfo('Usage: /git [graph [limit] | info | branches | commit [hash] | github | help]');
-						} else {
-							printInfo('Unknown GitGraph view: ' + action + '. Use /git help.');
+							else printGitPanel('COMMIT DETAILS  ·  ' + selectedHash.slice(0, 12), (await getGitCommitDetails(projectRoot, selectedHash)).split(/\\r?\\n/));
+							continue mainLoop;
 						}
+						if (action === 'help') {
+							printInfo('Usage: /git [graph | status | branches | commits | remotes | diff | stash | tags | prs | issues | actions | releases | commit [hash]]');
+							continue mainLoop;
+						}
+						const tabs = {
+							overview: 'overview', info: 'overview', graph: 'graph', commits: 'graph',
+							status: 'status', branches: 'branches', diff: 'diff', stash: 'stash',
+							remotes: 'remotes', tags: 'tags', github: 'prs', prs: 'prs',
+							issues: 'issues', actions: 'actions', releases: 'releases',
+					} as const;
+					if (!(action in tabs)) {
+						printInfo('Unknown Git view: ' + action + '. Use /git help.');
+						continue mainLoop;
+					}
+					const [data, github] = await Promise.all([
+						loadGitDashboardData(projectRoot, action === 'graph' || action === 'commits' ? 120 : 80),
+						getGitHubSummary(projectRoot).catch(() => null),
+					]);
+					openGitDashboard(data, github, tabs[action as keyof typeof tabs]);
+					continue mainLoop;
 					} catch (error) {
-						printError('GitGraph: ' + (error instanceof Error ? error.message : String(error)));
+						printError('Git command center: ' + (error instanceof Error ? error.message : String(error)));
 					}
 					continue mainLoop;
 				}
+
 				if (cmd === '/mcp') {
 					const statuses = getMcpServerStatuses();
 					const tools = getMcpToolDefinitions();
