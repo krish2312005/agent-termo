@@ -2589,7 +2589,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						}
 						if (action === 'diff' && gitArguments.length > 0) {
 							const filePath = gitArguments.join(' ');
-							printGitPanel('FILE DIFF · ' + filePath, (await getGitFileDiff(projectRoot, filePath)).split(/\\r?\\n/));
+							printGitPanel('FILE DIFF · ' + filePath, (await getGitFileDiff(projectRoot, filePath)).split(/\r?\n/));
 							continue mainLoop;
 						}
 						if (action === 'commit') {
