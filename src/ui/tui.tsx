@@ -1329,7 +1329,13 @@ function App() {
         </scrollbox>
 
         }>
-          {(dashboard) => <GitDashboardView data={dashboard().data} github={dashboard().github} tab={dashboard().tab} selected={dashboard().selected} width={terminalColumns()} />}
+          <GitDashboardView
+            data={gitDashboardState()!.data}
+            github={gitDashboardState()!.github}
+            tab={gitDashboardState()!.tab}
+            selected={gitDashboardState()!.selected}
+            width={terminalColumns()}
+          />
         </Show>
       </box>
       <Show when={terminalVisible() && terminal()} fallback={<box height={0} />}>
