@@ -51,6 +51,23 @@ jobs:
       - name: Build, pack, install, and test npm artifact
         run: bun run test:package
 
+      - name: TUI pseudo-terminal startup smoke
+        shell: bash
+        run: |
+          set +e
+          output="$(script -q -e -c 'timeout --signal=INT 5s env TERM=xterm-256color COLUMNS=100 LINES=30 OPENTUI_GRAPHICS=false NIM_API_KEY=smoke-test bun src/cli.ts' /dev/null 2>&1)"
+          status=$?
+          set -e
+          printf '%s\n' "$output"
+          if grep -Eq 'Orphan text error|Fatal error:' <<< "$output"; then exit 1; fi
+          if ! grep -q 'Starting Agent-Termo in:' <<< "$output"; then
+            echo 'TUI smoke test did not reach Agent-Termo startup.'
+            exit 1
+          fi
+          if [ "$status" -ne 124 ]; then
+            echo "TUI exited before the five-second interactive smoke window (status $status)."
+            exit 1
+          fi
       - name: Source CLI smoke test
         run: bun run cli --help
 
