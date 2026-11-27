@@ -129,6 +129,7 @@ export function openGitDashboard(
   tab: GitDashboardTab = "overview",
   refresh?: (tab?: GitDashboardTab, selectedBranch?: string) => Promise<void>,
   checkoutBranch?: (branch: GitBranchInfo) => Promise<string | void>,
+  selected = 0,
 ): void {
   if (!renderer) {
     appendLog("GIT COMMAND CENTER · " + data.snapshot.name + " · " + data.snapshot.branch, "success");
@@ -138,7 +139,7 @@ export function openGitDashboard(
     appendLog(github?.message ?? (github?.repository ? "GitHub: " + github.repository.nameWithOwner : "GitHub data unavailable."), "dim");
     return;
   }
-  setGitDashboardState({ data, github, tab, selected: 0, refresh, checkoutBranch });
+  setGitDashboardState({ data, github, tab, selected, refresh, checkoutBranch });
   setInputActive(false);
   textarea?.blur();
 }
