@@ -24,7 +24,7 @@ export interface GitCommit {
 
 export interface GitGraphLane {
   colorIndex: number;
-  glyph: "●" | "◆" | "│" | "╱" | "╲";
+  glyph: "●" | "◆" | "·";
   isCommit: boolean;
 }
 
@@ -214,19 +214,12 @@ export function layoutGitGraph(commits: GitCommit[]): GitGraphRow[] {
     }
 
     const firstParent = commit.parents[0];
-    const firstParentLane = firstParent
-      ? activeLanes.findIndex((lane, index) => index !== laneIndex && lane.hash === firstParent)
-      : -1;
     const currentColorIndex = activeLanes[laneIndex]!.colorIndex;
     const lanes: GitGraphLane[] = activeLanes.map((lane, index) => ({
       colorIndex: lane.colorIndex,
       glyph: index === laneIndex
         ? (commit.parents.length > 1 ? "◆" : "●")
-        : secondaryLaneIndexes.includes(index)
-          ? (index > laneIndex ? "╲" : "╱")
-          : index === firstParentLane
-            ? (index < laneIndex ? "╲" : "╱")
-            : "│",
+        : "·",
       isCommit: index === laneIndex,
     }));
 
@@ -303,6 +296,14 @@ export interface GitWorkingTreeFile {
   state: "staged" | "unstaged" | "untracked" | "conflict";
 }
 
+export interface GitBranchInfo {
+  name: string;
+  kind: "local" | "remote";
+  isCurrent: boolean;
+  shortHash: string;
+  subject: string;
+}
+
 export interface GitDashboardData {
   snapshot: GitSnapshot;
   staged: GitWorkingTreeFile[];
@@ -312,7 +313,7 @@ export interface GitDashboardData {
   stashes: string[];
   tags: string[];
   remotes: string[];
-  branchDetails: string[];
+  branchDetails: GitBranchInfo[];
   unstagedDiffStat: string;
   stagedDiffStat: string;
 }
@@ -325,7 +326,7 @@ export async function loadGitDashboardData(projectPath: string, limit = 80): Pro
     runGit(snapshot.root, ["stash", "list", "--format=%gd%x1f%gs"]).catch(() => ""),
     runGit(snapshot.root, ["tag", "--sort=-creatordate", "--format=%(refname:short)%x1f%(creatordate:relative)"]).catch(() => ""),
     runGit(snapshot.root, ["remote", "-v"]).catch(() => ""),
-    runGit(snapshot.root, ["branch", "--all", "--verbose", "--no-abbrev"]).catch(() => ""),
+    runGit(snapshot.root, ["for-each-ref", "--sort=refname", "--format=%(refname)%x00%(HEAD)%x00%(objectname:short)%x00%(subject)", "refs/heads", "refs/remotes"]).catch(() => ""),
     runGit(snapshot.root, ["diff", "--shortstat"]).catch(() => ""),
     runGit(snapshot.root, ["diff", "--cached", "--shortstat"]).catch(() => ""),
   ]);
@@ -358,7 +359,18 @@ export async function loadGitDashboardData(projectPath: string, limit = 80): Pro
     stashes: stashes.split(/\r?\n/).filter(Boolean),
     tags: tags.split(/\r?\n/).filter(Boolean),
     remotes: remotes.split(/\r?\n/).filter(Boolean),
-    branchDetails: branchDetails.split(/\r?\n/).filter(Boolean),
+    branchDetails: branchDetails.split(/\r?\n/).filter(Boolean).flatMap((line): GitBranchInfo[] => {
+      const [ref = "", head = "", shortHash = "", subject = ""] = line.split("\0");
+      if (ref.startsWith("refs/heads/")) {
+        return [{ name: ref.slice("refs/heads/".length), kind: "local", isCurrent: head === "*", shortHash, subject }];
+      }
+      if (ref.startsWith("refs/remotes/")) {
+        const name = ref.slice("refs/remotes/".length);
+        if (name.endsWith("/HEAD")) return [];
+        return [{ name, kind: "remote", isCurrent: false, shortHash, subject }];
+      }
+      return [];
+    }),
     unstagedDiffStat: unstagedDiffStat.trim(),
     stagedDiffStat: stagedDiffStat.trim(),
   };
@@ -367,7 +379,7 @@ export async function loadGitDashboardData(projectPath: string, limit = 80): Pro
 export type GitBranchAction = "checkout" | "create" | "delete" | "merge";
 
 /** Execute one explicitly requested branch operation with conservative safety checks. */
-export async function runGitBranchAction(projectPath: string, action: GitBranchAction, branch: string): Promise<string> {
+export async function runGitBranchAction(projectPath: string, action: GitBranchAction, branch: string, branchKind: "local" | "remote" = "local"): Promise<string> {
   const name = branch.trim();
   if (!name || name.startsWith("-") || /[\0\r\n]/.test(name)) {
     throw new Error("Provide a valid branch name.");
@@ -387,6 +399,14 @@ export async function runGitBranchAction(projectPath: string, action: GitBranchA
   }
   if (action === "create") {
     return (await runGit(root, ["switch", "--create", name])).trim() || "Created and switched to " + name + ".";
+  }
+  if (branchKind === "remote") {
+    const separator = name.indexOf("/");
+    if (separator < 1 || separator === name.length - 1) throw new Error("Invalid remote branch name.");
+    const localName = name.slice(separator + 1);
+    const localExists = await runGit(root, ["show-ref", "--verify", "--quiet", "refs/heads/" + localName]).then(() => true).catch(() => false);
+    if (localExists) return (await runGit(root, ["switch", "--", localName])).trim() || "Switched to " + localName + ".";
+    return (await runGit(root, ["switch", "--track", name])).trim() || "Created a tracking branch for " + name + ".";
   }
   return (await runGit(root, ["switch", "--", name])).trim() || "Switched to " + name + ".";
 }
