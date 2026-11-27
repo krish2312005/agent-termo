@@ -123,6 +123,14 @@ const [gitDashboardState, setGitDashboardState] = createSignal<{
 } | null>(null);
 
 export function openGitDashboard(data: GitDashboardData, github: GitHubSummary | null, tab: GitDashboardTab = "overview", refresh?: () => Promise<void>): void {
+  if (!renderer) {
+    appendLog("GIT COMMAND CENTER · " + data.snapshot.name + " · " + data.snapshot.branch, "success");
+    appendLog("Working tree: " + (data.snapshot.workingTreeClean ? "clean" : data.snapshot.changedPaths + " changed paths") + " · " + data.snapshot.totalCommits + " commits · " + data.snapshot.localBranchCount + " local / " + data.snapshot.remoteBranchCount + " remote branches", "info");
+    appendLog("Staged: " + data.staged.length + " · Unstaged: " + data.unstaged.length + " · Untracked: " + data.untracked.length + " · Conflicts: " + data.conflicts.length, "info");
+    appendGitGraphRows(data.snapshot.graphRows);
+    appendLog(github?.message ?? (github?.repository ? "GitHub: " + github.repository.nameWithOwner : "GitHub data unavailable."), "dim");
+    return;
+  }
   setGitDashboardState({ data, github, tab, selected: 0, refresh });
   setInputActive(false);
   textarea?.blur();
