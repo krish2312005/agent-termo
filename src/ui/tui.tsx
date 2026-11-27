@@ -999,8 +999,10 @@ function App() {
       else if (name === "left" || name === "right") {
         const next = (currentIndex + (name === "right" ? 1 : tabs.length - 1)) % tabs.length;
         setGitDashboardState((current) => current ? { ...current, tab: tabs[next]!, selected: 0 } : current);
-      } else if (name === "up" || name === "down") {
-        const next = Math.max(0, dashboard.selected + (name === "down" ? 1 : -1));
+      } else if (["up", "down", "pageup", "pagedown"].includes(name)) {
+        const step = name === "pageup" || name === "pagedown" ? Math.max(1, terminalRows() - 18) : 1;
+        const direction = name === "down" || name === "pagedown" ? 1 : -1;
+        const next = Math.max(0, dashboard.selected + direction * step);
         const max = Math.max(0, getGitDashboardItemCount(dashboard.data, dashboard.github, dashboard.tab) - 1);
         setGitDashboardState((current) => current ? { ...current, selected: Math.min(max, next) } : current);
       } else if (name === "enter" && dashboard.tab === "branches") {
