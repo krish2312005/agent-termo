@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import ts from "typescript";
+import * as ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 const dashboardSource = readFileSync(new URL("../../src/ui/git-dashboard.tsx", import.meta.url), "utf8");
