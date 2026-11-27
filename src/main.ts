@@ -72,7 +72,6 @@ import {
 	printError,
 	printSuccess,
 	printInfo,
-	printGitGraph,
 	printGitPanel,
 	openGitDashboard,
 	printHelp,
