@@ -290,7 +290,7 @@ export function formatOmniaReport(run: OmniaRun): string {
     `Verified: ${verified}/${run.requirements.length}`,
     "",
     ...run.requirements.map((item) =>
-      `- [${item.status === "verified" ? "x" : " "}] **${item.id}** — ${item.description} (${item.status}; strategy: ${item.strategy})\\n  - Verification: ${item.verificationPlan}`,
+      `- [${item.status === "verified" ? "x" : " "}] **${item.id}** — ${item.description} (${item.status}; strategy: ${item.strategy})\n  - Verification: ${item.verificationPlan}`,
     ),
     "",
     "## Execution evidence",

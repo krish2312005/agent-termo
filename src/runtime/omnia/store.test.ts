@@ -40,7 +40,7 @@ describe("OMNIA run store", () => {
 
   it("selects distinct verification strategies from requirement intent", () => {
     const requirements = deriveOmniaRequirements(
-      "Project requirements:\\n- Build a REST API endpoint.\\n- Create a responsive dashboard UI.\\n- Write setup documentation.\\n- Make the experience intuitive.",
+      "Project requirements:\n- Build a REST API endpoint.\n- Create a responsive dashboard UI.\n- Write setup documentation.\n- Make the experience intuitive.",
     );
     expect(requirements.map((item) => item.strategy)).toEqual([
       "automated", "browser", "static", "manual",
