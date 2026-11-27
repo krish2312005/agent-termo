@@ -9,6 +9,7 @@ const run: OmniaRun = {
   status: "verifying",
   createdAt: "2026-01-01T00:00:00.000Z",
   updatedAt: "2026-01-01T00:00:00.000Z",
+  repairAttempts: 0,
   requirements: [{
     id: "req-01",
     description: "Create a responsive page.",
