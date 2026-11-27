@@ -11,11 +11,13 @@ import {
   formatOmniaReport,
   getActiveOmniaRun,
   getLatestOmniaRun,
+  incrementOmniaRepairAttempt,
   loadOmniaRun,
   recordOmniaEvidence,
   transitionOmniaRun,
 } from './runtime/omnia/index.js';
 import { parseOmniaVerification } from './runtime/omnia/verifier.js';
+import type { OmniaRun } from './runtime/omnia/types.js';
 export { getToolLoopStopReason } from './runtime/run-budget.js';
 import { activeManualCheckpointIds, createCheckpoint, findCheckpoint, latestRedoableCheckpoint, latestUndoableCheckpoint, listCheckpoints, recordCheckpointAfter, recordCheckpointBefore, redoCheckpoint, undoCheckpoint } from './runtime/checkpoints.js';
 import { TOOL_DEFINITIONS } from './llm/tools.js';
@@ -472,11 +474,13 @@ function printTaskPlan(plan: TaskPlan): void {
 	printAssistantMessage(formatTaskPlanMarkdown(plan));
 }
 
+const MAX_OMNIA_REPAIR_ATTEMPTS = 2;
+
 async function verifyOmniaOutcome(
   projectRoot: string,
   nimClient: NimClient,
   changedFiles: ReadonlyMap<string, string>,
-): Promise<void> {
+): Promise<OmniaRun | undefined> {
   const activeRun = getActiveOmniaRun(projectRoot);
   if (!activeRun) return;
 
@@ -515,13 +519,26 @@ async function verifyOmniaOutcome(
     const verifiedRun = applyOmniaVerification(projectRoot, run.id, parsed.decisions, parsed.summary);
     const allVerified = verifiedRun.requirements.length > 0 &&
       verifiedRun.requirements.every((requirement) => requirement.status === "verified");
-    transitionOmniaRun(projectRoot, run.id, allVerified ? "completed" : "completed_with_warnings", {
-      summary: parsed.summary,
-      blocker: allVerified ? "" : "One or more requirements lack direct, strategy-matched evidence or require human judgment.",
-    });
-    printInfo(allVerified
-      ? "OMNIA verification passed for every requirement."
-      : "OMNIA execution finished, but some requirements remain unverified. Review /omnia report.");
+    const repairable = verifiedRun.requirements.filter((requirement) =>
+      requirement.status !== "verified" && requirement.strategy !== "manual",
+    );
+    if (allVerified) {
+      transitionOmniaRun(projectRoot, run.id, "completed", { summary: parsed.summary });
+      printInfo("OMNIA verification passed for every requirement.");
+      return undefined;
+    }
+    if (repairable.length === 0 || verifiedRun.repairAttempts >= MAX_OMNIA_REPAIR_ATTEMPTS) {
+      transitionOmniaRun(projectRoot, run.id, "completed_with_warnings", {
+        summary: parsed.summary,
+        blocker: repairable.length === 0
+          ? "Remaining requirements need human judgment or manual verification."
+          : "The bounded repair budget was exhausted before every requirement could be verified.",
+      });
+      printInfo("OMNIA execution finished with unverified requirements. Review /omnia report.");
+      return undefined;
+    }
+    printInfo("OMNIA verifier found " + repairable.length + " requirement(s) needing repair.");
+    return verifiedRun;
   } catch (error) {
     try {
       const run = getLatestOmniaRun(projectRoot);
@@ -1462,6 +1479,7 @@ export async function runToolLoop(
 	onMessagesCompacted?: (messages: ConversationMessage[]) => void,
 	sessionId = '',
 	events: AgentEventHub = new AgentEventHub(),
+	omniaExecutionContext?: { changedFiles: Map<string, string>; ranChecks: RanCheck[] },
 ): Promise<string> {
 	const turnId = crypto.randomUUID();
 	observeAgentEvents(events);
@@ -1487,8 +1505,8 @@ export async function runToolLoop(
 	// Same evidence gate as delegated runs (runtime/verify.ts): track what this
 	// turn actually wrote and ran, independent of direct file:write/file:edit
 	// tool calls made without going through agent:delegate at all.
-	const changedFiles = new Map<string, string>();
-	const ranChecks: RanCheck[] = [];
+	const changedFiles = omniaExecutionContext?.changedFiles ?? new Map<string, string>();
+	const ranChecks = omniaExecutionContext?.ranChecks ?? [];
 	const availableToolDefinitions = [
 		...(agentToolDefinitions ?? [...TOOL_DEFINITIONS, ...getMcpToolDefinitions()]),
 		...(taskPlan?.status === 'in_progress' ? [PLAN_PROGRESS_TOOL] : []),
@@ -1842,7 +1860,86 @@ export async function runToolLoop(
 		void appendToTimeline(projectRoot, 'Agent-Termo', 'Completed tool-assisted request', ['Assistant summary: ' + finalText.replace(/\s+/g, ' ').slice(0, 700)], []);
 	}
 
-	await verifyOmniaOutcome(projectRoot, nimClient, changedFiles);
+	const verificationRun = await verifyOmniaOutcome(projectRoot, nimClient, changedFiles);
+	if (verificationRun) {
+		const repairable = verificationRun.requirements.filter((requirement) =>
+			requirement.status !== "verified" && requirement.strategy !== "manual",
+		);
+		if (repairable.length > 0 && verificationRun.repairAttempts < MAX_OMNIA_REPAIR_ATTEMPTS) {
+			try {
+				const attempt = incrementOmniaRepairAttempt(projectRoot, verificationRun.id);
+				printInfo("OMNIA repair attempt " + attempt.repairAttempts + "/" + MAX_OMNIA_REPAIR_ATTEMPTS + " — targeting " + repairable.length + " requirement(s).");
+				const repairPayload = {
+					goal: attempt.goal,
+					requirements: repairable.map(({ id, description, strategy, verificationPlan }) => ({
+						requirementId: id, description, strategy, verificationPlan,
+					})),
+					evidence: attempt.evidence.slice(-100).map(({ id, type, source, description, success, output }) => ({
+						id, type, source, description, success, output: output?.slice(0, 1_000),
+					})),
+					finalFiles: [...changedFiles.entries()].slice(-10).map(([path, content]) => ({
+						path, content: content.slice(0, 4_000),
+					})),
+				};
+				const repairResponse = await nimClient.complete([
+					{
+						id: crypto.randomUUID(),
+						role: "system",
+						content: "You are Agent-Termo's bounded OMNIA repair engineer. Make the smallest safe changes needed to satisfy only the listed unverified requirements. Inspect the current project before editing. Use the supplied evidence and verification plans; do not repeat successful work. Use the provided tools to implement fixes and run focused checks. Do not deploy, publish, push, change credentials, or perform unrelated destructive actions. Return tool calls for real work; do not claim completion without changes or checks.",
+						timestamp: new Date(),
+					},
+					{
+						id: crypto.randomUUID(),
+						role: "user",
+						content: JSON.stringify(repairPayload),
+						timestamp: new Date(),
+					},
+				], nimClient.buildToolDefs(availableToolDefinitions));
+				if (repairResponse.toolCalls.length > 0) {
+					conversation.push({
+						id: crypto.randomUUID(),
+						role: "user",
+						content: "OMNIA repair pass " + attempt.repairAttempts + ": address only the requirements still marked unverified in the preceding repair brief. Preserve all existing project conventions.",
+						timestamp: new Date(),
+					});
+					conversation.push({
+						id: crypto.randomUUID(),
+						role: "assistant",
+						content: repairResponse.content,
+						toolCalls: repairResponse.toolCalls,
+						timestamp: new Date(),
+					});
+					onConversationChanged();
+					await runToolLoop(
+						conversation, projectRoot, repairResponse.toolCalls, input, nimClient,
+						permissionMode, allowedCommands, taskState, getCheckpointId, onConversationChanged,
+						taskPlan, agentToolDefinitions, onMessagesCompacted, sessionId, events,
+						{ changedFiles, ranChecks },
+					);
+				} else {
+					transitionOmniaRun(projectRoot, verificationRun.id, "completed_with_warnings", {
+						summary: "The independent verifier identified gaps, but the repair planner returned no executable changes.",
+						blocker: repairResponse.content || "No repair tool calls were returned.",
+					});
+					printInfo("OMNIA could not produce an executable repair. Review /omnia report.");
+				}
+			} catch (error) {
+				const latest = getLatestOmniaRun(projectRoot);
+				if (latest?.status === "verifying") {
+					transitionOmniaRun(projectRoot, latest.id, "completed_with_warnings", {
+						summary: "The bounded repair attempt could not complete.",
+						blocker: error instanceof Error ? error.message : String(error),
+					});
+				}
+				printError("OMNIA repair attempt failed: " + (error instanceof Error ? error.message : String(error)));
+			}
+		} else {
+			transitionOmniaRun(projectRoot, verificationRun.id, "completed_with_warnings", {
+				summary: "No additional automatic repair is available for the remaining requirements.",
+				blocker: "Remaining requirements require manual verification or the repair budget is exhausted.",
+			});
+		}
+	}
 	finishTurn('completed');
 	return finalText;
 }
