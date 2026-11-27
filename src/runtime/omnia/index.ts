@@ -1,6 +1,7 @@
 export {
   createOmniaRun,
   deriveOmniaRequirements,
+  deriveOmniaVerificationStrategy,
   formatOmniaReport,
   getActiveOmniaRun,
   getLatestOmniaRun,

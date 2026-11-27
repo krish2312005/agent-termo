@@ -2179,7 +2179,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 			prompt += '\n\n## TERMO OMNIA — Outcome Contract\n' +
 				'Active run: ' + omniaRun.id + '\n' +
 				'Goal: ' + omniaRun.goal + '\n' +
-				'Requirements:\n' + omniaRun.requirements.map((item) => '- [' + item.id + '] ' + item.description).join('\n') + '\n\n' +
+				'Requirements:\n' + omniaRun.requirements.map((item) => '- [' + item.id + '] ' + item.description + '\n  Verification strategy: ' + item.strategy + '\n  Verification plan: ' + item.verificationPlan).join('\n') + '\n\n' +
 				'Treat this as an engineering outcome, not an advice request. Inspect the project and its instructions before editing. Use the existing plan, tools, permissions, checkpoints, and specialist agents where appropriate. Implement the requested behavior, run the project checks that actually exist, and use browser verification when an appropriate browser tool is available. Do not deploy, publish, push, or perform unrelated destructive actions. In your final response, map each requirement to concrete commands, tests, browser observations, or other evidence. Never claim a check ran unless it actually ran, and disclose requirements that remain unverified.';
 		}
 		if (activePlan?.status === 'in_progress') prompt += '\n\n' + buildPlanContext(activePlan).slice(0, 4_000);

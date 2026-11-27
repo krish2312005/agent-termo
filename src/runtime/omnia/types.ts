@@ -3,11 +3,14 @@ export type OmniaStatus =
   | "completed_with_warnings" | "blocked" | "failed" | "cancelled";
 
 export type OmniaRequirementStatus = "pending" | "verified" | "unverified" | "blocked";
+export type OmniaVerificationStrategy = "browser" | "automated" | "static" | "manual";
 
 export interface OmniaRequirement {
   id: string;
   description: string;
   status: OmniaRequirementStatus;
+  strategy: OmniaVerificationStrategy;
+  verificationPlan: string;
   evidenceIds: string[];
 }
 

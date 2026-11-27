@@ -33,6 +33,42 @@ function requireGoal(goal: string): string {
   return goal.trim().slice(0, MAX_GOAL_LENGTH);
 }
 
+export function deriveOmniaVerificationStrategy(description: string): {
+  strategy: OmniaRequirement["strategy"];
+  verificationPlan: string;
+} {
+  const text = description.toLowerCase();
+  if (/\b(ui|user interface|frontend|front-end|visual|responsive|layout|page|screen|form|navigation|button|interaction|workflow)\b/.test(text) ||
+      /\busers?\s+(can|should|must)\b/.test(text)) {
+    return {
+      strategy: "browser",
+      verificationPlan: "Run the application and exercise the relevant user flow in a real browser. Assert visible outcomes, navigation, and interaction states at the relevant viewport sizes.",
+    };
+  }
+  if (/\b(api|endpoint|backend|database|query|auth|authentication|authorization|security|integration|performance|algorithm|service)\b/.test(text)) {
+    return {
+      strategy: "automated",
+      verificationPlan: "Run the narrowest relevant automated test or integration check, then run the project's applicable test, typecheck, lint, and build scripts.",
+    };
+  }
+  if (/\b(documentation|readme|guide|docs|configuration|config|schema|migration)\b/.test(text)) {
+    return {
+      strategy: "static",
+      verificationPlan: "Inspect the final changed files for completeness, consistency, valid syntax, and accurate references; run a parser or project check when available.",
+    };
+  }
+  if (/\b(accessible|usability|intuitive|polished|beautiful|professional|easy to use|feel)\b/.test(text)) {
+    return {
+      strategy: "manual",
+      verificationPlan: "Collect concrete implementation evidence and identify the remaining subjective judgment. Do not mark this requirement verified from build or test results alone.",
+    };
+  }
+  return {
+    strategy: "automated",
+    verificationPlan: "Identify the most direct test for the requested behavior, run it, and record the exact command and observed result. If no direct test exists, leave the requirement unverified.",
+  };
+}
+
 export function deriveOmniaRequirements(goal: string): OmniaRequirement[] {
   const lines = goal.split(/\r?\n/);
   const heading = lines.findIndex((line) =>
@@ -57,6 +93,7 @@ export function deriveOmniaRequirements(goal: string): OmniaRequirement[] {
     id: `req-${String(index + 1).padStart(2, "0")}`,
     description,
     status: "pending",
+    ...deriveOmniaVerificationStrategy(description),
     evidenceIds: [],
   }));
 }
@@ -89,6 +126,8 @@ function normalizeRun(value: unknown): OmniaRun | undefined {
     typeof item.id === "string" &&
     typeof item.description === "string" &&
     ["pending", "verified", "unverified", "blocked"].includes(item.status) &&
+    ["browser", "automated", "static", "manual"].includes(item.strategy) &&
+    typeof item.verificationPlan === "string" &&
     Array.isArray(item.evidenceIds) &&
     item.evidenceIds.every((id) => typeof id === "string"),
   );
@@ -251,7 +290,7 @@ export function formatOmniaReport(run: OmniaRun): string {
     `Verified: ${verified}/${run.requirements.length}`,
     "",
     ...run.requirements.map((item) =>
-      `- [${item.status === "verified" ? "x" : " "}] **${item.id}** — ${item.description} (${item.status})`,
+      `- [${item.status === "verified" ? "x" : " "}] **${item.id}** — ${item.description} (${item.status}; strategy: ${item.strategy})\\n  - Verification: ${item.verificationPlan}`,
     ),
     "",
     "## Execution evidence",

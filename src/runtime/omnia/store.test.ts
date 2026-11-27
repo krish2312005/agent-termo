@@ -34,6 +34,18 @@ describe("OMNIA run store", () => {
       "Users can add tasks.",
       "Users can delete tasks.",
     ]);
+    expect(requirements.every((item) => item.strategy === "browser")).toBe(true);
+    expect(requirements.every((item) => item.verificationPlan.includes("real browser"))).toBe(true);
+  });
+
+  it("selects distinct verification strategies from requirement intent", () => {
+    const requirements = deriveOmniaRequirements(
+      "Project requirements:\\n- Build a REST API endpoint.\\n- Create a responsive dashboard UI.\\n- Write setup documentation.\\n- Make the experience intuitive.",
+    );
+    expect(requirements.map((item) => item.strategy)).toEqual([
+      "automated", "browser", "static", "manual",
+    ]);
+    expect(requirements.every((item) => item.verificationPlan.length > 20)).toBe(true);
   });
 
   it("creates and reloads a persisted run", () => {
