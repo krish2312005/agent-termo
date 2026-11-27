@@ -1,5 +1,5 @@
 import { For, Show } from "solid-js";
-import type { GitBranchInfo, GitDashboardData, GitGraphRow, GitHubSummary } from "../runtime/git-graph.js";
+import type { GitDashboardData, GitGraphRow, GitHubSummary } from "../runtime/git-graph.js";
 import { GIT_GRAPH_COLORS, ROLES } from "./theme.js";
 
 const clipText = (value: string, max: number): string => [...value].length <= max ? value : [...value].slice(0, Math.max(0, max - 1)).join("") + "…";
