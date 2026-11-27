@@ -88,6 +88,30 @@ export function getGitDashboardItemCount(data: GitDashboardData, github: GitHubS
   }
 }
 
+export function getGitDashboardScrollOffset(data: GitDashboardData, tab: GitDashboardTab, selected: number): number {
+  if (tab === "branches") return selected + 2;
+  if (tab === "graph") return selected * 2 + 1;
+  if (tab !== "status") return selected + 1;
+
+  let offset = 1;
+  let index = selected;
+  if (data.conflicts.length > 0) {
+    offset += 1;
+    if (index < data.conflicts.length) return offset + index;
+    offset += data.conflicts.length;
+    index -= data.conflicts.length;
+  }
+  offset += 1;
+  if (index < data.staged.length) return offset + index;
+  offset += data.staged.length;
+  index -= data.staged.length;
+  offset += 1;
+  if (index < data.unstaged.length) return offset + index;
+  offset += data.unstaged.length;
+  index -= data.unstaged.length;
+  return offset + 1 + index;
+}
+
 function Stat(props: { label: string; value: string; color?: string; width: number }) {
   return (
     <box flexDirection="row" alignItems="center" width={props.width} minWidth={0} flexShrink={0} paddingX={1} gap={1}>
@@ -151,14 +175,7 @@ export function GitDashboardView(props: GitDashboardViewProps) {
     const tab = props.tab;
     const selected = props.selected;
     if (!listScrollbox) return;
-    const offset = tab === "branches"
-      ? selected + 2
-      : tab === "graph"
-        ? selected * 2 + 1
-        : tab === "status"
-          ? selected + 2
-          : selected + 1;
-    listScrollbox.scrollTo(offset);
+    listScrollbox.scrollTo(getGitDashboardScrollOffset(props.data, tab, selected));
   });
   const branchLayout = () => getGitBranchRowLayout(props.width);
   return (
