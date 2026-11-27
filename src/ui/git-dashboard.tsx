@@ -73,6 +73,10 @@ export function GitDashboardView(props: GitDashboardViewProps) {
   const snapshot = () => props.data.snapshot;
   const changeFiles = () => [...props.data.conflicts, ...props.data.staged, ...props.data.unstaged, ...props.data.untracked];
   const githubReady = () => Boolean(props.github?.connected && props.github.repository);
+  const latestCommitLabel = () => {
+    const commit = snapshot().commits[0];
+    return commit ? commit.shortHash + "  " + commit.subject : "No commits yet";
+  };
   const selectedRow = (index: number) => props.selected === index;
   return (
     <box flexDirection="column" flexGrow={1} minHeight={0} gap={1} paddingX={1} backgroundColor={CARBON.background}>
@@ -103,7 +107,7 @@ export function GitDashboardView(props: GitDashboardViewProps) {
         <text fg={ROLES.text}>Repository overview</text>
         <text fg={ROLES.mutedText}>HEAD: {snapshot().branch}  ·  Origin: {snapshot().origin}</text>
         <text fg={ROLES.mutedText}>Branches: {snapshot().localBranchCount} local / {snapshot().remoteBranchCount} remote  ·  Tags: {props.data.tags.length}  ·  Stashes: {props.data.stashes.length}</text>
-        <text fg={ROLES.mutedText}>Latest commit: {snapshot().commits[0] ? snapshot().commits[0].shortHash + "  " + snapshot().commits[0].subject : "No commits yet"}</text>
+        <text fg={ROLES.mutedText}>Latest commit: {latestCommitLabel()}</text>
         <text fg={ROLES.mutedText}>GitHub: {githubReady() ? "connected as @" + (props.github?.login ?? "unknown") : props.github?.message ?? "Not loaded"}</text>
         <text fg={ROLES.dimText}>Use ← / → or number keys to switch sections. Esc returns to the composer.</text>
       </Show>
