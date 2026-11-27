@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -62,6 +62,22 @@ describe("OMNIA run store", () => {
       "utf8",
     )) as { version: number };
     expect(saved.version).toBe(1);
+  });
+
+  it("loads version-one runs created before verification strategies were added", () => {
+    const root = projectRoot();
+    const run = createOmniaRun(root, "Build a responsive dashboard.");
+    const path = resolve(root, ".agent-termo", "omnia", "runs", run.id + ".json");
+    const legacy = JSON.parse(readFileSync(path, "utf8")) as {
+      requirements: Array<Record<string, unknown>>;
+    };
+    delete legacy.requirements[0]!.strategy;
+    delete legacy.requirements[0]!.verificationPlan;
+    writeFileSync(path, JSON.stringify(legacy), "utf8");
+
+    const loaded = loadOmniaRun(root, run.id);
+    expect(loaded?.requirements[0]?.strategy).toBe("browser");
+    expect(loaded?.requirements[0]?.verificationPlan).toContain("real browser");
   });
 
   it("records evidence but does not pretend generic checks verify the user goal", () => {

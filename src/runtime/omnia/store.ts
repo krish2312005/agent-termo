@@ -121,16 +121,30 @@ function normalizeRun(value: unknown): OmniaRun | undefined {
     !Array.isArray(run.evidence)
   ) return undefined;
 
-  const requirements = run.requirements.filter((item): item is OmniaRequirement =>
-    Boolean(item) &&
-    typeof item.id === "string" &&
-    typeof item.description === "string" &&
-    ["pending", "verified", "unverified", "blocked"].includes(item.status) &&
-    ["browser", "automated", "static", "manual"].includes(item.strategy) &&
-    typeof item.verificationPlan === "string" &&
-    Array.isArray(item.evidenceIds) &&
-    item.evidenceIds.every((id) => typeof id === "string"),
-  );
+  const requirements = run.requirements.flatMap((value): OmniaRequirement[] => {
+    if (!value || typeof value !== "object") return [];
+    const item = value as Partial<OmniaRequirement>;
+    if (
+      typeof item.id !== "string" ||
+      typeof item.description !== "string" ||
+      !["pending", "verified", "unverified", "blocked"].includes(item.status ?? "") ||
+      !Array.isArray(item.evidenceIds) ||
+      !item.evidenceIds.every((id) => typeof id === "string")
+    ) return [];
+
+    const derived = deriveOmniaVerificationStrategy(item.description);
+    const strategy = ["browser", "automated", "static", "manual"].includes(item.strategy ?? "")
+      ? item.strategy!
+      : derived.strategy;
+    return [{
+      id: item.id,
+      description: item.description,
+      status: item.status!,
+      strategy,
+      verificationPlan: typeof item.verificationPlan === "string" ? item.verificationPlan : derived.verificationPlan,
+      evidenceIds: item.evidenceIds,
+    }];
+  });
   const evidence = run.evidence.filter((item): item is OmniaEvidence =>
     Boolean(item) &&
     typeof item.id === "string" &&
