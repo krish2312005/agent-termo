@@ -127,7 +127,7 @@ describe("OMNIA run store", () => {
     expect(verified.requirements.map((item) => item.status)).toEqual([
       "verified", "verified", "unverified", "verified", "unverified",
     ]);
-    expect(verified.evidence.filter((item) => item.type === "review")).toHaveLength(4);
+    expect(verified.evidence.filter((item) => item.type === "review")).toHaveLength(5);
   });
 
   it("rejects verification updates outside the verifying lifecycle state", () => {
