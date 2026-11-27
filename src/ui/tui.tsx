@@ -975,7 +975,7 @@ function App() {
 
     const dashboard = gitDashboardState();
     if (dashboard) {
-      const tabs: GitDashboardTab[] = ["overview", "graph", "status", "branches", "diff", "stash", "remotes", "tags", "prs", "issues", "actions", "releases"];
+      const tabs: GitDashboardTab[] = ["overview", "graph", "status", "branches", "diff", "stash", "remotes", "tags", "github", "prs", "issues", "actions", "releases"];
       const currentIndex = tabs.indexOf(dashboard.tab);
       if (name === "escape" || name === "ctrl+c") closeGitDashboard();
       else if (name === "left" || name === "right") {
