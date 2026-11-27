@@ -553,6 +553,7 @@ async function verifyOmniaOutcome(
       printError("Could not settle OMNIA verification: " + (settlementError instanceof Error ? settlementError.message : String(settlementError)));
     }
     printError("OMNIA independent verification failed: " + (error instanceof Error ? error.message : String(error)));
+    return undefined;
   }
 }
 
