@@ -1416,7 +1416,9 @@ export async function initScreen(info: { model: string; project: string; thinkin
     exitOnCtrlC: false,
     // Agent-Termo owns SIGINT cleanup; do not install a second renderer handler.
     exitSignals: [],
-    useKittyKeyboard: legacyAppleTerminal ? null : {},
+    // Windows Terminal/ConPTY can mishandle OpenTUI's Kitty CSI-u input mode.
+    // Keep the standard key protocol there so the composer and global shortcuts receive input.
+    useKittyKeyboard: legacyAppleTerminal || process.platform === 'win32' ? null : {},
     autoFocus: false,
     openConsoleOnError: false,
   });
