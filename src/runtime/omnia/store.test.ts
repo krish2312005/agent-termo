@@ -9,6 +9,7 @@ import {
   formatOmniaReport,
   getActiveOmniaRun,
   getLatestOmniaRun,
+  incrementOmniaRepairAttempt,
   loadOmniaRun,
   recordOmniaEvidence,
   transitionOmniaRun,
@@ -79,6 +80,19 @@ describe("OMNIA run store", () => {
     const loaded = loadOmniaRun(root, run.id);
     expect(loaded?.requirements[0]?.strategy).toBe("browser");
     expect(loaded?.requirements[0]?.verificationPlan).toContain("real browser");
+    expect(loaded?.repairAttempts).toBe(0);
+  });
+
+  it("increments repair attempts only during verification and persists the count", () => {
+    const root = projectRoot();
+    const run = createOmniaRun(root, "Implement a feature.");
+    expect(run.repairAttempts).toBe(0);
+    expect(() => incrementOmniaRepairAttempt(root, run.id)).toThrow("only be incremented while a run is verifying");
+    transitionOmniaRun(root, run.id, "executing");
+    transitionOmniaRun(root, run.id, "verifying");
+    const updated = incrementOmniaRepairAttempt(root, run.id);
+    expect(updated.repairAttempts).toBe(1);
+    expect(loadOmniaRun(root, run.id)?.repairAttempts).toBe(1);
   });
 
   it("records evidence but does not pretend generic checks verify the user goal", () => {

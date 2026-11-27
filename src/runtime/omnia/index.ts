@@ -4,6 +4,7 @@ export {
   deriveOmniaRequirements,
   deriveOmniaVerificationStrategy,
   formatOmniaReport,
+  incrementOmniaRepairAttempt,
   getActiveOmniaRun,
   getLatestOmniaRun,
   loadOmniaRun,

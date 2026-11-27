@@ -162,6 +162,7 @@ function normalizeRun(value: unknown): OmniaRun | undefined {
     status: run.status as OmniaStatus,
     createdAt: run.createdAt,
     updatedAt: run.updatedAt,
+    repairAttempts: Number.isInteger(run.repairAttempts) && (run.repairAttempts ?? 0) >= 0 ? run.repairAttempts! : 0,
     requirements,
     evidence,
     summary: typeof run.summary === "string" ? run.summary.slice(0, MAX_EVIDENCE_TEXT) : undefined,
@@ -190,6 +191,7 @@ export function createOmniaRun(projectRoot: string, goalInput: string): OmniaRun
     status: "queued",
     createdAt: now,
     updatedAt: now,
+    repairAttempts: 0,
     requirements: deriveOmniaRequirements(goal),
     evidence: [],
   };
@@ -286,6 +288,16 @@ export function recordOmniaEvidence(
   return evidence;
 }
 
+export function incrementOmniaRepairAttempt(projectRoot: string, id: string): OmniaRun {
+  const run = loadOmniaRun(projectRoot, id);
+  if (!run) throw new Error("OMNIA run not found.");
+  if (run.status !== "verifying") throw new Error("OMNIA repair attempts can only be incremented while a run is verifying.");
+  run.repairAttempts++;
+  run.updatedAt = new Date().toISOString();
+  persistRun(projectRoot, run);
+  return run;
+}
+
 export function applyOmniaVerification(
   projectRoot: string,
   id: string,
@@ -302,6 +314,7 @@ export function applyOmniaVerification(
 
   run.requirements = run.requirements.map((requirement) => {
     const decision = decisionById.get(requirement.id);
+    if (!decision && requirement.status === "verified") return requirement;
     const citedIds = [...new Set(decision?.evidenceIds ?? [])];
     const citedEvidence = citedIds.map((evidenceId) => evidenceById.get(evidenceId));
     const expectedType = requirement.strategy === "browser"
@@ -352,6 +365,7 @@ export function formatOmniaReport(run: OmniaRun): string {
     `**Status:** ${run.status.replace(/_/g, " ")}`,
     `**Started:** ${run.createdAt}`,
     `**Updated:** ${run.updatedAt}`,
+    `**Repair attempts:** ${run.repairAttempts}`,
     "",
     "## Goal",
     "",

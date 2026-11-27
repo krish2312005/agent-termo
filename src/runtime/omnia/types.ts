@@ -41,6 +41,7 @@ export interface OmniaRun {
   status: OmniaStatus;
   createdAt: string;
   updatedAt: string;
+  repairAttempts: number;
   requirements: OmniaRequirement[];
   evidence: OmniaEvidence[];
   summary?: string;
