@@ -1259,7 +1259,7 @@ function App() {
                         <For each={entry().gitGraph!.refs.slice(0, 2)}>
                           {(ref) => (
                             <text
-                              fg={ref.kind === "tag" ? ROLES.running : ref.kind === "remote" ? ROLES.info : GIT_GRAPH_COLORS[ref.colorIndex % GIT_GRAPH_COLORS.length]}
+                              fg={ref.kind === "tag" ? ROLES.statusRunning : ref.kind === "remote" ? ROLES.info : GIT_GRAPH_COLORS[ref.colorIndex % GIT_GRAPH_COLORS.length]}
                               attributes={TextAttributes.BOLD}
                               wrapMode="none"
                             >{" " + clipText(ref.label, 18) + " "}</text>
