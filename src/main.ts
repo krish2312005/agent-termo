@@ -2667,7 +2667,10 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						if (!run) printInfo('There is no active OMNIA run to stop.');
 						else {
 							mainStopRequested = true;
-							killRunningTerminal();
+							const terminalStop = await killRunningTerminal();
+							if (terminalStop.failed.length > 0) {
+								printError('Some terminal processes could not be stopped: ' + terminalStop.failed.join(', '));
+							}
 							agentWorkspace.stopAll();
 							settleOmniaRun(projectRoot, 'cancelled', 'Stopped by the user.');
 						}
