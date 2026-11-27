@@ -17,5 +17,10 @@ describe("transcript empty state", () => {
     expect(fallback).toContain('<Show when={selectedAgentIdSignal() !== MAIN_AGENT_ID} fallback={<box height={0} />}>');
     expect(fallback).toContain('<text fg={ROLES.dimText} wrapMode="none">No activity yet for @{selectedName()}.</text>');
     expect(fallback).not.toContain('? "" :');
+    expect(tuiSource).not.toContain('<Show when={entry().kind === "user" || entry().kind === "markdown"}>');
+    expect(tuiSource).not.toContain('<Show when={entry().agentLabel}>');
+    expect(tuiSource).not.toContain('<Show when={navigatorView().hiddenAbove > 0 && !compactApprovalChrome()}>');
+    expect(tuiSource).not.toContain('<Show when={navigatorView().hiddenBelow > 0 && !compactApprovalChrome()}>');
+    expect(tuiSource).not.toContain('<Show when={index > 0}>');
   });
 });
