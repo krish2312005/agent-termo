@@ -1421,7 +1421,13 @@ function App() {
         </scrollbox>
 
         }>
-          <Show when={omniaDashboardState()} fallback={
+          <Show when={gitDashboardState()} fallback={
+            <OmniaDashboardView
+              run={omniaDashboardState()!.run}
+              width={terminalColumns()}
+              selected={omniaDashboardState()!.selected}
+            />
+          }>
             <GitDashboardView
               data={gitDashboardState()!.data}
               github={gitDashboardState()!.github}
@@ -1429,12 +1435,6 @@ function App() {
               selected={gitDashboardState()!.selected}
               width={terminalColumns()}
               feedback={gitDashboardState()!.feedback}
-            />
-          }>
-            <OmniaDashboardView
-              run={omniaDashboardState()!.run}
-              width={terminalColumns()}
-              selected={omniaDashboardState()!.selected}
             />
           </Show>
         </Show>
