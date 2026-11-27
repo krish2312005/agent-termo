@@ -180,7 +180,7 @@ describe("Warm Terminal palette", () => {
     expect(dashboard).toContain('from "./theme.js"');
     expect(dashboard).toContain("GIT_GRAPH_COLORS");
     expect(dashboard).toContain("ROLES.pageBackground");
-    expect(dashboard).not.toMatch(/#[0-9A-Fa-f]{3,8}\\b/);
+    expect(dashboard).not.toMatch(/#[0-9A-Fa-f]{3,8}\b/);
     for (const file of sourceFiles) {
       const content = readLower(file);
       for (const hex of CARBON_FORGE_HEXES) {
