@@ -1,6 +1,18 @@
 import { For, Show } from "solid-js";
 import type { GitDashboardData, GitGraphRow, GitHubSummary } from "../runtime/git-graph.js";
-import { GIT_GRAPH_COLORS, ROLES } from "./theme.js";
+import { ROLES } from "./theme.js";
+
+const CARBON = {
+  background: "#101512",
+  surface: "#19211D",
+  primary: "#B5D98A",
+  teal: "#83B9A2",
+  copper: "#D69B69",
+  text: "#DCE5DD",
+  muted: "#91A096",
+  border: "#34443A",
+  lanes: ["#B5D98A", "#83B9A2", "#D69B69", "#A7C78D", "#7FAF9C", "#D9A77C", "#9DBBBA"],
+} as const;
 const clipText = (value: string, max: number): string => [...value].length <= max ? value : [...value].slice(0, Math.max(0, max - 1)).join("") + "…";
 
 export type GitDashboardTab =
@@ -28,18 +40,18 @@ function Stat(props: { label: string; value: string; color?: string }) {
   return (
     <box flexDirection="column" flexGrow={1} minWidth={10} paddingX={1}>
       <text fg={ROLES.mutedText} wrapMode="none">{props.label.toUpperCase()}</text>
-      <text fg={props.color ?? ROLES.text} attributes={1} wrapMode="none">{props.value}</text>
+      <text fg={props.color ?? CARBON.text} attributes={1} wrapMode="none">{props.value}</text>
     </box>
   );
 }
 
 function GraphRow(props: { row: GitGraphRow; selected: boolean; width: number }) {
   return (
-    <box flexDirection="column" paddingX={1} backgroundColor={props.selected ? "#202B24" : undefined}>
+    <box flexDirection="column" paddingX={1} backgroundColor={props.selected ? CARBON.surface : undefined}>
       <box flexDirection="row" alignItems="center" gap={1}>
         <box flexDirection="row" minWidth={2}>
           <For each={props.row.lanes}>
-            {(lane) => <text fg={GIT_GRAPH_COLORS[lane.colorIndex % GIT_GRAPH_COLORS.length]} attributes={lane.isCommit ? 1 : 0} wrapMode="none">{lane.glyph + " "}</text>}
+            {(lane) => <text fg={CARBON.lanes[lane.colorIndex % CARBON.lanes.length]} attributes={lane.isCommit ? 1 : 0} wrapMode="none">{lane.glyph + " "}</text>}
           </For>
         </box>
         <text fg={ROLES.mutedCompletion} wrapMode="none">{props.row.shortHash}</text>
@@ -65,11 +77,11 @@ export function GitDashboardView(props: GitDashboardViewProps) {
     <box flexDirection="column" flexGrow={1} minHeight={0} gap={1} paddingX={1}>
       <box flexDirection="row" justifyContent="space-between" alignItems="center">
         <box flexDirection="column">
-          <text fg={ROLES.brand} attributes={1}>GIT COMMAND CENTER</text>
-          <text fg={ROLES.text}>{snapshot().name}  ·  {snapshot().branch}</text>
-          <text fg={ROLES.dimText}>{snapshot().origin}  ·  {snapshot().root}</text>
+          <text fg={CARBON.primary} attributes={1}>GIT COMMAND CENTER</text>
+          <text fg={CARBON.text}>{snapshot().name}  ·  {snapshot().branch}</text>
+          <text fg={CARBON.muted}>{snapshot().origin}  ·  {snapshot().root}</text>
         </box>
-        <text fg={snapshot().workingTreeClean ? ROLES.success : ROLES.running}>{snapshot().workingTreeClean ? "● CLEAN" : "● DIRTY · " + snapshot().changedPaths + " FILES"}</text>
+        <text fg={snapshot().workingTreeClean ? CARBON.teal : CARBON.copper}>{snapshot().workingTreeClean ? "● CLEAN" : "● DIRTY · " + snapshot().changedPaths + " FILES"}</text>
       </box>
       <box flexDirection="row" flexWrap="wrap" gap={1}>
         <Stat label="Commits" value={String(snapshot().totalCommits)} />
@@ -81,10 +93,10 @@ export function GitDashboardView(props: GitDashboardViewProps) {
       </box>
       <box flexDirection="row" flexWrap="wrap" gap={1}>
         <For each={TABS}>
-          {(item, index) => <text fg={props.tab === item.id ? ROLES.brand : ROLES.mutedText} attributes={props.tab === item.id ? 1 : 0} wrapMode="none">{(props.tab === item.id ? "▰ " : "  ") + item.label + "  "}</text>}
+          {(item, index) => <text fg={props.tab === item.id ? CARBON.primary : CARBON.muted} attributes={props.tab === item.id ? 1 : 0} wrapMode="none">{(props.tab === item.id ? "▰ " : "  ") + item.label + "  "}</text>}
         </For>
       </box>
-      <text fg={ROLES.border} wrapMode="none">{"─".repeat(Math.max(1, props.width - 4))}</text>
+      <text fg={CARBON.border} wrapMode="none">{"─".repeat(Math.max(1, props.width - 4))}</text>
       <scrollbox flexGrow={1} minHeight={0} viewportCulling>
       <Show when={props.tab === "overview"}>
         <text fg={ROLES.text}>Repository overview</text>
