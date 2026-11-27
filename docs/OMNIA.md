@@ -39,9 +39,18 @@ OMNIA records tool outcomes, command outcomes, browser verification calls, and a
 
 ## Verification policy
 
-The current incremental implementation deliberately does **not** infer that a user requirement is satisfied merely because a build, lint, or test command passes. Those checks are recorded as evidence, but product requirements stay unverified until observed evidence is explicitly mapped to them.
+After the main execution loop, OMNIA makes a separate verifier request with the goal, requirement strategies, recorded tool/check/browser evidence, and bounded excerpts of final changed files. The verifier returns one structured decision per requirement.
 
-This avoids false completion claims. Independent requirement-by-requirement review, browser artifact capture, and richer repair orchestration are subsequent milestones.
+The runtime independently validates each decision before accepting it:
+
+- Browser requirements need successful `browser:verify` evidence.
+- Automated requirements need a successful check command.
+- Static requirements need an applied file-change record.
+- Manual requirements cannot be automatically marked verified.
+- Evidence IDs must exist in the run and every cited item must have succeeded.
+- Missing, malformed, unsupported, or contradictory evidence leaves the requirement unverified.
+
+A passing generic build or test does not prove unrelated behavior. This is a separate model review constrained by runtime evidence checks, not a formal proof or a guarantee that the application is defect-free. The current implementation does not yet automatically repair failed requirements; bounded repair is the next milestone.
 
 ## Storage and privacy
 

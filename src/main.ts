@@ -1813,7 +1813,19 @@ export async function runToolLoop(
 	// A failed gate keeps the task resumable and prevents it from being settled
 	// as complete, even if the model has already streamed a completion claim.
 	if (changedFiles.size > 0) {
-		const verification = await verifyCompletionWithChecks(taskState.goal || finalText, changedFiles, ranChecks, () => runProjectChecks(projectRoot));
+		const verification = await verifyCompletionWithChecks(taskState.goal || finalText, changedFiles, ranChecks, async () => {
+			const checks = await runProjectChecks(projectRoot);
+			for (const check of checks) {
+				recordOmniaEvidence(projectRoot, {
+					type: 'check',
+					source: check.command,
+					description: check.kind + ' check ' + (check.success ? 'passed.' : 'failed.'),
+					success: check.success,
+					output: check.output,
+				});
+			}
+			return checks;
+		});
 		if (!verification.ok) {
 			const details = formatIssues(verification.issues);
 			taskState.status = 'interrupted';

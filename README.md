@@ -224,7 +224,7 @@ TERMO OMNIA is an incremental outcome-driven workflow built on Agent-Termo's exi
 
 Run records are stored under `.agent-termo/omnia/runs/`. OMNIA records the actual tool, command, and applied-file outcomes observed by the main execution loop.
 
-**Verification integrity:** the current incremental release does not automatically mark product requirements as verified. Passing a build, lint, or test command proves only that the corresponding check passed; it does not establish that every requested behavior works. Requirements remain unverified until requirement-specific evidence is explicitly reviewed. Browser and independent semantic verification are planned follow-up capabilities.
+**Verification integrity:** after execution, a separate verifier request reviews each requirement against the recorded evidence and final file excerpts. The runtime accepts a verified result only when the cited evidence exists, succeeded, and matches that requirement's verification strategy. A generic passing build or test cannot prove unrelated behavior. Subjective requirements remain unverified for human review. The verifier is an evidence-based model review, not a formal proof or a guarantee that the application is defect-free.
 
 Use `/omnia resume` for a blocked run. Use `/omnia report [run-id]` to inspect its recorded evidence.
 
