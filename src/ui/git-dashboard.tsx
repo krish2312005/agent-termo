@@ -304,9 +304,9 @@ export function GitDashboardView(props: GitDashboardViewProps) {
       <Show when={props.tab === "releases"} fallback={<box height={0} />}><text fg={ROLES.text}>Releases</text><Show when={githubReady()} fallback={<text fg={ROLES.dimText}>{props.github?.message ?? "GitHub data unavailable."}</text>}><For each={props.github!.releases}>{(item, index) => <DashboardRow value={(item.tagName ?? item.name ?? "Untitled release") + " · " + (item.publishedAt ?? (item.isDraft ? "Draft" : "date unavailable"))} width={props.width} selected={selectedRow(index())} />}</For><Show when={!props.github!.releases.length} fallback={<box height={0} />}><text fg={ROLES.dimText}>No releases found or release access unavailable.</text></Show></Show></Show>
       </scrollbox>
       <Show when={props.feedback} fallback={<box height={0} />}>
-        <text fg={props.feedback?.tone === "error" ? ROLES.error : props.feedback?.tone === "success" ? ROLES.success : ROLES.info} wrapMode="none">{props.feedback?.message ?? ""}</text>
+        <text fg={props.feedback?.tone === "error" ? ROLES.error : props.feedback?.tone === "success" ? ROLES.success : ROLES.info} flexShrink={0} wrapMode="none">{props.feedback?.message ?? ""}</text>
       </Show>
-      <text fg={ROLES.dimText} wrapMode="none">{props.tab === "branches" ? "↑ ↓ select · Enter switch · ← → sections · Esc close" : "↑ ↓ select · ← → / 1–9 sections · Esc close"}</text>
+      <text fg={ROLES.dimText} flexShrink={0} wrapMode="none">{props.tab === "branches" ? "↑ ↓ select · PgUp/PgDn jump · Enter switch · ← → sections · Esc close" : "↑ ↓ select · PgUp/PgDn jump · ← → / 1–9 sections · Esc close"}</text>
     </box>
   );
 }
