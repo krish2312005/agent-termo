@@ -19,7 +19,8 @@ import packageJson from "../../package.json" with { type: "json" };
 import { copySelectedText } from "./selection-copy.js";
 import { sanitizeDisplayLine, sanitizeDisplayText } from "./display-text.js";
 import { GIT_GRAPH_COLORS, ROLES } from "./theme.js";
-import type { GitGraphRow } from "../runtime/git-graph.js";
+import type { GitDashboardData, GitGraphRow, GitHubSummary } from "../runtime/git-graph.js";
+import { GitDashboardView, type GitDashboardTab } from "./git-dashboard.js";
 import type { PermissionMode } from "../types/index.js";
 import { MAIN_AGENT_ID, listSubAgents } from "../runtime/subagents.js";
 import { buildAgentTree, reconcileSelection, visibleAgentRows, type AgentTreeNode, type WorkspaceStatus } from "../runtime/agent-tree.js";
@@ -113,6 +114,26 @@ const [completionSelected, setCompletionSelected] = createSignal(0);
 const [secretMode, setSecretMode] = createSignal(false);
 const [secretDraft, setSecretDraft] = createSignal("");
 const [approvalPromptState, setApprovalPromptState] = createSignal<ApprovalPromptState | null>(null);
+const [gitDashboardState, setGitDashboardState] = createSignal<{
+  data: GitDashboardData;
+  github: GitHubSummary | null;
+  tab: GitDashboardTab;
+  selected: number;
+} | null>(null);
+
+export function openGitDashboard(data: GitDashboardData, github: GitHubSummary | null, tab: GitDashboardTab = "overview"): void {
+  setGitDashboardState({ data, github, tab, selected: 0 });
+  setInputActive(false);
+  textarea?.blur();
+}
+
+export function closeGitDashboard(): void {
+  if (!gitDashboardState()) return;
+  setGitDashboardState(null);
+  setInputActive(true);
+  textarea?.focus();
+}
+
 
 // Multi-agent workspace (navigation state only; switching never touches runs).
 const [workspaceRevision, setWorkspaceRevision] = createSignal(0);
@@ -952,6 +973,24 @@ function App() {
       return;
     }
 
+    const dashboard = gitDashboardState();
+    if (dashboard) {
+      const tabs: GitDashboardTab[] = ["overview", "graph", "status", "branches", "diff", "stash", "remotes", "tags", "prs", "issues", "actions", "releases"];
+      const currentIndex = tabs.indexOf(dashboard.tab);
+      if (name === "escape" || name === "ctrl+c") closeGitDashboard();
+      else if (name === "left" || name === "right") {
+        const next = (currentIndex + (name === "right" ? 1 : tabs.length - 1)) % tabs.length;
+        setGitDashboardState((current) => current ? { ...current, tab: tabs[next]!, selected: 0 } : current);
+      } else if (name === "up" || name === "down") {
+        setGitDashboardState((current) => current ? { ...current, selected: Math.max(0, current.selected + (name === "down" ? 1 : -1)) } : current);
+      } else if (key.text && /^[1-9]$/.test(key.text)) {
+        const next = Number(key.text) - 1;
+        if (tabs[next]) setGitDashboardState((current) => current ? { ...current, tab: tabs[next]!, selected: 0 } : current);
+      }
+      event.preventDefault();
+      return;
+    }
+
     const currentPicker = picker();
 
     if (currentPicker) {
@@ -1171,6 +1210,7 @@ function App() {
           </box>
         </Show>
         <text fg={ROLES.border} flexShrink={0} wrapMode="none">{"─".repeat(Math.max(1, terminalColumns() - 2))}</text>
+        <Show when={gitDashboardState()} fallback={
         <scrollbox
           ref={(element) => {
             scrollbox = element;
@@ -1275,7 +1315,10 @@ function App() {
             </Index>
           </Show>
         </scrollbox>
-      </box>
+
+        }>
+          <Show when={gitDashboardState()}>{(dashboard) => <GitDashboardView data={dashboard().data} github={dashboard().github} tab={dashboard().tab} selected={dashboard().selected} width={terminalColumns()} />}</Show>
+        </Show>      </box>
       <Show when={terminalVisible() && terminal()} fallback={<box height={0} />}>
         <box
           height={terminalPanelRows()}
