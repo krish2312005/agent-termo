@@ -20,7 +20,7 @@ import { copySelectedText } from "./selection-copy.js";
 import { sanitizeDisplayLine, sanitizeDisplayText } from "./display-text.js";
 import { GIT_GRAPH_COLORS, ROLES } from "./theme.js";
 import type { GitBranchInfo, GitDashboardData, GitGraphRow, GitHubSummary } from "../runtime/git-graph.js";
-import { GitDashboardView, isDashboardEnterKey, type GitDashboardFeedback, type GitDashboardTab } from "./git-dashboard.js";
+import { getGitDashboardItemCount, GitDashboardView, isDashboardEnterKey, type GitDashboardFeedback, type GitDashboardTab } from "./git-dashboard.js";
 import type { PermissionMode } from "../types/index.js";
 import { MAIN_AGENT_ID, listSubAgents } from "../runtime/subagents.js";
 import { buildAgentTree, reconcileSelection, visibleAgentRows, type AgentTreeNode, type WorkspaceStatus } from "../runtime/agent-tree.js";
@@ -1001,7 +1001,7 @@ function App() {
         setGitDashboardState((current) => current ? { ...current, tab: tabs[next]!, selected: 0 } : current);
       } else if (name === "up" || name === "down") {
         const next = Math.max(0, dashboard.selected + (name === "down" ? 1 : -1));
-        const max = dashboard.tab === "branches" ? Math.max(0, dashboard.data.branchDetails.length - 1) : Infinity;
+        const max = Math.max(0, getGitDashboardItemCount(dashboard.data, dashboard.github, dashboard.tab) - 1);
         setGitDashboardState((current) => current ? { ...current, selected: Math.min(max, next) } : current);
       } else if (name === "enter" && dashboard.tab === "branches") {
         const selectedBranch = dashboard.data.branchDetails[dashboard.selected];
