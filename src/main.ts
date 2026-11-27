@@ -3603,6 +3603,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 							if (taskState.status === 'running') {
 								taskState.status = 'interrupted';
 								taskState.reason = 'cancelled by user';
+								settleOmniaRun(projectRoot, 'cancelled', taskState.reason);
 								persistSession();
 								printInfo('Task paused. Type "continue" to resume from where it stopped.');
 								}
@@ -3616,6 +3617,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 								if (taskState.status === 'running') {
 									taskState.status = 'interrupted';
 									taskState.reason = providerError(err);
+									settleOmniaRun(projectRoot, 'paused', taskState.reason);
 									persistSession();
 								}
 								stopBackgroundCommands();
