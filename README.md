@@ -228,7 +228,7 @@ Run records are stored under `.agent-termo/omnia/runs/`; terminal reports are wr
 
 If requirements remain unverified, OMNIA can run up to two targeted repair attempts through the existing tools and permission pipeline, then repeat verification. The repair budget is persisted and is not reset by restarting the CLI. Terminal runs generate a Markdown report containing requirement decisions, evidence IDs, command outputs, repair count, summary, and blockers. Common API-key and token patterns are redacted from persisted evidence.
 
-Use `/omnia resume` for a blocked run. Use `/omnia report [run-id]` to inspect its report.
+Use `/omnia dashboard` to open live mission control (also opens automatically when a run starts or resumes). Press `R` to refresh, use arrow keys to navigate the requirements and evidence, and press `Esc` to return to the composer. Use `/omnia report [run-id]` to inspect its report.
 
 ---
 

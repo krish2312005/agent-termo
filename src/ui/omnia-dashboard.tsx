@@ -1,4 +1,5 @@
-import { For, Show } from "solid-js";
+import type { ScrollBoxRenderable } from "@opentui/core";
+import { For, Show, createEffect } from "solid-js";
 import type { OmniaRun, OmniaStatus } from "../runtime/omnia/types.js";
 import { MAX_OMNIA_REPAIR_ATTEMPTS } from "../runtime/omnia/index.js";
 import { ROLES } from "./theme.js";
@@ -68,6 +69,11 @@ export function OmniaDashboardView(props: OmniaDashboardViewProps) {
   const statusLabel = () => props.run.status.replace(/_/g, " ").toUpperCase();
   const maxText = () => Math.max(12, props.width - 26);
   const rowIndex = (index: number) => props.selected === index;
+  let listScrollbox: ScrollBoxRenderable | undefined;
+  createEffect(() => {
+    const selected = props.selected;
+    if (listScrollbox) listScrollbox.scrollTo(selected + 5);
+  });
   return (
     <box width="100%" flexDirection="column" flexGrow={1} flexBasis={0} flexShrink={1} minWidth={0} minHeight={0} gap={1} paddingX={1} backgroundColor={ROLES.pageBackground}>
       <box flexDirection="row" alignItems="center" justifyContent="space-between" flexShrink={0}>
@@ -88,7 +94,14 @@ export function OmniaDashboardView(props: OmniaDashboardViewProps) {
         <text fg={stats().progressPercent === 100 ? ROLES.success : ROLES.statusRunning} wrapMode="none">{progressBar()}</text>
         <text fg={ROLES.mutedText} wrapMode="none">{stats().progressPercent}%</text>
       </box>
-      <scrollbox flexGrow={1} flexBasis={0} minHeight={0} viewportCulling contentOptions={{ layoutMode: "list" }}>
+      <scrollbox
+        ref={(element) => { listScrollbox = element; }}
+        flexGrow={1}
+        flexBasis={0}
+        minHeight={0}
+        viewportCulling
+        contentOptions={{ layoutMode: "list" }}
+      >
         <box flexDirection="column" gap={1}>
           <text fg={ROLES.brand} attributes={1} wrapMode="none">REQUIREMENT CONTRACT</text>
           <For each={props.run.requirements}>
@@ -115,10 +128,10 @@ export function OmniaDashboardView(props: OmniaDashboardViewProps) {
               </box>
             )}
           </For>
-          <Show when={props.run.blocker}>
+          <Show when={props.run.blocker} fallback={<box height={0} />}>
             <text fg={ROLES.error} wrapMode="none">{clip("BLOCKER · " + props.run.blocker, Math.max(12, props.width - 8))}</text>
           </Show>
-          <Show when={props.run.summary}>
+          <Show when={props.run.summary} fallback={<box height={0} />}>
             <text fg={ROLES.detailText} wrapMode="none">{clip("SUMMARY · " + props.run.summary, Math.max(12, props.width - 8))}</text>
           </Show>
         </box>

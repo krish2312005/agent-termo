@@ -2879,6 +2879,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 								printError('Could not resume OMNIA: ' + dispatch.message);
 							} else {
 								printSuccess('Resuming OMNIA run ' + run.id.slice(0, 8) + '.');
+								openOmniaDashboard(projectRoot, run.id);
 							}
 						} catch (error) {
 							printError('Could not resume OMNIA: ' + (error instanceof Error ? error.message : String(error)));
@@ -2899,7 +2900,8 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 							printError('Could not start OMNIA: ' + dispatch.message);
 						} else {
 							printSuccess('TERMO OMNIA started · run ' + run.id.slice(0, 8));
-							printInfo('The goal is queued with an outcome contract. Use /omnia status to inspect execution and evidence.');
+							printInfo('The goal is queued with an outcome contract. Use /omnia dashboard to monitor the run live.');
+							openOmniaDashboard(projectRoot, run.id);
 						}
 					} catch (error) {
 						printError('Could not start OMNIA: ' + (error instanceof Error ? error.message : String(error)));
