@@ -999,7 +999,9 @@ function App() {
         const next = (currentIndex + (name === "right" ? 1 : tabs.length - 1)) % tabs.length;
         setGitDashboardState((current) => current ? { ...current, tab: tabs[next]!, selected: 0 } : current);
       } else if (name === "up" || name === "down") {
-        setGitDashboardState((current) => current ? { ...current, selected: Math.max(0, current.selected + (name === "down" ? 1 : -1)) } : current);
+        const next = Math.max(0, dashboard.selected + (name === "down" ? 1 : -1));
+        const max = dashboard.tab === "branches" ? Math.max(0, dashboard.data.branchDetails.length - 1) : Infinity;
+        setGitDashboardState((current) => current ? { ...current, selected: Math.min(max, next) } : current);
       } else if (name === "enter" && dashboard.tab === "branches") {
         const selectedBranch = dashboard.data.branchDetails[dashboard.selected];
         if (!selectedBranch) setStatus("No branch selected.");
