@@ -38,9 +38,9 @@ describe("parseGitGraphOutput", () => {
 
     const rows = layoutGitGraph(commits);
     expect(rows[0]).toMatchObject({ isHead: true, isMerge: true, laneIndex: 0 });
-    expect(rows[0]!.lanes.map((lane) => lane.glyph)).toEqual(["◆", "╲"]);
-    expect(rows[1]!.lanes.map((lane) => lane.glyph)).toEqual(["●", "│"]);
-    expect(rows[2]!.lanes.map((lane) => lane.glyph)).toEqual(["╲", "●"]);
+    expect(rows[0]!.lanes.map((lane) => lane.glyph)).toEqual(["◆", "·"]);
+    expect(rows[1]!.lanes.map((lane) => lane.glyph)).toEqual(["●", "·"]);
+    expect(rows[2]!.lanes.map((lane) => lane.glyph)).toEqual(["·", "●"]);
     expect(rows[0]!.lanes[0]!.colorIndex).not.toBe(rows[0]!.lanes[1]!.colorIndex);
     expect(rows[3]!.lanes).toHaveLength(1);
   });
