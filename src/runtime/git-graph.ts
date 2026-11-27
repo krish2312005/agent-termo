@@ -364,6 +364,33 @@ export async function loadGitDashboardData(projectPath: string, limit = 80): Pro
   };
 }
 
+export type GitBranchAction = "checkout" | "create" | "delete" | "merge";
+
+/** Execute one explicitly requested branch operation with conservative safety checks. */
+export async function runGitBranchAction(projectPath: string, action: GitBranchAction, branch: string): Promise<string> {
+  const name = branch.trim();
+  if (!name || name.startsWith("-") || /[\\0\\r\\n]/.test(name)) {
+    throw new Error("Provide a valid branch name.");
+  }
+  const root = (await runGit(projectPath, ["rev-parse", "--show-toplevel"])).trim();
+  await runGit(root, ["check-ref-format", "--branch", name]);
+
+  if (action === "delete") {
+    const current = (await runGit(root, ["branch", "--show-current"])).trim();
+    if (current === name) throw new Error("Switch to another branch before deleting the current branch.");
+    return (await runGit(root, ["branch", "--delete", name])).trim();
+  }
+  if (action === "merge") {
+    const status = await runGit(root, ["status", "--porcelain"]);
+    if (status.trim()) throw new Error("Merge is blocked because the working tree is not clean. Preserve or commit your changes first.");
+    return (await runGit(root, ["merge", "--no-edit", "--", name])).trim() || "Merge completed.";
+  }
+  if (action === "create") {
+    return (await runGit(root, ["switch", "--create", name])).trim() || "Created and switched to " + name + ".";
+  }
+  return (await runGit(root, ["switch", "--", name])).trim() || "Switched to " + name + ".";
+}
+
 export async function getGitCommitDetails(projectPath: string, hash: string): Promise<string> {
   if (!/^[0-9a-f]{7,40}$/i.test(hash)) {
     throw new Error("Use a commit hash with 7 to 40 hexadecimal characters.");
