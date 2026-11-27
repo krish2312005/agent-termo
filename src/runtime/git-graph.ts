@@ -281,6 +281,73 @@ export async function loadGitSnapshot(projectPath: string, limit = 80): Promise<
   };
 }
 
+export interface GitWorkingTreeFile {
+  path: string;
+  code: string;
+  state: "staged" | "unstaged" | "untracked" | "conflict";
+}
+
+export interface GitDashboardData {
+  snapshot: GitSnapshot;
+  staged: GitWorkingTreeFile[];
+  unstaged: GitWorkingTreeFile[];
+  untracked: GitWorkingTreeFile[];
+  conflicts: GitWorkingTreeFile[];
+  stashes: string[];
+  tags: string[];
+  remotes: string[];
+  branchDetails: string[];
+  unstagedDiffStat: string;
+  stagedDiffStat: string;
+}
+
+/** Load supplementary local repository data without requiring GitHub authentication. */
+export async function loadGitDashboardData(projectPath: string, limit = 80): Promise<GitDashboardData> {
+  const snapshot = await loadGitSnapshot(projectPath, limit);
+  const [status, stashes, tags, remotes, branchDetails, unstagedDiffStat, stagedDiffStat] = await Promise.all([
+    runGit(snapshot.root, ["status", "--porcelain=v1", "--untracked-files=all"]).catch(() => ""),
+    runGit(snapshot.root, ["stash", "list", "--format=%gd%x1f%gs"]).catch(() => ""),
+    runGit(snapshot.root, ["tag", "--sort=-creatordate", "--format=%(refname:short)%x1f%(creatordate:relative)"]).catch(() => ""),
+    runGit(snapshot.root, ["remote", "-v"]).catch(() => ""),
+    runGit(snapshot.root, ["branch", "--all", "--verbose", "--no-abbrev"]).catch(() => ""),
+    runGit(snapshot.root, ["diff", "--shortstat"]).catch(() => ""),
+    runGit(snapshot.root, ["diff", "--cached", "--shortstat"]).catch(() => ""),
+  ]);
+
+  const staged: GitWorkingTreeFile[] = [];
+  const unstaged: GitWorkingTreeFile[] = [];
+  const untracked: GitWorkingTreeFile[] = [];
+  const conflicts: GitWorkingTreeFile[] = [];
+  for (const line of status.split(/\r?\n/)) {
+    if (line.length < 4 || line.startsWith("?? ")) {
+      if (line.startsWith("?? ")) untracked.push({ path: line.slice(3), code: "??", state: "untracked" });
+      continue;
+    }
+    const code = line.slice(0, 2);
+    const path = line.slice(3);
+    if (/^(DD|AU|UD|UA|DU|AA|UU)$/.test(code)) {
+      conflicts.push({ path, code, state: "conflict" });
+      continue;
+    }
+    if (code[0] !== " ") staged.push({ path, code, state: "staged" });
+    if (code[1] !== " ") unstaged.push({ path, code, state: "unstaged" });
+  }
+
+  return {
+    snapshot,
+    staged,
+    unstaged,
+    untracked,
+    conflicts,
+    stashes: stashes.split(/\r?\n/).filter(Boolean),
+    tags: tags.split(/\r?\n/).filter(Boolean),
+    remotes: remotes.split(/\r?\n/).filter(Boolean),
+    branchDetails: branchDetails.split(/\r?\n/).filter(Boolean),
+    unstagedDiffStat: unstagedDiffStat.trim(),
+    stagedDiffStat: stagedDiffStat.trim(),
+  };
+}
+
 export async function getGitCommitDetails(projectPath: string, hash: string): Promise<string> {
   if (!/^[0-9a-f]{7,40}$/i.test(hash)) {
     throw new Error("Use a commit hash with 7 to 40 hexadecimal characters.");
