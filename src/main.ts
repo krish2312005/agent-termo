@@ -2644,7 +2644,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 							: branch.name;
 							await refreshDashboard('branches', localName);
 							return result || 'Switched to ' + localName + '.';
-						});
+						}, selected);
 					};
 					await refreshDashboard();
 					continue mainLoop;
