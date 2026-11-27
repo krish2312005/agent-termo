@@ -5,7 +5,7 @@ const clipText = (value: string, max: number): string => [...value].length <= ma
 
 export type GitDashboardTab =
   | "overview" | "graph" | "status" | "branches" | "diff"
-  | "stash" | "remotes" | "tags" | "prs" | "issues" | "actions" | "releases";
+  | "stash" | "remotes" | "tags" | "github" | "prs" | "issues" | "actions" | "releases";
 
 const TABS: Array<{ id: GitDashboardTab; label: string }> = [
   { id: "overview", label: "Overview" }, { id: "graph", label: "Graph" },
@@ -122,10 +122,20 @@ export function GitDashboardView(props: GitDashboardViewProps) {
       <Show when={props.tab === "stash"}><text fg={ROLES.text}>Stashes</text><For each={props.data.stashes}>{(item, index) => <text fg={selectedRow(index()) ? ROLES.selection : ROLES.text}>› {item}</text>}</For><Show when={!props.data.stashes.length}><text fg={ROLES.dimText}>No stashes.</text></Show></Show>
       <Show when={props.tab === "remotes"}><text fg={ROLES.text}>Remote endpoints</text><For each={props.data.remotes}>{(item, index) => <text fg={selectedRow(index()) ? ROLES.selection : ROLES.text}>› {item}</text>}</For><Show when={!props.data.remotes.length}><text fg={ROLES.dimText}>No remotes configured.</text></Show></Show>
       <Show when={props.tab === "tags"}><text fg={ROLES.text}>Tags</text><For each={props.data.tags}>{(item, index) => <text fg={selectedRow(index()) ? ROLES.selection : ROLES.text}>› {item}</text>}</For><Show when={!props.data.tags.length}><text fg={ROLES.dimText}>No tags.</text></Show></Show>
+      <Show when={props.tab === "github"}>
+        <text fg={ROLES.text}>GitHub repository</text>
+        <Show when={githubReady()} fallback={<text fg={ROLES.dimText}>{props.github?.message ?? "GitHub data unavailable."}</text>}>
+          <text fg={ROLES.brand}>{props.github!.repository!.nameWithOwner ?? snapshot().name}</text>
+          <text fg={ROLES.mutedText}>{props.github!.repository!.description ?? "No repository description."}</text>
+          <text fg={ROLES.mutedText}>Visibility: {props.github!.repository!.isPrivate ? "Private" : "Public"}  ·  Default: {props.github!.repository!.defaultBranchRef?.name ?? "Unavailable"}</text>
+          <text fg={ROLES.mutedText}>Language: {props.github!.repository!.primaryLanguage?.name ?? "Unavailable"}  ·  ★ {props.github!.repository!.stargazerCount ?? "—"}  ·  Forks {props.github!.repository!.forkCount ?? "—"}</text>
+          <text fg={ROLES.info}>{props.github!.repository!.url ?? "Repository URL unavailable"}</text>
+        </Show>
+      </Show>
       <Show when={props.tab === "prs"}><text fg={ROLES.text}>Pull requests</text><Show when={githubReady()} fallback={<text fg={ROLES.dimText}>{props.github?.message ?? "GitHub data unavailable."}</text>}><For each={props.github!.pullRequests}>{(item, index) => <text fg={selectedRow(index()) ? ROLES.selection : ROLES.text}>› #{item.number} {item.title} · {item.headRefName ?? "?"} → {item.baseRefName ?? "?"}</text>}</For></Show></Show>
       <Show when={props.tab === "issues"}><text fg={ROLES.text}>Issues</text><Show when={githubReady()} fallback={<text fg={ROLES.dimText}>{props.github?.message ?? "GitHub data unavailable."}</text>}><For each={props.github!.issues}>{(item, index) => <text fg={selectedRow(index()) ? ROLES.selection : ROLES.text}>› #{item.number} {item.title} · {item.state ?? "open"}</text>}</For></Show></Show>
-      <Show when={props.tab === "actions"}><text fg={ROLES.text}>GitHub Actions</text><Show when={githubReady()} fallback={<text fg={ROLES.dimText}>{props.github?.message ?? "GitHub data unavailable."}</text>}><For each={props.github!.runs}>{(item, index) => <text fg={selectedRow(index()) ? ROLES.selection : item.conclusion === "success" ? ROLES.success : item.conclusion === "failure" ? ROLES.error : ROLES.running}>› {item.name} · {item.status ?? "unknown"}{item.conclusion ? " / " + item.conclusion : ""}</text>}</For></Show></Show>
-      <Show when={props.tab === "releases"}><text fg={ROLES.text}>Releases</text><text fg={ROLES.dimText}>Release metadata is not provided by the current GitHub CLI provider.</text></Show>
+      <Show when={props.tab === "actions"}><text fg={ROLES.text}>GitHub Actions</text><Show when={githubReady()} fallback={<text fg={ROLES.dimText}>{props.github?.message ?? "GitHub data unavailable."}</text>}><For each={props.github!.runs}>{(item, index) => <text fg={selectedRow(index()) ? ROLES.selection : item.conclusion === "success" ? ROLES.success : item.conclusion === "failure" ? ROLES.error : ROLES.running}>› {item.name} · {item.status ?? "unknown"}{item.conclusion ? " / " + item.conclusion : ""} · {item.headBranch ?? "branch unknown"}</text>}</For></Show></Show>
+      <Show when={props.tab === "releases"}><text fg={ROLES.text}>Releases</text><Show when={githubReady()} fallback={<text fg={ROLES.dimText}>{props.github?.message ?? "GitHub data unavailable."}</text>}><For each={props.github!.releases}>{(item, index) => <text fg={selectedRow(index()) ? ROLES.selection : ROLES.text}>› {item.tagName ?? item.name ?? "Untitled release"} · {item.publishedAt ?? (item.isDraft ? "Draft" : "date unavailable")}</text>}</For><Show when={!props.github!.releases.length}><text fg={ROLES.dimText}>No releases found or release access unavailable.</text></Show></Show></Show>
       <text fg={ROLES.dimText} wrapMode="none">↑ ↓ select · ← → / 1–9 sections · Esc close</text>
     </box>
   );
