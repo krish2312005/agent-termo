@@ -2593,7 +2593,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						const tabs = {
 							overview: 'overview', info: 'overview', graph: 'graph', commits: 'graph',
 							status: 'status', branches: 'branches', diff: 'diff', stash: 'stash',
-							remotes: 'remotes', tags: 'tags', github: 'prs', prs: 'prs',
+							remotes: 'remotes', tags: 'tags', github: 'github', prs: 'prs',
 							issues: 'issues', actions: 'actions', releases: 'releases',
 					} as const;
 					if (!(action in tabs)) {
