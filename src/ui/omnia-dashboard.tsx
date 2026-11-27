@@ -1,3 +1,4 @@
+import { For, Show } from "solid-js";
 import type { OmniaRun, OmniaStatus } from "../runtime/omnia/types.js";
 import { MAX_OMNIA_REPAIR_ATTEMPTS } from "../runtime/omnia/index.js";
 import { ROLES } from "./theme.js";
@@ -90,32 +91,36 @@ export function OmniaDashboardView(props: OmniaDashboardViewProps) {
       <scrollbox flexGrow={1} flexBasis={0} minHeight={0} viewportCulling contentOptions={{ layoutMode: "list" }}>
         <box flexDirection="column" gap={1}>
           <text fg={ROLES.brand} attributes={1} wrapMode="none">REQUIREMENT CONTRACT</text>
-          {#each props.run.requirements as requirement, index}
-            <box flexDirection="column" paddingX={1} paddingY={0} backgroundColor={rowIndex(index) ? ROLES.panelSurface : undefined}>
-              <box flexDirection="row" alignItems="center" gap={1}>
-                <text fg={requirementColor(requirement.status)} attributes={1} wrapMode="none">{requirement.status === "verified" ? "✓" : requirement.status === "blocked" ? "!" : "○"}</text>
-                <text fg={ROLES.text} attributes={1} wrapMode="none">{requirement.id}</text>
-                <text fg={ROLES.mutedText} wrapMode="none">{requirement.strategy.toUpperCase()}</text>
-                <text fg={requirementColor(requirement.status)} wrapMode="none">{requirement.status.toUpperCase()}</text>
+          <For each={props.run.requirements}>
+            {(requirement, index) => (
+              <box flexDirection="column" paddingX={1} paddingY={0} backgroundColor={rowIndex(index()) ? ROLES.panelSurface : undefined}>
+                <box flexDirection="row" alignItems="center" gap={1}>
+                  <text fg={requirementColor(requirement.status)} attributes={1} wrapMode="none">{requirement.status === "verified" ? "✓" : requirement.status === "blocked" ? "!" : "○"}</text>
+                  <text fg={ROLES.text} attributes={1} wrapMode="none">{requirement.id}</text>
+                  <text fg={ROLES.mutedText} wrapMode="none">{requirement.strategy.toUpperCase()}</text>
+                  <text fg={requirementColor(requirement.status)} wrapMode="none">{requirement.status.toUpperCase()}</text>
+                </box>
+                <text fg={ROLES.text} wrapMode="none">{clip(requirement.description, maxText())}</text>
+                <text fg={ROLES.dimText} wrapMode="none">{clip(requirement.verificationPlan, Math.max(12, props.width - 14))}</text>
               </box>
-              <text fg={ROLES.text} wrapMode="none">{clip(requirement.description, maxText())}</text>
-              <text fg={ROLES.dimText} wrapMode="none">{clip(requirement.verificationPlan, Math.max(12, props.width - 14))}</text>
-            </box>
-          {/each}
+            )}
+          </For>
           <text fg={ROLES.brand} attributes={1} wrapMode="none">LATEST EXECUTION EVIDENCE</text>
-          {#each evidence() as item, index}
-            <box flexDirection="row" alignItems="center" gap={1} paddingX={1} backgroundColor={rowIndex(props.run.requirements.length + index) ? ROLES.panelSurface : undefined}>
-              <text fg={item.success ? ROLES.success : ROLES.error} attributes={1} wrapMode="none">{item.success ? "●" : "×"}</text>
-              <text fg={ROLES.mutedCompletion} wrapMode="none">{item.type.toUpperCase()}</text>
-              <text fg={ROLES.text} wrapMode="none">{clip(item.source, Math.max(8, props.width - 34))}</text>
-            </box>
-          {/each}
-          {#if props.run.blocker}
+          <For each={evidence()}>
+            {(item, index) => (
+              <box flexDirection="row" alignItems="center" gap={1} paddingX={1} backgroundColor={rowIndex(props.run.requirements.length + index()) ? ROLES.panelSurface : undefined}>
+                <text fg={item.success ? ROLES.success : ROLES.error} attributes={1} wrapMode="none">{item.success ? "●" : "×"}</text>
+                <text fg={ROLES.mutedCompletion} wrapMode="none">{item.type.toUpperCase()}</text>
+                <text fg={ROLES.text} wrapMode="none">{clip(item.source, Math.max(8, props.width - 34))}</text>
+              </box>
+            )}
+          </For>
+          <Show when={props.run.blocker}>
             <text fg={ROLES.error} wrapMode="none">{clip("BLOCKER · " + props.run.blocker, Math.max(12, props.width - 8))}</text>
-          {/if}
-          {#if props.run.summary}
+          </Show>
+          <Show when={props.run.summary}>
             <text fg={ROLES.detailText} wrapMode="none">{clip("SUMMARY · " + props.run.summary, Math.max(12, props.width - 8))}</text>
-          {/if}
+          </Show>
         </box>
       </scrollbox>
       <box flexDirection="row" justifyContent="space-between" flexShrink={0}>
