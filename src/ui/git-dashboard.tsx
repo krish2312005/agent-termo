@@ -215,6 +215,7 @@ export function GitDashboardView(props: GitDashboardViewProps) {
         minWidth={0}
         minHeight={0}
         viewportCulling
+        contentOptions={{ layoutMode: "list" }}
       >
       <Show when={props.tab === "overview"} fallback={<box height={0} />}>
         <text fg={ROLES.text}>Repository overview</text>
@@ -280,9 +281,9 @@ export function GitDashboardView(props: GitDashboardViewProps) {
       </Show>
       <Show when={props.tab === "diff"} fallback={<box height={0} />}>
         <text fg={ROLES.text}>Diff summary</text>
-        <text fg={ROLES.success}>Staged: {props.data.stagedDiffStat || "No staged diff"}</text>
-        <text fg={ROLES.statusRunning}>Unstaged: {props.data.unstagedDiffStat || "No unstaged diff"}</text>
-        <text fg={ROLES.dimText}>File-level diff inspection is not yet exposed in this view.</text>
+        <DashboardRow value={"Staged: " + (props.data.stagedDiffStat || "No staged diff")} width={props.width} selected={false} color={ROLES.success} />
+        <DashboardRow value={"Unstaged: " + (props.data.unstagedDiffStat || "No unstaged diff")} width={props.width} selected={false} color={ROLES.statusRunning} />
+        <DashboardRow value="File-level diff inspection is not yet exposed in this view." width={props.width} selected={false} color={ROLES.dimText} />
       </Show>
       <Show when={props.tab === "stash"} fallback={<box height={0} />}><text fg={ROLES.text}>Stashes</text><For each={props.data.stashes}>{(item, index) => <DashboardRow value={item} width={props.width} selected={selectedRow(index())} />}</For><Show when={!props.data.stashes.length} fallback={<box height={0} />}><text fg={ROLES.dimText}>No stashes.</text></Show></Show>
       <Show when={props.tab === "remotes"} fallback={<box height={0} />}><text fg={ROLES.text}>Remote endpoints</text><For each={props.data.remotes}>{(item, index) => <DashboardRow value={item} width={props.width} selected={selectedRow(index())} />}</For><Show when={!props.data.remotes.length} fallback={<box height={0} />}><text fg={ROLES.dimText}>No remotes configured.</text></Show></Show>
