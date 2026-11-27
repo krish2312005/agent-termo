@@ -86,6 +86,12 @@ describe("Git dashboard OpenTUI layout", () => {
     expect(getGitDashboardScrollOffset(data, "tags", 10)).toBe(11);
   });
 
+  it("supports page navigation through large selectable dashboard lists", () => {
+    expect(tuiSource).toContain('["up", "down", "pageup", "pagedown"].includes(name)');
+    expect(tuiSource).toContain("terminalRows() - 18");
+    expect(dashboardSource).toContain("PgUp/PgDn jump");
+  });
+
   it("uses fixed-width clipped rows and an independently scrollable dashboard viewport", () => {
     expect(dashboardSource).toContain("flexBasis={0}");
     expect(dashboardSource).toContain('ref={(element) => { listScrollbox = element; }}');
