@@ -21,6 +21,9 @@ import { sanitizeDisplayLine, sanitizeDisplayText } from "./display-text.js";
 import { GIT_GRAPH_COLORS, ROLES } from "./theme.js";
 import type { GitBranchInfo, GitDashboardData, GitGraphRow, GitHubSummary } from "../runtime/git-graph.js";
 import { getGitDashboardItemCount, GitDashboardView, isDashboardEnterKey, type GitDashboardFeedback, type GitDashboardTab } from "./git-dashboard.js";
+import { OmniaDashboardView, getOmniaDashboardItemCount } from "./omnia-dashboard.js";
+import { formatOmniaReport, loadOmniaRun } from "../runtime/omnia/index.js";
+import type { OmniaRun } from "../runtime/omnia/types.js";
 import type { PermissionMode } from "../types/index.js";
 import { MAIN_AGENT_ID, listSubAgents } from "../runtime/subagents.js";
 import { buildAgentTree, reconcileSelection, visibleAgentRows, type AgentTreeNode, type WorkspaceStatus } from "../runtime/agent-tree.js";
@@ -123,6 +126,44 @@ const [gitDashboardState, setGitDashboardState] = createSignal<{
   refresh?: (tab?: GitDashboardTab, selectedBranch?: string) => Promise<void>;
   checkoutBranch?: (branch: GitBranchInfo) => Promise<string | void>;
 } | null>(null);
+const [omniaDashboardState, setOmniaDashboardState] = createSignal<{
+  projectRoot: string;
+  runId: string;
+  run: OmniaRun;
+  selected: number;
+} | null>(null);
+
+export function openOmniaDashboard(projectRoot: string, runId: string): void {
+  const run = loadOmniaRun(projectRoot, runId);
+  if (!run) {
+    appendLog("OMNIA run not found: " + runId, "error");
+    return;
+  }
+  if (!renderer) {
+    appendLog(formatOmniaReport(run), "markdown");
+    return;
+  }
+  if (gitDashboardState()) closeGitDashboard();
+  setOmniaDashboardState({ projectRoot, runId, run, selected: 0 });
+  setInputActive(false);
+  textarea?.blur();
+  if (omniaDashboardTicker) clearInterval(omniaDashboardTicker);
+  omniaDashboardTicker = setInterval(() => {
+    const current = omniaDashboardState();
+    if (!current) return;
+    const latest = loadOmniaRun(current.projectRoot, current.runId);
+    if (latest) setOmniaDashboardState((state) => state ? { ...state, run: latest } : state);
+  }, 750);
+}
+
+export function closeOmniaDashboard(): void {
+  if (!omniaDashboardState()) return;
+  if (omniaDashboardTicker) clearInterval(omniaDashboardTicker);
+  omniaDashboardTicker = null;
+  setOmniaDashboardState(null);
+  setInputActive(true);
+  textarea?.focus();
+}
 
 export function openGitDashboard(
   data: GitDashboardData,
@@ -132,6 +173,7 @@ export function openGitDashboard(
   checkoutBranch?: (branch: GitBranchInfo) => Promise<string | void>,
   selected = 0,
 ): void {
+  if (omniaDashboardState()) closeOmniaDashboard();
   if (!renderer) {
     appendLog("GIT COMMAND CENTER · " + data.snapshot.name + " · " + data.snapshot.branch, "success");
     appendLog("Working tree: " + (data.snapshot.workingTreeClean ? "clean" : data.snapshot.changedPaths + " changed paths") + " · " + data.snapshot.totalCommits + " commits · " + data.snapshot.localBranchCount + " local / " + data.snapshot.remoteBranchCount + " remote branches", "info");
@@ -168,6 +210,7 @@ const scrollPositions = new Map<string, number>();
 const atBottomByAgent = new Map<string, boolean>();
 let scrollbox: ScrollBoxRenderable | undefined;
 let liveTicker: ReturnType<typeof setInterval> | null = null;
+let omniaDashboardTicker: ReturnType<typeof setInterval> | null = null;
 let leaderTimer: ReturnType<typeof setTimeout> | null = null;
 let noticeTimer: ReturnType<typeof setTimeout> | null = null;
 let statusTimer: ReturnType<typeof setTimeout> | null = null;
@@ -759,6 +802,8 @@ function App() {
   syncLiveTicker(currentNodes());
   onCleanup(() => {
     if (liveTicker) clearInterval(liveTicker);
+    if (omniaDashboardTicker) clearInterval(omniaDashboardTicker);
+    omniaDashboardTicker = null;
     if (leaderTimer) clearTimeout(leaderTimer);
     if (noticeTimer) clearTimeout(noticeTimer);
     if (statusTimer) clearTimeout(statusTimer);
@@ -986,6 +1031,24 @@ function App() {
         setSecretDraft((value) => [...value].slice(0, -1).join(""));
       } else if (name === "text" || name === "paste" || name === "space") {
         setSecretDraft((value) => value + (key.text ?? (name === "space" ? " " : "")));
+      }
+      event.preventDefault();
+      return;
+    }
+
+    const omniaDashboard = omniaDashboardState();
+    if (omniaDashboard) {
+      if (name === "escape" || name === "ctrl+c") closeOmniaDashboard();
+      else if (["up", "down", "pageup", "pagedown"].includes(name)) {
+        const step = name === "pageup" || name === "pagedown" ? Math.max(1, terminalRows() - 18) : 1;
+        const direction = name === "down" || name === "pagedown" ? 1 : -1;
+        const max = Math.max(0, getOmniaDashboardItemCount(omniaDashboard.run) - 1);
+        setOmniaDashboardState((current) => current
+          ? { ...current, selected: Math.max(0, Math.min(max, current.selected + direction * step)) }
+          : current);
+      } else if (key.text?.toLowerCase() === "r") {
+        const latest = loadOmniaRun(omniaDashboard.projectRoot, omniaDashboard.runId);
+        if (latest) setOmniaDashboardState((current) => current ? { ...current, run: latest } : current);
       }
       event.preventDefault();
       return;
@@ -1251,7 +1314,7 @@ function App() {
           </box>
         </Show>
         <text fg={ROLES.border} flexShrink={0} wrapMode="none">{"─".repeat(Math.max(1, terminalColumns() - 2))}</text>
-        <Show when={gitDashboardState()} fallback={
+        <Show when={gitDashboardState() || omniaDashboardState()} fallback={
         <scrollbox
           ref={(element) => {
             scrollbox = element;
@@ -1358,14 +1421,22 @@ function App() {
         </scrollbox>
 
         }>
-          <GitDashboardView
-            data={gitDashboardState()!.data}
-            github={gitDashboardState()!.github}
-            tab={gitDashboardState()!.tab}
-            selected={gitDashboardState()!.selected}
-            width={terminalColumns()}
-            feedback={gitDashboardState()!.feedback}
-          />
+          <Show when={omniaDashboardState()} fallback={
+            <GitDashboardView
+              data={gitDashboardState()!.data}
+              github={gitDashboardState()!.github}
+              tab={gitDashboardState()!.tab}
+              selected={gitDashboardState()!.selected}
+              width={terminalColumns()}
+              feedback={gitDashboardState()!.feedback}
+            />
+          }>
+            <OmniaDashboardView
+              run={omniaDashboardState()!.run}
+              width={terminalColumns()}
+              selected={omniaDashboardState()!.selected}
+            />
+          </Show>
         </Show>
       </box>
       <Show when={terminalVisible() && terminal()} fallback={<box height={0} />}>
