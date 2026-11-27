@@ -14,6 +14,7 @@ const CARBON = {
   lanes: ["#B5D98A", "#83B9A2", "#D69B69", "#A7C78D", "#7FAF9C", "#D9A77C", "#9DBBBA"],
 } as const;
 const clipText = (value: string, max: number): string => [...value].length <= max ? value : [...value].slice(0, Math.max(0, max - 1)).join("") + "…";
+const laneColor = (index: number): string => CARBON.lanes[index % CARBON.lanes.length] ?? CARBON.primary;
 
 export type GitDashboardTab =
   | "overview" | "graph" | "status" | "branches" | "diff"
@@ -51,13 +52,13 @@ function GraphRow(props: { row: GitGraphRow; selected: boolean; width: number })
       <box flexDirection="row" alignItems="center" gap={1}>
         <box flexDirection="row" minWidth={2}>
           <For each={props.row.lanes}>
-            {(lane) => <text fg={CARBON.lanes[lane.colorIndex % CARBON.lanes.length]} attributes={lane.isCommit ? 1 : 0} wrapMode="none">{lane.glyph + " "}</text>}
+            {(lane) => <text fg={laneColor(lane.colorIndex)} attributes={lane.isCommit ? 1 : 0} wrapMode="none">{lane.glyph + " "}</text>}
           </For>
         </box>
         <text fg={ROLES.mutedCompletion} wrapMode="none">{props.row.shortHash}</text>
         <text fg={props.row.isHead ? ROLES.brand : ROLES.text} wrapMode="none">{clipText(props.row.subject, Math.max(12, props.width - props.row.lanes.length * 2 - 34))}</text>
         <For each={props.row.refs.slice(0, 2)}>
-          {(ref) => <text fg={ref.kind === "tag" ? ROLES.statusRunning : ref.kind === "remote" ? ROLES.info : CARBON.lanes[ref.colorIndex % CARBON.lanes.length]} wrapMode="none">{ref.label}</text>}
+          {(ref) => <text fg={ref.kind === "tag" ? ROLES.statusRunning : ref.kind === "remote" ? ROLES.info : laneColor(ref.colorIndex)} wrapMode="none">{ref.label}</text>}
         </For>
       </box>
       <box flexDirection="row">
@@ -88,12 +89,12 @@ export function GitDashboardView(props: GitDashboardViewProps) {
         <Stat label="Local branches" value={String(snapshot().localBranchCount)} />
         <Stat label="Remote branches" value={String(snapshot().remoteBranchCount)} />
         <Stat label="Staged" value={String(props.data.staged.length)} color={ROLES.success} />
-        <Stat label="Unstaged" value={String(props.data.unstaged.length)} color={ROLES.running} />
+        <Stat label="Unstaged" value={String(props.data.unstaged.length)} color={ROLES.statusRunning} />
         <Stat label="Conflicts" value={String(props.data.conflicts.length)} color={props.data.conflicts.length ? ROLES.error : ROLES.success} />
       </box>
       <box flexDirection="row" flexWrap="wrap" gap={1}>
         <For each={TABS}>
-          {(item, index) => <text fg={props.tab === item.id ? CARBON.primary : CARBON.muted} attributes={props.tab === item.id ? 1 : 0} wrapMode="none">{(props.tab === item.id ? "▰ " : "  ") + item.label + "  "}</text>}
+          {(item) => <text fg={props.tab === item.id ? CARBON.primary : CARBON.muted} attributes={props.tab === item.id ? 1 : 0} wrapMode="none">{(props.tab === item.id ? "▰ " : "  ") + item.label + "  "}</text>}
         </For>
       </box>
       <text fg={CARBON.border} wrapMode="none">{"─".repeat(Math.max(1, props.width - 4))}</text>
@@ -116,7 +117,7 @@ export function GitDashboardView(props: GitDashboardViewProps) {
         <text fg={ROLES.text}>Working tree · {changeFiles().length} paths</text>
         <Show when={props.data.conflicts.length > 0} fallback={<box height={0} />}><text fg={ROLES.error}>MERGE CONFLICTS</text><For each={props.data.conflicts}>{(file, index) => <text fg={selectedRow(index()) ? ROLES.selection : ROLES.error}>› {file.code}  {file.path}</text>}</For></Show>
         <text fg={ROLES.success}>STAGED</text><For each={props.data.staged}>{(file, index) => <text fg={selectedRow(props.data.conflicts.length + index()) ? ROLES.selection : ROLES.success}>› {file.code}  {file.path}</text>}</For>
-        <text fg={ROLES.running}>UNSTAGED</text><For each={props.data.unstaged}>{(file, index) => <text fg={selectedRow(props.data.conflicts.length + props.data.staged.length + index()) ? ROLES.selection : ROLES.running}>› {file.code}  {file.path}</text>}</For>
+        <text fg={ROLES.statusRunning}>UNSTAGED</text><For each={props.data.unstaged}>{(file, index) => <text fg={selectedRow(props.data.conflicts.length + props.data.staged.length + index()) ? ROLES.selection : ROLES.statusRunning}>› {file.code}  {file.path}</text>}</For>
         <text fg={ROLES.info}>UNTRACKED</text><For each={props.data.untracked}>{(file, index) => <text fg={selectedRow(props.data.conflicts.length + props.data.staged.length + props.data.unstaged.length + index()) ? ROLES.selection : ROLES.info}>› ??  {file.path}</text>}</For>
         <Show when={changeFiles().length === 0} fallback={<box height={0} />}><text fg={ROLES.success}>Working tree clean.</text></Show>
       </Show>
@@ -127,7 +128,7 @@ export function GitDashboardView(props: GitDashboardViewProps) {
       <Show when={props.tab === "diff"} fallback={<box height={0} />}>
         <text fg={ROLES.text}>Diff summary</text>
         <text fg={ROLES.success}>Staged: {props.data.stagedDiffStat || "No staged diff"}</text>
-        <text fg={ROLES.running}>Unstaged: {props.data.unstagedDiffStat || "No unstaged diff"}</text>
+        <text fg={ROLES.statusRunning}>Unstaged: {props.data.unstagedDiffStat || "No unstaged diff"}</text>
         <text fg={ROLES.dimText}>File-level diff inspection is not yet exposed in this view.</text>
       </Show>
       <Show when={props.tab === "stash"} fallback={<box height={0} />}><text fg={ROLES.text}>Stashes</text><For each={props.data.stashes}>{(item, index) => <text fg={selectedRow(index()) ? ROLES.selection : ROLES.text}>› {item}</text>}</For><Show when={!props.data.stashes.length} fallback={<box height={0} />}><text fg={ROLES.dimText}>No stashes.</text></Show></Show>
@@ -145,7 +146,7 @@ export function GitDashboardView(props: GitDashboardViewProps) {
       </Show>
       <Show when={props.tab === "prs"} fallback={<box height={0} />}><text fg={ROLES.text}>Pull requests</text><Show when={githubReady()} fallback={<text fg={ROLES.dimText}>{props.github?.message ?? "GitHub data unavailable."}</text>}><For each={props.github!.pullRequests}>{(item, index) => <text fg={selectedRow(index()) ? ROLES.selection : ROLES.text}>› #{item.number} {item.title} · {item.headRefName ?? "?"} → {item.baseRefName ?? "?"}</text>}</For></Show></Show>
       <Show when={props.tab === "issues"} fallback={<box height={0} />}><text fg={ROLES.text}>Issues</text><Show when={githubReady()} fallback={<text fg={ROLES.dimText}>{props.github?.message ?? "GitHub data unavailable."}</text>}><For each={props.github!.issues}>{(item, index) => <text fg={selectedRow(index()) ? ROLES.selection : ROLES.text}>› #{item.number} {item.title} · {item.state ?? "open"}</text>}</For></Show></Show>
-      <Show when={props.tab === "actions"} fallback={<box height={0} />}><text fg={ROLES.text}>GitHub Actions</text><Show when={githubReady()} fallback={<text fg={ROLES.dimText}>{props.github?.message ?? "GitHub data unavailable."}</text>}><For each={props.github!.runs}>{(item, index) => <text fg={selectedRow(index()) ? ROLES.selection : item.conclusion === "success" ? ROLES.success : item.conclusion === "failure" ? ROLES.error : ROLES.running}>› {item.name} · {item.status ?? "unknown"}{item.conclusion ? " / " + item.conclusion : ""} · {item.headBranch ?? "branch unknown"}</text>}</For></Show></Show>
+      <Show when={props.tab === "actions"} fallback={<box height={0} />}><text fg={ROLES.text}>GitHub Actions</text><Show when={githubReady()} fallback={<text fg={ROLES.dimText}>{props.github?.message ?? "GitHub data unavailable."}</text>}><For each={props.github!.runs}>{(item, index) => <text fg={selectedRow(index()) ? ROLES.selection : item.conclusion === "success" ? ROLES.success : item.conclusion === "failure" ? ROLES.error : ROLES.statusRunning}>› {item.name} · {item.status ?? "unknown"}{item.conclusion ? " / " + item.conclusion : ""} · {item.headBranch ?? "branch unknown"}</text>}</For></Show></Show>
       <Show when={props.tab === "releases"} fallback={<box height={0} />}><text fg={ROLES.text}>Releases</text><Show when={githubReady()} fallback={<text fg={ROLES.dimText}>{props.github?.message ?? "GitHub data unavailable."}</text>}><For each={props.github!.releases}>{(item, index) => <text fg={selectedRow(index()) ? ROLES.selection : ROLES.text}>› {item.tagName ?? item.name ?? "Untitled release"} · {item.publishedAt ?? (item.isDraft ? "Draft" : "date unavailable")}</text>}</For><Show when={!props.github!.releases.length} fallback={<box height={0} />}><text fg={ROLES.dimText}>No releases found or release access unavailable.</text></Show></Show></Show>
       </scrollbox>
       <text fg={ROLES.dimText} wrapMode="none">↑ ↓ select · ← → / 1–9 sections · Esc close</text>
