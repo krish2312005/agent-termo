@@ -40,6 +40,8 @@ describe("Git dashboard OpenTUI layout", () => {
     expect(graphSource).not.toContain('"╲"');
     expect(graphSource).not.toContain('"│"');
     expect(dashboardSource).not.toContain("lane.glyph +");
+    expect(dashboardSource).toContain("props.row.lanes.slice(0, 8)");
+    expect(dashboardSource).toContain('lane.isCommit ? (props.row.isMerge ? "◆" : "●") : "○"');
     expect(dashboardSource).toContain("LANE {props.row.laneIndex + 1}");
     expect(dashboardSource).toContain("backgroundColor={color}");
   });

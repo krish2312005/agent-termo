@@ -53,9 +53,13 @@ function GraphRow(props: { row: GitGraphRow; selected: boolean; width: number })
     <box flexDirection="column" paddingX={1} gap={0}>
       <box flexDirection="row" alignItems="center" gap={1}>
         <text fg={props.selected ? ROLES.brand : ROLES.dimText} attributes={props.selected ? 1 : 0} wrapMode="none">{props.selected ? "▸" : " "}</text>
-        <text fg={commitColor()} attributes={1} wrapMode="none">{props.row.isMerge ? "◆" : "●"}</text>
+        <box flexDirection="row" alignItems="center" gap={1} minWidth={2}>
+          <For each={props.row.lanes.slice(0, 8)}>
+            {(lane) => <text fg={laneColor(lane.colorIndex)} attributes={lane.isCommit ? 1 : 0} wrapMode="none">{lane.isCommit ? (props.row.isMerge ? "◆" : "●") : "○"}</text>}
+          </For>
+        </box>
         <text fg={ROLES.mutedCompletion} wrapMode="none">{props.row.shortHash}</text>
-        <text fg={props.row.isHead ? ROLES.brand : ROLES.text} attributes={props.row.isHead || props.selected ? 1 : 0} wrapMode="none">{clipText(props.row.subject, Math.max(12, props.width - 52))}</text>
+        <text fg={props.row.isHead ? ROLES.brand : ROLES.text} attributes={props.row.isHead || props.selected ? 1 : 0} wrapMode="none">{clipText(props.row.subject, Math.max(12, props.width - Math.min(8, props.row.lanes.length) * 2 - 52))}</text>
         <For each={props.row.refs.slice(0, 3)}>
           {(ref) => {
             const color = ref.kind === "tag" ? ROLES.statusRunning : ref.kind === "remote" ? ROLES.info : laneColor(ref.colorIndex);
