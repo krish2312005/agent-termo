@@ -12,7 +12,7 @@ const TABS: Array<{ id: GitDashboardTab; label: string }> = [
   { id: "status", label: "Changes" }, { id: "branches", label: "Branches" },
   { id: "diff", label: "Diff" }, { id: "stash", label: "Stashes" },
   { id: "remotes", label: "Remotes" }, { id: "tags", label: "Tags" },
-  { id: "prs", label: "PRs" }, { id: "issues", label: "Issues" },
+  { id: "github", label: "GitHub" }, { id: "prs", label: "PRs" }, { id: "issues", label: "Issues" },
   { id: "actions", label: "Actions" }, { id: "releases", label: "Releases" },
 ];
 
