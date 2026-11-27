@@ -43,7 +43,7 @@ jobs:
       # in the experimental core prototype and existing TUI files. Lint the
       # changed runtime modules while that baseline debt is addressed.
       - name: Lint changed runtime
-        run: bunx eslint src/main.ts src/runtime/verify.ts src/runtime/checks.ts src/runtime/browser-verification.ts
+        run: bunx eslint src/main.ts src/runtime/git-graph.ts src/runtime/verify.ts src/runtime/checks.ts src/runtime/browser-verification.ts
 
       - name: Test
         run: bun run test
@@ -51,6 +51,28 @@ jobs:
       - name: Build, pack, install, and test npm artifact
         run: bun run test:package
 
+      - name: TUI pseudo-terminal input smoke
+        shell: bash
+        run: |
+          set -o pipefail
+          set +e
+          output="$( { sleep 2; printf '/status\r'; sleep 1; printf 'exit\r'; } | timeout 15s script -q -e -c 'env TERM=xterm-256color COLUMNS=100 LINES=30 OPENTUI_GRAPHICS=false NIM_API_KEY=smoke-test bun src/cli.ts' /dev/null 2>&1)"
+          status=$?
+          set -e
+          printf '%s\n' "$output"
+          if grep -Eq 'Orphan text error|Fatal error:' <<< "$output"; then exit 1; fi
+          if ! grep -q 'Project:' <<< "$output"; then
+            echo 'TUI did not accept /status through the interactive composer.'
+            exit 1
+          fi
+          if ! grep -q 'Session complete\.' <<< "$output"; then
+            echo 'TUI did not accept exit through the interactive composer.'
+            exit 1
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo "TUI interactive smoke exited with status $status."
+            exit "$status"
+          fi
       - name: Source CLI smoke test
         run: bun run cli --help
 

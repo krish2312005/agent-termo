@@ -18,7 +18,9 @@ import { createInterface } from "node:readline";
 import packageJson from "../../package.json" with { type: "json" };
 import { copySelectedText } from "./selection-copy.js";
 import { sanitizeDisplayLine, sanitizeDisplayText } from "./display-text.js";
-import { ROLES } from "./theme.js";
+import { GIT_GRAPH_COLORS, ROLES } from "./theme.js";
+import type { GitBranchInfo, GitDashboardData, GitGraphRow, GitHubSummary } from "../runtime/git-graph.js";
+import { getGitDashboardItemCount, GitDashboardView, isDashboardEnterKey, type GitDashboardFeedback, type GitDashboardTab } from "./git-dashboard.js";
 import type { PermissionMode } from "../types/index.js";
 import { MAIN_AGENT_ID, listSubAgents } from "../runtime/subagents.js";
 import { buildAgentTree, reconcileSelection, visibleAgentRows, type AgentTreeNode, type WorkspaceStatus } from "../runtime/agent-tree.js";
@@ -43,8 +45,8 @@ import {
   type WorkspaceKeyState,
 } from "./workspace-view.js";
 
-export type UiKind = "user" | "assistant" | "tool" | "info" | "success" | "error" | "dim" | "markdown" | "diff-add" | "diff-remove" | "diff-context";
-export interface UiEntry { id: number; kind: UiKind; content: string; streaming?: boolean; /** Sub-agent that produced the entry; absent for main. */ agentLabel?: string; }
+export type UiKind = "user" | "assistant" | "tool" | "info" | "success" | "error" | "dim" | "markdown" | "diff-add" | "diff-remove" | "diff-context" | "git-graph";
+export interface UiEntry { id: number; kind: UiKind; content: string; streaming?: boolean; gitGraph?: GitGraphRow; /** Sub-agent that produced the entry; absent for main. */ agentLabel?: string; }
 export interface Key { name: string; text?: string; }
 export interface CommandInfo {
   name: string;
@@ -112,6 +114,44 @@ const [completionSelected, setCompletionSelected] = createSignal(0);
 const [secretMode, setSecretMode] = createSignal(false);
 const [secretDraft, setSecretDraft] = createSignal("");
 const [approvalPromptState, setApprovalPromptState] = createSignal<ApprovalPromptState | null>(null);
+const [gitDashboardState, setGitDashboardState] = createSignal<{
+  data: GitDashboardData;
+  github: GitHubSummary | null;
+  tab: GitDashboardTab;
+  selected: number;
+  feedback?: GitDashboardFeedback;
+  refresh?: (tab?: GitDashboardTab, selectedBranch?: string) => Promise<void>;
+  checkoutBranch?: (branch: GitBranchInfo) => Promise<string | void>;
+} | null>(null);
+
+export function openGitDashboard(
+  data: GitDashboardData,
+  github: GitHubSummary | null,
+  tab: GitDashboardTab = "overview",
+  refresh?: (tab?: GitDashboardTab, selectedBranch?: string) => Promise<void>,
+  checkoutBranch?: (branch: GitBranchInfo) => Promise<string | void>,
+  selected = 0,
+): void {
+  if (!renderer) {
+    appendLog("GIT COMMAND CENTER · " + data.snapshot.name + " · " + data.snapshot.branch, "success");
+    appendLog("Working tree: " + (data.snapshot.workingTreeClean ? "clean" : data.snapshot.changedPaths + " changed paths") + " · " + data.snapshot.totalCommits + " commits · " + data.snapshot.localBranchCount + " local / " + data.snapshot.remoteBranchCount + " remote branches", "info");
+    appendLog("Staged: " + data.staged.length + " · Unstaged: " + data.unstaged.length + " · Untracked: " + data.untracked.length + " · Conflicts: " + data.conflicts.length, "info");
+    appendGitGraphRows(data.snapshot.graphRows);
+    appendLog(github?.message ?? (github?.repository ? "GitHub: " + github.repository.nameWithOwner : "GitHub data unavailable."), "dim");
+    return;
+  }
+  setGitDashboardState({ data, github, tab, selected, refresh, checkoutBranch });
+  setInputActive(false);
+  textarea?.blur();
+}
+
+export function closeGitDashboard(): void {
+  if (!gitDashboardState()) return;
+  setGitDashboardState(null);
+  setInputActive(true);
+  textarea?.focus();
+}
+
 
 // Multi-agent workspace (navigation state only; switching never touches runs).
 const [workspaceRevision, setWorkspaceRevision] = createSignal(0);
@@ -472,6 +512,29 @@ function addEntry(content: string, kind: UiKind): void {
 let activeStreamId: number | null = null;
 export function appendLog(content: string, kind: UiKind = "info"): void {
   addEntry(content, kind);
+}
+export function appendGitGraphRows(rows: GitGraphRow[]): void {
+  if (rows.length === 0) return;
+  const cleanRows = rows.map((row) => ({
+    ...row,
+    shortHash: sanitizeDisplayLine(row.shortHash),
+    subject: sanitizeDisplayLine(row.subject),
+    author: sanitizeDisplayLine(row.author),
+    relativeDate: sanitizeDisplayLine(row.relativeDate),
+    refs: row.refs.map((ref) => ({ ...ref, label: sanitizeDisplayLine(ref.label) })),
+  }));
+  if (!renderer) {
+    for (const row of cleanRows) {
+      const lanes = row.lanes.map((lane) => lane.glyph).join("  ");
+      const refs = row.refs.map((ref) => "[" + ref.label + "]").join(" ");
+      process.stdout.write(lanes + "  " + row.shortHash + "  " + row.subject + (refs ? "  " + refs : "") + "  · " + row.author + " · " + row.relativeDate + "\n");
+    }
+    return;
+  }
+  setEntries((current) => [
+    ...current,
+    ...cleanRows.map((gitGraph) => ({ id: nextId++, kind: "git-graph" as const, content: "", gitGraph })),
+  ]);
 }
 export function clearLog(): void {
   setEntries([]);
@@ -899,7 +962,7 @@ function App() {
           ? "meta+" + event.name
           : event.name === "return" && event.shift
             ? "shift+enter"
-            : event.name === "return"
+            : !event.shift && isDashboardEnterKey(event.name, sequence)
               ? "enter"
               : event.name;
     const key: Key = { name, text: sequence || (event.name === "space" ? " " : undefined) };
@@ -923,6 +986,47 @@ function App() {
         setSecretDraft((value) => [...value].slice(0, -1).join(""));
       } else if (name === "text" || name === "paste" || name === "space") {
         setSecretDraft((value) => value + (key.text ?? (name === "space" ? " " : "")));
+      }
+      event.preventDefault();
+      return;
+    }
+
+    const dashboard = gitDashboardState();
+    if (dashboard) {
+      const tabs: GitDashboardTab[] = ["overview", "graph", "status", "branches", "diff", "stash", "remotes", "tags", "github", "prs", "issues", "actions", "releases"];
+      const currentIndex = tabs.indexOf(dashboard.tab);
+      if (name === "escape" || name === "ctrl+c") closeGitDashboard();
+      else if (name === "left" || name === "right") {
+        const next = (currentIndex + (name === "right" ? 1 : tabs.length - 1)) % tabs.length;
+        setGitDashboardState((current) => current ? { ...current, tab: tabs[next]!, selected: 0 } : current);
+      } else if (["up", "down", "pageup", "pagedown"].includes(name)) {
+        const step = name === "pageup" || name === "pagedown" ? Math.max(1, terminalRows() - 18) : 1;
+        const direction = name === "down" || name === "pagedown" ? 1 : -1;
+        const next = Math.max(0, dashboard.selected + direction * step);
+        const max = Math.max(0, getGitDashboardItemCount(dashboard.data, dashboard.github, dashboard.tab) - 1);
+        setGitDashboardState((current) => current ? { ...current, selected: Math.min(max, next) } : current);
+      } else if (name === "enter" && dashboard.tab === "branches") {
+        const selectedBranch = dashboard.data.branchDetails[dashboard.selected];
+        const report = (feedback: GitDashboardFeedback) => {
+          setGitDashboardState((current) => current ? { ...current, feedback } : current);
+        };
+        if (!selectedBranch) report({ tone: "error", message: "No branch is selected." });
+        else if (selectedBranch.isCurrent) report({ tone: "info", message: "Already on " + selectedBranch.name + "." });
+        else if (!dashboard.checkoutBranch) report({ tone: "error", message: "Branch switching is unavailable." });
+        else {
+          report({ tone: "info", message: "Switching to " + selectedBranch.name + "…" });
+          void dashboard.checkoutBranch(selectedBranch)
+            .then((message) => report({ tone: "success", message: message ?? "Branch switched successfully." }))
+            .catch((error) => report({ tone: "error", message: "Branch switch failed: " + (error instanceof Error ? error.message : String(error)) }));
+        }
+      } else if (key.text && /^[1-9]$/.test(key.text)) {
+        const next = Number(key.text) - 1;
+        if (tabs[next]) setGitDashboardState((current) => current ? { ...current, tab: tabs[next]!, selected: 0 } : current);
+      } else if (key.text?.toLowerCase() === "r" && dashboard.refresh) {
+        setStatus("Refreshing Git command center…");
+        void dashboard.refresh(dashboard.tab, dashboard.data.branchDetails[dashboard.selected]?.name)
+          .then(() => setStatus("Git data refreshed"))
+          .catch((error) => setStatus("Refresh failed: " + (error instanceof Error ? error.message : String(error))));
       }
       event.preventDefault();
       return;
@@ -1097,6 +1201,7 @@ function App() {
     user: ROLES.userText, assistant: ROLES.text, tool: ROLES.tool, info: ROLES.info,
     success: ROLES.success, error: ROLES.error, dim: ROLES.dimText, markdown: ROLES.markdownText,
     "diff-add": ROLES.diffAddText, "diff-remove": ROLES.diffRemoveText, "diff-context": ROLES.diffContextText,
+    "git-graph": ROLES.text,
   };
 
   const handleSelectionMouseUp = () => {
@@ -1146,6 +1251,7 @@ function App() {
           </box>
         </Show>
         <text fg={ROLES.border} flexShrink={0} wrapMode="none">{"─".repeat(Math.max(1, terminalColumns() - 2))}</text>
+        <Show when={gitDashboardState()} fallback={
         <scrollbox
           ref={(element) => {
             scrollbox = element;
@@ -1174,7 +1280,7 @@ function App() {
           contentOptions={{ layoutMode: "list" }}
         >
           <Show when={visibleEntries().length > 0} fallback={
-            <Show when={selectedAgentIdSignal() !== MAIN_AGENT_ID}>
+            <Show when={selectedAgentIdSignal() !== MAIN_AGENT_ID} fallback={<box height={0} />}>
               <box paddingX={1}>
                 <text fg={ROLES.dimText} wrapMode="none">No activity yet for @{selectedName()}.</text>
               </box>
@@ -1183,7 +1289,7 @@ function App() {
             <Index each={visibleEntries()}>
               {(entry) => (
                 <box flexDirection="column" paddingX={1}>
-                  <Show when={entry().kind === "user" || entry().kind === "markdown"}>
+                  <Show when={entry().kind === "user" || entry().kind === "markdown"} fallback={<box height={0} />}>
                     <Show when={entry().kind === "user"} fallback={
                       <text fg={entry().agentLabel ? ROLES.subagentLabel : ROLES.assistantLabel}>
                         {"⏺ " + (entry().agentLabel ?? "Agent-Termo")}
@@ -1191,21 +1297,58 @@ function App() {
                     }>
                       <box flexDirection="row">
                         <text fg={ROLES.userLabel}>❯ You</text>
-                        <Show when={entry().agentLabel}>
+                        <Show when={entry().agentLabel} fallback={<box width={0} height={0} />}>
                           <text fg={ROLES.userLabel}>{" → @" + entry().agentLabel}</text>
                         </Show>
                       </box>
                     </Show>
                   </Show>
-                  <Show when={entry().kind === "diff-add" || entry().kind === "diff-remove"} fallback={
-                    <Show when={entry().kind === "markdown" || entry().kind === "diff-context"} fallback={<text fg={colors[entry().kind]}>{entry().content}</text>}>
-                      <Show when={entry().kind === "markdown"} fallback={<text fg={colors["diff-context"]}>{entry().content}</text>}>
-                        <markdown content={entry().content} syntaxStyle={syntaxStyle} streaming={entry().streaming ?? false} />
+                  <Show when={entry().kind === "git-graph"} fallback={
+                    <Show when={entry().kind === "diff-add" || entry().kind === "diff-remove"} fallback={
+                      <Show when={entry().kind === "markdown" || entry().kind === "diff-context"} fallback={<text fg={colors[entry().kind]}>{entry().content}</text>}>
+                        <Show when={entry().kind === "markdown"} fallback={<text fg={colors["diff-context"]}>{entry().content}</text>}>
+                          <markdown content={entry().content} syntaxStyle={syntaxStyle} streaming={entry().streaming ?? false} />
+                        </Show>
                       </Show>
+                    }>
+                      <box width="100%" paddingX={1} backgroundColor={entry().kind === "diff-add" ? ROLES.diffAddSurface : ROLES.diffRemoveSurface}>
+                        <text fg={entry().kind === "diff-add" ? ROLES.diffAddText : ROLES.diffRemoveText}>{entry().content}</text>
+                      </box>
                     </Show>
                   }>
-                    <box width="100%" paddingX={1} backgroundColor={entry().kind === "diff-add" ? ROLES.diffAddSurface : ROLES.diffRemoveSurface}>
-                      <text fg={entry().kind === "diff-add" ? ROLES.diffAddText : ROLES.diffRemoveText}>{entry().content}</text>
+                    <box flexDirection="column" paddingX={1}>
+                      <box flexDirection="row" alignItems="center" gap={1}>
+                        <box flexDirection="row" minWidth={2}>
+                          <For each={entry().gitGraph!.lanes}>
+                            {(lane) => (
+                              <text
+                                fg={GIT_GRAPH_COLORS[lane.colorIndex % GIT_GRAPH_COLORS.length]}
+                                attributes={lane.isCommit ? TextAttributes.BOLD : TextAttributes.NONE}
+                                wrapMode="none"
+                              >{lane.glyph + " "}</text>
+                            )}
+                          </For>
+                        </box>
+                        <text fg={ROLES.mutedCompletion} wrapMode="none">{entry().gitGraph!.shortHash}</text>
+                        <text
+                          fg={entry().gitGraph!.isHead ? ROLES.brand : ROLES.text}
+                          attributes={entry().gitGraph!.isHead ? TextAttributes.BOLD : TextAttributes.NONE}
+                          wrapMode="none"
+                        >{clipText(entry().gitGraph!.subject, Math.max(12, terminalColumns() - entry().gitGraph!.lanes.length * 2 - 38))}</text>
+                        <For each={entry().gitGraph!.refs.slice(0, 2)}>
+                          {(ref) => (
+                            <text
+                              fg={ref.kind === "tag" ? ROLES.statusRunning : ref.kind === "remote" ? ROLES.info : GIT_GRAPH_COLORS[ref.colorIndex % GIT_GRAPH_COLORS.length]}
+                              attributes={TextAttributes.BOLD}
+                              wrapMode="none"
+                            >{" " + clipText(ref.label, 18) + " "}</text>
+                          )}
+                        </For>
+                      </box>
+                      <box flexDirection="row">
+                        <box width={entry().gitGraph!.lanes.length * 2 + 9} />
+                        <text fg={ROLES.dimText} wrapMode="none">{clipText(entry().gitGraph!.author + " · " + entry().gitGraph!.relativeDate, Math.max(12, terminalColumns() - 16))}</text>
+                      </box>
                     </box>
                   </Show>
                 </box>
@@ -1213,6 +1356,17 @@ function App() {
             </Index>
           </Show>
         </scrollbox>
+
+        }>
+          <GitDashboardView
+            data={gitDashboardState()!.data}
+            github={gitDashboardState()!.github}
+            tab={gitDashboardState()!.tab}
+            selected={gitDashboardState()!.selected}
+            width={terminalColumns()}
+            feedback={gitDashboardState()!.feedback}
+          />
+        </Show>
       </box>
       <Show when={terminalVisible() && terminal()} fallback={<box height={0} />}>
         <box
@@ -1317,7 +1471,7 @@ function App() {
         </Show>
       </box>
       <box flexDirection="column" width="100%" flexShrink={0}>
-        <Show when={navigatorView().hiddenAbove > 0 && !compactApprovalChrome()}>
+        <Show when={navigatorView().hiddenAbove > 0 && !compactApprovalChrome()} fallback={<box height={0} />}>
           <text fg={ROLES.dimText} wrapMode="none">{"  … " + navigatorView().hiddenAbove + " above"}</text>
         </Show>
         <For each={navigatorView().rows}>
@@ -1347,7 +1501,7 @@ function App() {
             );
           }}
         </For>
-        <Show when={navigatorView().hiddenBelow > 0 && !compactApprovalChrome()}>
+        <Show when={navigatorView().hiddenBelow > 0 && !compactApprovalChrome()} fallback={<box height={0} />}>
           <text fg={ROLES.dimText} wrapMode="none">{"  … " + navigatorView().hiddenBelow + " below"}</text>
         </Show>
       </box>
@@ -1355,7 +1509,7 @@ function App() {
         <Index each={footerLine().split(FOOTER_SEPARATOR)}>
           {(segment, index) => (
             <>
-              <Show when={index > 0}>
+              <Show when={index > 0} fallback={<box width={0} height={0} />}>
                 <text fg={ROLES.dimText} wrapMode="none">{FOOTER_SEPARATOR}</text>
               </Show>
               <text fg={ROLES.mutedText} wrapMode="none">{segment()}</text>
@@ -1388,7 +1542,8 @@ export async function initScreen(info: { model: string; project: string; thinkin
     exitOnCtrlC: false,
     // Agent-Termo owns SIGINT cleanup; do not install a second renderer handler.
     exitSignals: [],
-    useKittyKeyboard: legacyAppleTerminal ? null : {},
+    // Use the standard keyboard protocol on Windows Terminal/ConPTY.
+    useKittyKeyboard: legacyAppleTerminal || process.platform === 'win32' ? null : {},
     autoFocus: false,
     openConsoleOnError: false,
   });

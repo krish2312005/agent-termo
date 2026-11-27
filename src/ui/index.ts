@@ -2,6 +2,7 @@
 // OpenTUI scene; the non-interactive fallback writes plain output to stdout.
 
 import type { ProposedFileChange } from "../types/index.js";
+import type { GitGraphRow } from "../runtime/git-graph.js";
 import Chalk from "chalk";
 import packageJson from "../../package.json" with { type: "json" };
 import { loadMemory, loadTimeline } from "../memory/index.js";
@@ -10,6 +11,7 @@ import { buildInspector, formatDuration, statusIcon } from "./subagent-view.js";
 import {
   appendAssistantDelta,
   appendLog,
+  appendGitGraphRows,
   beginAssistantStream,
   finishAssistantStream,
   getCommands,
@@ -23,6 +25,7 @@ import {
 } from "./tui.js";
 
 export * from "./screen.js";
+export { openGitDashboard, closeGitDashboard } from "./tui.js";
 
 export { applySecretPaste, formatContextMeter, formatFooter, formatTokenCount, getCommands } from "./tui.js";
 export type { FooterOptions, FooterVariant } from "./tui.js";
@@ -53,6 +56,24 @@ export const COMMANDS: CommandInfo[] = [
   { name: "/model", description: "choose a model or switch directly by model ID", usage: "/model [model-id]" },
   { name: "/providers", description: "add, switch, list, and configure model API providers", usage: "/providers [list | use <provider-id> | <provider-id>]" },
   { name: "/mcp", description: "show configured MCP servers and their available tools", usage: "/mcp" },
+  { name: "/git", description: "browse the color-coded Git graph, repository branches, commits, and GitHub activity", usage: "/git [graph [limit] | info | branches | commit [hash] | github | help]" },
+  { name: "/git graph", description: "open the visual commit graph", usage: "/git graph" },
+  { name: "/git status", description: "inspect staged, unstaged, untracked and conflicted files", usage: "/git status" },
+  { name: "/git branches", description: "inspect local and remote branches", usage: "/git branches" },
+  { name: "/git commits", description: "browse recent commits", usage: "/git commits" },
+  { name: "/git remotes", description: "inspect configured remotes", usage: "/git remotes" },
+  { name: "/git diff", description: "inspect staged and unstaged diff summaries", usage: "/git diff" },
+  { name: "/git stash", description: "inspect saved stashes", usage: "/git stash" },
+  { name: "/git tags", description: "inspect repository tags", usage: "/git tags" },
+  { name: "/git github", description: "open GitHub repository activity", usage: "/git github" },
+  { name: "/git prs", description: "inspect pull requests", usage: "/git prs" },
+  { name: "/git issues", description: "inspect issues", usage: "/git issues" },
+  { name: "/git actions", description: "inspect recent GitHub Actions runs", usage: "/git actions" },
+  { name: "/git releases", description: "inspect releases", usage: "/git releases" },
+  { name: "/git checkout", description: "switch branches after confirmation", usage: "/git checkout <branch>" },
+  { name: "/git create", description: "create and switch to a branch after confirmation", usage: "/git create <branch>" },
+  { name: "/git delete", description: "safely delete a merged branch after confirmation", usage: "/git delete <branch>" },
+  { name: "/git merge", description: "merge a branch into the current branch after confirmation", usage: "/git merge <branch>" },
   { name: "/thinking", description: "choose the model's reasoning capacity", usage: "/thinking [off | auto | low | medium | high]" },
   { name: "/permissions", description: "set or cycle file and terminal permission behavior", usage: "/permissions [ask | files | auto]" },
   { name: "/agents", description: "list custom agents and choose the active agent", usage: "/agents" },
@@ -344,6 +365,17 @@ export function printError(message: string, hint?: string): void {
 }
 export function printSuccess(message: string): void { print("✓ " + message, "success"); }
 export function printInfo(message: string): void { print("ℹ " + message, "info"); }
+
+/** Add structured commit rows to the color-coded OpenTUI graph renderer. */
+export function printGitGraph(title: string, rows: GitGraphRow[]): void {
+  print(title, "markdown");
+  appendGitGraphRows(rows);
+}
+
+/** Render repository and commit details in the existing transcript. */
+export function printGitPanel(title: string, lines: string[]): void {
+  print(title + (lines.length ? "\n" + lines.join("\n") : ""), "markdown");
+}
 
 export async function printMemoryFile(projectRoot: string): Promise<void> {
   const memory = await loadMemory(projectRoot);

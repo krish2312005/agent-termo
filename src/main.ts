@@ -32,6 +32,7 @@ import { appendSessionArchive, createSession, forkSession, listSessions, loadLat
 import { compactConversation, estimateContextTokens, isContextWindowError, parseContextWindowTokens, prepareConversationForRequest, resolveContextBudget } from './runtime/context.js';
 import { formatContextBar } from './runtime/context-display.js';
 import { listTerminalSessions, stopTerminalSession } from './runtime/terminal-sessions.js';
+import { getGitCommitDetails, getGitFileDiff, getGitHubSummary, loadGitDashboardData, loadGitSnapshot, runGitBranchAction } from './runtime/git-graph.js';
 import { AgentEventHub } from './runtime/events.js';
 import { agentActivityReportPath, agentWorkReportPath, writeAgentActivityReport } from './runtime/agent-reports.js';
 import {
@@ -71,6 +72,8 @@ import {
 	printError,
 	printSuccess,
 	printInfo,
+	printGitPanel,
+	openGitDashboard,
 	printHelp,
 	MarkdownPrinter,
 	printAgentsList,
@@ -1751,7 +1754,7 @@ async function handleProvidersCommand(
 	projectRoot: string,
 	input: ReturnType<typeof createInput>,
 ): Promise<void> {
-	const [action, ...rest] = arg.trim().split(/\\s+/).filter(Boolean);
+	const [action, ...rest] = arg.trim().split(/\s+/).filter(Boolean);
 	const configured = listSavedProviders();
 	const current = nimClient.getProvider();
 
@@ -2556,6 +2559,101 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					}
 					continue mainLoop;
 				}
+				if (cmd === '/git' || cmd.startsWith('/git ')) {
+					const gitArguments = userInput.trim().slice('/git'.length).trim().split(/\s+/).filter(Boolean);
+					const requestedAction = gitArguments.shift();
+					const action = (requestedAction ?? 'overview').toLowerCase();
+					try {
+						if (action === 'checkout' || action === 'create' || action === 'delete' || action === 'merge') {
+							const branchName = gitArguments.join(' ').trim();
+							if (!branchName) {
+								printInfo('Usage: /git ' + action + ' <branch-name>');
+								continue mainLoop;
+							}
+							const warning = action === 'delete'
+								? 'Git will delete the branch only if it is safely merged.'
+								: action === 'merge'
+									? 'Git will merge this branch into the current branch. The working tree must be clean.'
+									: action === 'create'
+										? 'Git will create this branch and switch to it.'
+										: 'Git will switch branches. Git will refuse if this would overwrite local work.';
+							const approval = await promptAcceptReject('Run git ' + action + ' ' + branchName + '? ' + warning);
+							if (approval !== 'accept') {
+								printInfo('Git branch operation cancelled.');
+								continue mainLoop;
+							}
+							const result = await runGitBranchAction(projectRoot, action, branchName);
+							printSuccess(result || ('Git ' + action + ' completed for ' + branchName + '.'));
+							continue mainLoop;
+						}
+						if (action === 'diff' && gitArguments.length > 0) {
+							const filePath = gitArguments.join(' ');
+							printGitPanel('FILE DIFF · ' + filePath, (await getGitFileDiff(projectRoot, filePath)).split(/\r?\n/));
+							continue mainLoop;
+						}
+						if (action === 'commit') {
+							let selectedHash = gitArguments[0];
+							if (!selectedHash) {
+								const snapshot = await loadGitSnapshot(projectRoot, 100);
+								if (snapshot.commits.length === 0) {
+									printInfo('There are no commits to inspect yet.');
+									continue mainLoop;
+								}
+								selectedHash = await pick({
+									title: 'Select a commit',
+									items: snapshot.commits.map((commit) => ({
+										value: commit.hash,
+										label: commit.hash + '  ' + commit.subject,
+										hint: commit.author + ' · ' + commit.relativeDate,
+									})),
+								}) ?? undefined;
+							}
+							if (!selectedHash) printInfo('Commit selection cancelled.');
+							else printGitPanel('COMMIT DETAILS  ·  ' + selectedHash.slice(0, 12), (await getGitCommitDetails(projectRoot, selectedHash)).split(/\r?\n/));
+							continue mainLoop;
+						}
+						if (action === 'help') {
+							printInfo('Usage: /git [graph | status | branches | commits | remotes | diff | stash | tags | prs | issues | actions | releases | checkout <branch> | create <branch> | delete <branch> | merge <branch> | commit [hash]]');
+							continue mainLoop;
+						}
+						const tabs = {
+							overview: 'overview', info: 'overview', graph: 'graph', commits: 'graph',
+							status: 'status', branches: 'branches', diff: 'diff', stash: 'stash',
+							remotes: 'remotes', tags: 'tags', github: 'github', prs: 'prs',
+							issues: 'issues', actions: 'actions', releases: 'releases',
+					} as const;
+					if (!(action in tabs)) {
+						printInfo('Unknown Git view: ' + action + '. Use /git help.');
+						continue mainLoop;
+					}
+					const refreshDashboard = async (
+						tab = tabs[action as keyof typeof tabs],
+						selectedBranch?: string,
+					): Promise<void> => {
+						const [data, github] = await Promise.all([
+							loadGitDashboardData(projectRoot, action === 'graph' || action === 'commits' ? 120 : 80),
+							getGitHubSummary(projectRoot).catch(() => null),
+						]);
+						const selected = selectedBranch
+							? Math.max(0, data.branchDetails.findIndex((item) => item.name === selectedBranch && item.kind === 'local'))
+							: 0;
+						openGitDashboard(data, github, tab, refreshDashboard, async (branch) => {
+							const result = await runGitBranchAction(projectRoot, 'checkout', branch.name, branch.kind);
+							const localName = branch.kind === 'remote'
+								? branch.name.slice(branch.name.indexOf('/') + 1)
+								: branch.name;
+							await refreshDashboard('branches', localName);
+							return result || 'Switched to ' + localName + '.';
+						}, selected);
+					};
+					await refreshDashboard();
+					continue mainLoop;
+					} catch (error) {
+						printError('Git command center: ' + (error instanceof Error ? error.message : String(error)));
+					}
+					continue mainLoop;
+				}
+
 				if (cmd === '/mcp') {
 					const statuses = getMcpServerStatuses();
 					const tools = getMcpToolDefinitions();

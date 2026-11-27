@@ -180,7 +180,9 @@ describe("slash-command dispatch completeness", () => {
 
   it("has a real dispatch branch for every registered command and alias", () => {
     for (const command of COMMANDS) {
-      expect(dispatched.has(command.name), command.name).toBe(true);
+      // Nested Git views are routed by the shared /git handler.
+      const dispatchName = command.name.startsWith("/git ") ? "/git" : command.name;
+      expect(dispatched.has(dispatchName), command.name).toBe(true);
       for (const alias of command.aliases ?? []) {
         expect(dispatched.has(alias), `${alias} (${command.name})`).toBe(true);
       }

@@ -2,11 +2,12 @@ import { describe, expect, it } from "vitest";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { COLORS, ROLES } from "../../src/ui/theme.js";
+import { COLORS, GIT_GRAPH_COLORS, ROLES } from "../../src/ui/theme.js";
 
 const srcDir = fileURLToPath(new URL("../../src/", import.meta.url));
 const uiDir = join(srcDir, "ui");
 const themeFile = join(uiDir, "theme.ts");
+const gitDashboardFile = join(uiDir, "git-dashboard.tsx");
 const readUi = (file: string): string => readFileSync(join(uiDir, file), "utf8");
 
 /** Every file under src/, recursively (docs/tests are exempt). */
@@ -155,6 +156,19 @@ describe("Warm Terminal palette", () => {
     expect(COLORS).toEqual(WARM_PALETTE);
   });
 
+  it("keeps Git graph lanes inside Warm Terminal accents without using green success as a lane color", () => {
+    expect(GIT_GRAPH_COLORS).toEqual([
+      ROLES.brand,
+      ROLES.info,
+      ROLES.tool,
+      ROLES.markdownHeading2,
+      ROLES.error,
+      ROLES.selection,
+      ROLES.mutedCompletion,
+    ]);
+    expect(GIT_GRAPH_COLORS).not.toContain(ROLES.success);
+  });
+
   it("does not resurrect the Carbon Forge token aliases", () => {
     for (const alias of ["accent", "copper", "teal", "textDim", "surface", "textMuted"]) {
       expect(COLORS, alias).not.toHaveProperty(alias);
@@ -174,7 +188,12 @@ describe("Warm Terminal palette", () => {
     }
   });
 
-  it("contains no Carbon Forge hex anywhere under src", () => {
+  it("uses semantic Warm Terminal roles and graph colors in the Git dashboard", () => {
+    const dashboard = readFileSync(gitDashboardFile, "utf8");
+    expect(dashboard).toContain('from "./theme.js"');
+    expect(dashboard).toContain("GIT_GRAPH_COLORS");
+    expect(dashboard).toContain("ROLES.pageBackground");
+    expect(dashboard).not.toMatch(/#[0-9A-Fa-f]{3,8}\b/);
     for (const file of sourceFiles) {
       const content = readLower(file);
       for (const hex of CARBON_FORGE_HEXES) {
