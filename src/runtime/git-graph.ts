@@ -214,6 +214,9 @@ export function layoutGitGraph(commits: GitCommit[]): GitGraphRow[] {
     }
 
     const firstParent = commit.parents[0];
+    const firstParentLane = firstParent
+      ? activeLanes.findIndex((lane, index) => index !== laneIndex && lane.hash === firstParent)
+      : -1;
     const currentColorIndex = activeLanes[laneIndex]!.colorIndex;
     const lanes: GitGraphLane[] = activeLanes.map((lane, index) => ({
       colorIndex: lane.colorIndex,
