@@ -88,6 +88,7 @@ import {
 	printInfo,
 	printGitPanel,
 	openGitDashboard,
+	openOmniaDashboard,
 	printHelp,
 	MarkdownPrinter,
 	printAgentsList,
@@ -2821,6 +2822,13 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 				if (cmd === '/omnia' || cmd.startsWith('/omnia ')) {
 					const argument = userInput.trim().slice('/omnia'.length).trim();
 					const action = argument.split(/\s+/, 1)[0]?.toLowerCase() ?? '';
+
+					if (action === 'dashboard' || action === 'live') {
+						const run = getLatestOmniaRun(projectRoot);
+						if (run) openOmniaDashboard(projectRoot, run.id);
+						else printInfo('No OMNIA runs yet. Start one with /omnia <goal>.');
+						continue mainLoop;
+					}
 
 					if (!argument || action === 'status') {
 						const run = getLatestOmniaRun(projectRoot);

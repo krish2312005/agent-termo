@@ -25,7 +25,7 @@ import {
 } from "./tui.js";
 
 export * from "./screen.js";
-export { openGitDashboard, closeGitDashboard } from "./tui.js";
+export { openGitDashboard, closeGitDashboard, openOmniaDashboard, closeOmniaDashboard } from "./tui.js";
 
 export { applySecretPaste, formatContextMeter, formatFooter, formatTokenCount, getCommands } from "./tui.js";
 export type { FooterOptions, FooterVariant } from "./tui.js";
@@ -45,7 +45,7 @@ export const COMMANDS: CommandInfo[] = [
   { name: "/resume", description: "restore a saved conversation by ID or choose one", usage: "/resume [session-id]" },
   { name: "/fork", description: "create a new conversation from the current or a saved session", usage: "/fork [session-id]" },
   { name: "/plan", description: "create, approve, or cancel an execution plan", usage: "/plan <task> | /plan approve | /plan cancel" },
-  { name: "/omnia", description: "execute an outcome-driven engineering run and inspect its evidence report", usage: "/omnia <goal> | /omnia status | /omnia report [run-id] | /omnia resume | /omnia stop" },
+  { name: "/omnia", description: "execute an outcome-driven engineering run, open live mission control, and inspect its proof report", usage: "/omnia <goal> | /omnia dashboard | /omnia status | /omnia report [run-id] | /omnia resume | /omnia stop" },
   { name: "/checkpoint", description: "create a manual rollback checkpoint with an optional label", usage: "/checkpoint [label]" },
   { name: "/checkpoints", description: "list saved file-change checkpoints", usage: "/checkpoints" },
   { name: "/undo", description: "restore the latest or a selected checkpoint", usage: "/undo [checkpoint-id]" },
