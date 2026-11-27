@@ -43,7 +43,7 @@ import {
   type WorkspaceKeyState,
 } from "./workspace-view.js";
 
-export type UiKind = "user" | "assistant" | "tool" | "info" | "success" | "error" | "dim" | "markdown" | "diff-add" | "diff-remove" | "diff-context" | "git-main" | "git-remote" | "git-merge" | "git-tag" | "git-commit" | "git-lane";
+export type UiKind = "user" | "assistant" | "tool" | "info" | "success" | "error" | "dim" | "markdown" | "diff-add" | "diff-remove" | "diff-context";
 export interface UiEntry { id: number; kind: UiKind; content: string; streaming?: boolean; /** Sub-agent that produced the entry; absent for main. */ agentLabel?: string; }
 export interface Key { name: string; text?: string; }
 export interface CommandInfo {
@@ -472,32 +472,6 @@ function addEntry(content: string, kind: UiKind): void {
 let activeStreamId: number | null = null;
 export function appendLog(content: string, kind: UiKind = "info"): void {
   addEntry(content, kind);
-}
-
-export interface TranscriptPosition {
-  agentId: string;
-  scrollTop: number;
-}
-
-/** Pause tail-follow and capture the start of a new transcript section. */
-export function beginTranscriptSection(): TranscriptPosition | null {
-  const element = scrollbox;
-  if (!element) return null;
-  const agentId = getSelectedAgentId();
-  atBottomByAgent.set(agentId, false);
-  return { agentId, scrollTop: element.scrollHeight };
-}
-
-/** Position a newly printed section at the top without jumping to old conversation history. */
-export function finishTranscriptSection(position: TranscriptPosition | null): void {
-  const element = scrollbox;
-  if (!position || !element) return;
-  element.afterLayout(() => {
-    if (getSelectedAgentId() !== position.agentId || scrollbox !== element) return;
-    element.scrollTo(position.scrollTop);
-    atBottomByAgent.set(position.agentId, false);
-    scrollPositions.set(position.agentId, element.scrollTop);
-  });
 }
 export function clearLog(): void {
   setEntries([]);
@@ -1123,8 +1097,6 @@ function App() {
     user: ROLES.userText, assistant: ROLES.text, tool: ROLES.tool, info: ROLES.info,
     success: ROLES.success, error: ROLES.error, dim: ROLES.dimText, markdown: ROLES.markdownText,
     "diff-add": ROLES.diffAddText, "diff-remove": ROLES.diffRemoveText, "diff-context": ROLES.diffContextText,
-    "git-main": ROLES.success, "git-remote": ROLES.info, "git-merge": ROLES.statusRunning,
-    "git-tag": ROLES.brand, "git-commit": ROLES.text, "git-lane": ROLES.dimText,
   };
 
   const handleSelectionMouseUp = () => {
@@ -1202,16 +1174,16 @@ function App() {
           contentOptions={{ layoutMode: "list" }}
         >
           <Show when={visibleEntries().length > 0} fallback={
-            <box paddingX={1}>
-              <Show when={selectedAgentIdSignal() !== MAIN_AGENT_ID} fallback={<box height={0} />}>
+            <Show when={selectedAgentIdSignal() !== MAIN_AGENT_ID}>
+              <box paddingX={1}>
                 <text fg={ROLES.dimText} wrapMode="none">No activity yet for @{selectedName()}.</text>
-              </Show>
-            </box>
+              </box>
+            </Show>
           }>
             <Index each={visibleEntries()}>
               {(entry) => (
                 <box flexDirection="column" paddingX={1}>
-                  <Show when={entry().kind === "user" || entry().kind === "markdown"} fallback={<box height={0} />}>
+                  <Show when={entry().kind === "user" || entry().kind === "markdown"}>
                     <Show when={entry().kind === "user"} fallback={
                       <text fg={entry().agentLabel ? ROLES.subagentLabel : ROLES.assistantLabel}>
                         {"⏺ " + (entry().agentLabel ?? "Agent-Termo")}
@@ -1219,7 +1191,7 @@ function App() {
                     }>
                       <box flexDirection="row">
                         <text fg={ROLES.userLabel}>❯ You</text>
-                        <Show when={entry().agentLabel} fallback={<box width={0} height={0} />}>
+                        <Show when={entry().agentLabel}>
                           <text fg={ROLES.userLabel}>{" → @" + entry().agentLabel}</text>
                         </Show>
                       </box>
@@ -1345,7 +1317,7 @@ function App() {
         </Show>
       </box>
       <box flexDirection="column" width="100%" flexShrink={0}>
-        <Show when={navigatorView().hiddenAbove > 0 && !compactApprovalChrome()} fallback={<box height={0} />}>
+        <Show when={navigatorView().hiddenAbove > 0 && !compactApprovalChrome()}>
           <text fg={ROLES.dimText} wrapMode="none">{"  … " + navigatorView().hiddenAbove + " above"}</text>
         </Show>
         <For each={navigatorView().rows}>
@@ -1375,7 +1347,7 @@ function App() {
             );
           }}
         </For>
-        <Show when={navigatorView().hiddenBelow > 0 && !compactApprovalChrome()} fallback={<box height={0} />}>
+        <Show when={navigatorView().hiddenBelow > 0 && !compactApprovalChrome()}>
           <text fg={ROLES.dimText} wrapMode="none">{"  … " + navigatorView().hiddenBelow + " below"}</text>
         </Show>
       </box>
@@ -1383,7 +1355,7 @@ function App() {
         <Index each={footerLine().split(FOOTER_SEPARATOR)}>
           {(segment, index) => (
             <>
-              <Show when={index > 0} fallback={<box width={0} height={0} />}>
+              <Show when={index > 0}>
                 <text fg={ROLES.dimText} wrapMode="none">{FOOTER_SEPARATOR}</text>
               </Show>
               <text fg={ROLES.mutedText} wrapMode="none">{segment()}</text>
@@ -1416,8 +1388,7 @@ export async function initScreen(info: { model: string; project: string; thinkin
     exitOnCtrlC: false,
     // Agent-Termo owns SIGINT cleanup; do not install a second renderer handler.
     exitSignals: [],
-    // Windows Terminal/ConPTY can mishandle OpenTUI's Kitty CSI-u input mode.
-    // Keep the standard key protocol there so the composer and global shortcuts receive input.
+    // Use the standard keyboard protocol on Windows Terminal/ConPTY.
     useKittyKeyboard: legacyAppleTerminal || process.platform === 'win32' ? null : {},
     autoFocus: false,
     openConsoleOnError: false,

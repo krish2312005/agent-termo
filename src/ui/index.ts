@@ -10,8 +10,6 @@ import { buildInspector, formatDuration, statusIcon } from "./subagent-view.js";
 import {
   appendAssistantDelta,
   appendLog,
-  beginTranscriptSection,
-  finishTranscriptSection,
   beginAssistantStream,
   finishAssistantStream,
   getCommands,
@@ -352,28 +350,23 @@ export type GitDisplayTone = "main" | "remote" | "merge" | "tag" | "commit" | "l
 export interface GitDisplayRow { text: string; tone: GitDisplayTone; }
 
 const gitDisplayKinds: Record<GitDisplayTone, UiKind> = {
-  main: "git-main",
-  remote: "git-remote",
-  merge: "git-merge",
-  tag: "git-tag",
-  commit: "git-commit",
-  lane: "git-lane",
+  main: "success",
+  remote: "info",
+  merge: "tool",
+  tag: "success",
+  commit: "markdown",
+  lane: "dim",
 };
 
-/** Add graph rows as separate transcript entries so the existing scrollbox can browse long histories. */
+/** Add graph rows to the existing transcript using its established scroll behavior. */
 export function printGitGraph(title: string, rows: GitDisplayRow[]): void {
-  const position = beginTranscriptSection();
   print(title, "markdown");
   for (const row of rows) print(row.text, gitDisplayKinds[row.tone]);
-  finishTranscriptSection(position);
 }
 
-/** Render a read-only Git detail panel inside the normal scrollable transcript. */
+/** Render repository and commit details in the existing transcript. */
 export function printGitPanel(title: string, lines: string[]): void {
-  const position = beginTranscriptSection();
-  print(title, "markdown");
-  for (const line of lines) print(line, "info");
-  finishTranscriptSection(position);
+  print(title + (lines.length ? "\n" + lines.join("\n") : ""), "markdown");
 }
 
 export async function printMemoryFile(projectRoot: string): Promise<void> {
