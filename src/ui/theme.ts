@@ -55,6 +55,17 @@ export const COLORS = {
   ...SOURCE,
 } as const;
 
+/** Stable semantic palette used by the Git ancestry lanes. */
+export const GIT_GRAPH_COLORS = [
+  COLORS.brand,
+  COLORS.info,
+  COLORS.userSuccess,
+  COLORS.markdownHeading2,
+  COLORS.toolWaiting,
+  COLORS.error,
+  COLORS.selection,
+] as const;
+
 export type ColorToken = keyof typeof COLORS;
 
 /**

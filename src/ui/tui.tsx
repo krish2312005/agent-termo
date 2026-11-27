@@ -18,7 +18,7 @@ import { createInterface } from "node:readline";
 import packageJson from "../../package.json" with { type: "json" };
 import { copySelectedText } from "./selection-copy.js";
 import { sanitizeDisplayLine, sanitizeDisplayText } from "./display-text.js";
-import { ROLES } from "./theme.js";
+import { GIT_GRAPH_COLORS, ROLES } from "./theme.js";
 import type { GitGraphRow } from "../runtime/git-graph.js";
 import type { PermissionMode } from "../types/index.js";
 import { MAIN_AGENT_ID, listSubAgents } from "../runtime/subagents.js";
@@ -95,8 +95,6 @@ export interface ScreenState {
   permissionMode: PermissionMode;
   context?: ScreenContext;
 }
-
-const GIT_GRAPH_COLORS = ["#D99168", "#8BB7D8", "#8FCB9B", "#C4A2CE", "#D7A27C", "#79B8D1", "#E47D76"] as const;
 
 const [entries, setEntries] = createSignal<UiEntry[]>([]);
 const [status, setStatus] = createSignal("");
