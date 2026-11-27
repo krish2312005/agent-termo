@@ -49,8 +49,8 @@ describe("Git dashboard OpenTUI layout", () => {
     expect(isDashboardEnterKey("enter")).toBe(true);
     expect(isDashboardEnterKey("kp_enter")).toBe(true);
     expect(isDashboardEnterKey("numpadenter")).toBe(true);
-    expect(isDashboardEnterKey("unknown", "\\r")).toBe(true);
-    expect(isDashboardEnterKey("unknown", "\\n")).toBe(true);
+    expect(isDashboardEnterKey("unknown", "\r")).toBe(true);
+    expect(isDashboardEnterKey("unknown", "\n")).toBe(true);
     expect(isDashboardEnterKey("escape")).toBe(false);
     expect(isDashboardEnterKey("space", " ")).toBe(false);
   });

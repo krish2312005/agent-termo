@@ -34,8 +34,8 @@ export interface GitDashboardViewProps {
 
 export function isDashboardEnterKey(name: string, sequence = ""): boolean {
   return ["enter", "return", "kp_enter", "numpadenter"].includes(name.toLowerCase())
-    || sequence === "\\r"
-    || sequence === "\\n";
+    || sequence === "\r"
+    || sequence === "\n";
 }
 
 function Stat(props: { label: string; value: string; color?: string; width: number }) {
