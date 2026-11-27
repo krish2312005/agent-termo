@@ -25,6 +25,7 @@ import {
 } from "./tui.js";
 
 export * from "./screen.js";
+export { openGitDashboard, closeGitDashboard } from "./tui.js";
 
 export { applySecretPaste, formatContextMeter, formatFooter, formatTokenCount, getCommands } from "./tui.js";
 export type { FooterOptions, FooterVariant } from "./tui.js";
