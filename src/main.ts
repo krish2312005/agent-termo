@@ -2600,11 +2600,14 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						printInfo('Unknown Git view: ' + action + '. Use /git help.');
 						continue mainLoop;
 					}
-					const [data, github] = await Promise.all([
-						loadGitDashboardData(projectRoot, action === 'graph' || action === 'commits' ? 120 : 80),
-						getGitHubSummary(projectRoot).catch(() => null),
-					]);
-					openGitDashboard(data, github, tabs[action as keyof typeof tabs]);
+					const refreshDashboard = async (): Promise<void> => {
+						const [data, github] = await Promise.all([
+							loadGitDashboardData(projectRoot, action === 'graph' || action === 'commits' ? 120 : 80),
+							getGitHubSummary(projectRoot).catch(() => null),
+						]);
+						openGitDashboard(data, github, tabs[action as keyof typeof tabs], refreshDashboard);
+					};
+					await refreshDashboard();
 					continue mainLoop;
 					} catch (error) {
 						printError('Git command center: ' + (error instanceof Error ? error.message : String(error)));
