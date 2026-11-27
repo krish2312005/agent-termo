@@ -25,7 +25,7 @@ When a run is active, the main agent receives the goal, explicit acceptance crit
 5. Report each requirement against actual commands, tests, browser observations, or other evidence.
 6. Disclose anything that was not verified.
 
-OMNIA records tool outcomes, command outcomes, browser verification calls, and applied file changes that pass through the main tool loop. Evidence is stored with the run under `.agent-termo/omnia/runs/<run-id>.json`.
+OMNIA records tool outcomes, command outcomes, browser verification calls, and applied file changes that pass through the main tool loop. Evidence is stored with the run under `.agent-termo/omnia/runs/<run-id>.json`. Terminal reports are written to `.agent-termo/omnia/reports/<run-id>.md`.
 
 ## Run status
 
@@ -50,7 +50,19 @@ The runtime independently validates each decision before accepting it:
 - Evidence IDs must exist in the run and every cited item must have succeeded.
 - Missing, malformed, unsupported, or contradictory evidence leaves the requirement unverified.
 
-A passing generic build or test does not prove unrelated behavior. This is a separate model review constrained by runtime evidence checks, not a formal proof or a guarantee that the application is defect-free. The current implementation does not yet automatically repair failed requirements; bounded repair is the next milestone.
+A passing generic build or test does not prove unrelated behavior. This is a separate model review constrained by runtime evidence checks, not a formal proof or a guarantee that the application is defect-free.
+
+## Bounded repair
+
+When the verifier leaves non-manual requirements unverified, OMNIA can request a targeted repair pass. The repair engineer receives only the remaining requirements, their verification plans, the recorded evidence, and bounded excerpts of the final changed files. It uses Agent-Termo's existing tool executor, permission mode, approval prompts, and checkpoints.
+
+At most two repair attempts are allowed per run. The attempt counter is persisted in the run record and enforced by the store. After each repair, the full requirement verification runs again. If the repair planner returns no executable tool calls, a repair fails, or the budget is exhausted, the run ends as `completed_with_warnings` with the remaining blocker recorded. Manual requirements are never auto-repaired or auto-verified.
+
+## Proof reports
+
+Every terminal run state writes a Markdown report to `.agent-termo/omnia/reports/<run-id>.md`. A fully verified run is titled **Proof of Completion**; blocked, failed, cancelled, or partially verified runs are labeled as execution and verification reports. Reports include per-requirement strategy and status, evidence IDs, recorded command/tool outputs, repair attempts, summary, and blockers.
+
+Common API-key, provider-token, and password-like values are redacted before evidence is persisted and again when reports are rendered. Reports are local project files and should be reviewed before sharing.
 
 ## Storage and privacy
 

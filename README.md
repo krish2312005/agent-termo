@@ -222,11 +222,13 @@ TERMO OMNIA is an incremental outcome-driven workflow built on Agent-Termo's exi
 /omnia stop
 ~~~
 
-Run records are stored under `.agent-termo/omnia/runs/`. OMNIA records the actual tool, command, and applied-file outcomes observed by the main execution loop.
+Run records are stored under `.agent-termo/omnia/runs/`; terminal reports are written to `.agent-termo/omnia/reports/<run-id>.md`. Execution evidence is collected from the existing Agent-Termo tool and approval pipeline.
 
-**Verification integrity:** after execution, a separate verifier request reviews each requirement against the recorded evidence and final file excerpts. The runtime accepts a verified result only when the cited evidence exists, succeeded, and matches that requirement's verification strategy. A generic passing build or test cannot prove unrelated behavior. Subjective requirements remain unverified for human review. The verifier is an evidence-based model review, not a formal proof or a guarantee that the application is defect-free.
+**Verification integrity:** a separate verifier request reviews each requirement against recorded evidence and final file excerpts. The runtime accepts a verified result only when the cited evidence exists, succeeded, and matches the requirement's verification strategy. A generic passing build or test cannot prove unrelated behavior. Subjective requirements remain unverified for human review. This model-assisted review is not a formal proof or a guarantee that the application is defect-free.
 
-Use `/omnia resume` for a blocked run. Use `/omnia report [run-id]` to inspect its recorded evidence.
+If requirements remain unverified, OMNIA can run up to two targeted repair attempts through the existing tools and permission pipeline, then repeat verification. The repair budget is persisted and is not reset by restarting the CLI. Terminal runs generate a Markdown report containing requirement decisions, evidence IDs, command outputs, repair count, summary, and blockers. Common API-key and token patterns are redacted from persisted evidence.
+
+Use `/omnia resume` for a blocked run. Use `/omnia report [run-id]` to inspect its report.
 
 ---
 
