@@ -372,22 +372,22 @@ export function applyOmniaVerification(
 
 export function formatOmniaReport(run: OmniaRun): string {
   const verified = run.requirements.filter((item) => item.status === "verified").length;
-  const reportPath = \`.agent-termo/omnia/reports/\${run.id}.md\`;
+  const reportPath = `.agent-termo/omnia/reports/${run.id}.md`;
   const title = run.status === "completed" ? "Proof of Completion" : "Execution & Verification Report";
   const lines = [
-    \`# TERMO OMNIA — \${run.id.slice(0, 8)}\`,
+    `# TERMO OMNIA — ${run.id.slice(0, 8)}`,
     "",
-    \`**Report:** \${title}\`,
-    \`**Status:** \${run.status.replace(/_/g, " ")}\`,
-    \`**Verified requirements:** \${verified}/\${run.requirements.length}\`,
-    \`**Started:** \${run.createdAt}\`,
-    \`**Updated:** \${run.updatedAt}\`,
-    \`**Repair attempts:** \${run.repairAttempts}/\${MAX_OMNIA_REPAIR_ATTEMPTS}\`,
-    \`**Saved report:** \${reportPath}\`,
+    `**Report:** ${title}`,
+    `**Status:** ${run.status.replace(/_/g, " ")}`,
+    `**Verified requirements:** ${verified}/${run.requirements.length}`,
+    `**Started:** ${run.createdAt}`,
+    `**Updated:** ${run.updatedAt}`,
+    `**Repair attempts:** ${run.repairAttempts}/${MAX_OMNIA_REPAIR_ATTEMPTS}`,
+    `**Saved report:** ${reportPath}`,
     "",
     "## Goal",
     "",
-    run.goal,
+    redactSensitiveText(run.goal),
     "",
     "## Requirement results",
     "",
@@ -395,13 +395,13 @@ export function formatOmniaReport(run: OmniaRun): string {
 
   for (const item of run.requirements) {
     lines.push(
-      \`### \${item.id} — \${item.status.toUpperCase()}\`,
+      `### ${item.id} — ${item.status.toUpperCase()}`,
       "",
       item.description,
       "",
-      \`- Strategy: \${item.strategy}\`,
-      \`- Verification plan: \${item.verificationPlan}\`,
-      \`- Evidence IDs: \${item.evidenceIds.length ? item.evidenceIds.join(", ") : "none"}\`,
+      `- Strategy: ${item.strategy}`,
+      `- Verification plan: ${item.verificationPlan}`,
+      `- Evidence IDs: ${item.evidenceIds.length ? item.evidenceIds.join(", ") : "none"}`,
       "",
     );
   }
@@ -410,15 +410,15 @@ export function formatOmniaReport(run: OmniaRun): string {
   if (run.evidence.length > 0) {
     for (const item of run.evidence) {
       lines.push(
-        \`### \${item.success ? "PASS" : "FAIL"} — \${item.type} — \${item.id}\`,
+        `### ${item.success ? "PASS" : "FAIL"} — ${item.type} — ${item.id}`,
         "",
-        \`- Source: \${item.source}\`,
-        \`- Recorded: \${item.timestamp}\`,
-        \`- Requirement: \${item.requirementId ?? "not assigned"}\`,
+        `- Source: ${item.source}`,
+        `- Recorded: ${item.timestamp}`,
+        `- Requirement: ${item.requirementId ?? "not assigned"}`,
         "",
         item.description,
       );
-      if (item.output) lines.push("", "~~~text", item.output, "~~~");
+      if (item.output) lines.push("", "~~~text", redactSensitiveText(item.output), "~~~");
       lines.push("");
     }
   } else {
@@ -430,9 +430,9 @@ export function formatOmniaReport(run: OmniaRun): string {
     "",
     "A requirement is marked verified only when the independent verifier cites successful evidence matching its verification strategy. A passing generic build or test does not prove unrelated behavior. Manual requirements remain unverified. This model-assisted review is not a formal proof or a guarantee that the application is defect-free.",
   );
-  if (run.blocker) lines.push("", "## Blocker", "", run.blocker);
-  if (run.summary) lines.push("", "## Verification summary", "", run.summary);
-  return lines.join("\\n");
+  if (run.blocker) lines.push("", "## Blocker", "", redactSensitiveText(run.blocker));
+  if (run.summary) lines.push("", "## Verification summary", "", redactSensitiveText(run.summary));
+  return lines.join("\n");
 }
 
 export function writeOmniaReport(projectRoot: string, run: OmniaRun): string {
