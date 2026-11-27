@@ -19,7 +19,7 @@ import packageJson from "../../package.json" with { type: "json" };
 import { copySelectedText } from "./selection-copy.js";
 import { sanitizeDisplayLine, sanitizeDisplayText } from "./display-text.js";
 import { GIT_GRAPH_COLORS, ROLES } from "./theme.js";
-import type { GitDashboardData, GitGraphRow, GitHubSummary } from "../runtime/git-graph.js";
+import type { GitBranchInfo, GitDashboardData, GitGraphRow, GitHubSummary } from "../runtime/git-graph.js";
 import { GitDashboardView, type GitDashboardTab } from "./git-dashboard.js";
 import type { PermissionMode } from "../types/index.js";
 import { MAIN_AGENT_ID, listSubAgents } from "../runtime/subagents.js";
@@ -119,10 +119,17 @@ const [gitDashboardState, setGitDashboardState] = createSignal<{
   github: GitHubSummary | null;
   tab: GitDashboardTab;
   selected: number;
-  refresh?: () => Promise<void>;
+  refresh?: (tab?: GitDashboardTab, selectedBranch?: string) => Promise<void>;
+  checkoutBranch?: (branch: GitBranchInfo) => Promise<string | void>;
 } | null>(null);
 
-export function openGitDashboard(data: GitDashboardData, github: GitHubSummary | null, tab: GitDashboardTab = "overview", refresh?: () => Promise<void>): void {
+export function openGitDashboard(
+  data: GitDashboardData,
+  github: GitHubSummary | null,
+  tab: GitDashboardTab = "overview",
+  refresh?: (tab?: GitDashboardTab, selectedBranch?: string) => Promise<void>,
+  checkoutBranch?: (branch: GitBranchInfo) => Promise<string | void>,
+): void {
   if (!renderer) {
     appendLog("GIT COMMAND CENTER · " + data.snapshot.name + " · " + data.snapshot.branch, "success");
     appendLog("Working tree: " + (data.snapshot.workingTreeClean ? "clean" : data.snapshot.changedPaths + " changed paths") + " · " + data.snapshot.totalCommits + " commits · " + data.snapshot.localBranchCount + " local / " + data.snapshot.remoteBranchCount + " remote branches", "info");
@@ -131,7 +138,7 @@ export function openGitDashboard(data: GitDashboardData, github: GitHubSummary |
     appendLog(github?.message ?? (github?.repository ? "GitHub: " + github.repository.nameWithOwner : "GitHub data unavailable."), "dim");
     return;
   }
-  setGitDashboardState({ data, github, tab, selected: 0, refresh });
+  setGitDashboardState({ data, github, tab, selected: 0, refresh, checkoutBranch });
   setInputActive(false);
   textarea?.blur();
 }
@@ -992,12 +999,25 @@ function App() {
         setGitDashboardState((current) => current ? { ...current, tab: tabs[next]!, selected: 0 } : current);
       } else if (name === "up" || name === "down") {
         setGitDashboardState((current) => current ? { ...current, selected: Math.max(0, current.selected + (name === "down" ? 1 : -1)) } : current);
+      } else if (name === "enter" && dashboard.tab === "branches") {
+        const selectedBranch = dashboard.data.branchDetails[dashboard.selected];
+        if (!selectedBranch) setStatus("No branch selected.");
+        else if (selectedBranch.isCurrent) setStatus("Already on " + selectedBranch.name + ".");
+        else if (!dashboard.checkoutBranch) setStatus("Branch switching is unavailable.");
+        else {
+          setStatus("Switching to " + selectedBranch.name + "…");
+          void dashboard.checkoutBranch(selectedBranch)
+            .then((message) => setStatus(message ?? "Branch switched successfully."))
+            .catch((error) => setStatus("Branch switch failed: " + (error instanceof Error ? error.message : String(error))));
+        }
       } else if (key.text && /^[1-9]$/.test(key.text)) {
         const next = Number(key.text) - 1;
         if (tabs[next]) setGitDashboardState((current) => current ? { ...current, tab: tabs[next]!, selected: 0 } : current);
       } else if (key.text?.toLowerCase() === "r" && dashboard.refresh) {
         setStatus("Refreshing Git command center…");
-        void dashboard.refresh().then(() => setStatus("Git data refreshed")).catch((error) => setStatus("Refresh failed: " + (error instanceof Error ? error.message : String(error))));
+        void dashboard.refresh(dashboard.tab, dashboard.data.branchDetails[dashboard.selected]?.name)
+          .then(() => setStatus("Git data refreshed"))
+          .catch((error) => setStatus("Refresh failed: " + (error instanceof Error ? error.message : String(error))));
       }
       event.preventDefault();
       return;
