@@ -1,36 +1,53 @@
 import { describe, expect, it } from "vitest";
-import { parseGitGraphOutput, sanitizeGitRemoteUrl } from "../../src/runtime/git-graph.js";
+import { layoutGitGraph, parseGitGraphOutput, sanitizeGitRemoteUrl } from "../../src/runtime/git-graph.js";
 
 const separator = "\x1f";
+const commit = (hash: string, short: string, subject: string, parents = "", refs = "") =>
+  [hash, short, "Krish Patel", "2 hours ago", subject, refs, parents].join(separator);
 
 describe("parseGitGraphOutput", () => {
-  it("preserves graph lanes and parses commit metadata and references", () => {
-    const output = [
-      "* aaaaaaa" + separator + "Krish Patel" + separator + "2 hours ago" + separator + "Add GitGraph" + separator + "HEAD -> main, origin/main" + separator + "bbbbbbb ccccccc",
-      "|\\",
-      "| * ccccccc" + separator + "Krish Patel" + separator + "1 day ago" + separator + "Remote branch work" + separator + "origin/feature" + separator + "ddddddd",
-      "* bbbbbbb" + separator + "Krish Patel" + separator + "2 days ago" + separator + "Merge branch" + separator + "" + separator + "ddddddd eeeeeee",
-    ].join("\n");
+  it("parses commit metadata, ancestry and decorated branch references", () => {
+    const rows = parseGitGraphOutput([
+      commit("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "aaaaaaa", "Merge feature", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb cccccccccccccccccccccccccccccccccccccccc", "HEAD -> main, origin/main"),
+      commit("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "bbbbbbb", "Feature work", "dddddddddddddddddddddddddddddddddddddddd", "feature/login"),
+      commit("cccccccccccccccccccccccccccccccccccccccc", "ccccccc", "Main work", "dddddddddddddddddddddddddddddddddddddddd", "tag: v2.1.0"),
+      commit("dddddddddddddddddddddddddddddddddddddddd", "ddddddd", "Initial commit"),
+    ].join("\n"));
 
-    const rows = parseGitGraphOutput(output);
     expect(rows).toHaveLength(4);
-    expect(rows[0]).toMatchObject({ hash: "aaaaaaa", tone: "main", subject: "Add GitGraph", parents: ["bbbbbbb", "ccccccc"] });
-    expect(rows[1]).toMatchObject({ text: "|\\", tone: "lane" });
-    expect(rows[2]).toMatchObject({ hash: "ccccccc", tone: "remote", decorations: "origin/feature" });
-    expect(rows[3]).toMatchObject({ hash: "bbbbbbb", tone: "merge", parents: ["ddddddd", "eeeeeee"] });
+    expect(rows[0]).toMatchObject({
+      hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      shortHash: "aaaaaaa",
+      subject: "Merge feature",
+      parents: ["bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "cccccccccccccccccccccccccccccccccccccccc"],
+      refs: [
+        { label: "main", kind: "head" },
+        { label: "origin/main", kind: "remote" },
+      ],
+    });
+    expect(rows[2]!.refs).toContainEqual({ label: "v2.1.0", kind: "tag", colorIndex: 0 });
   });
 
-  it("classifies tags and ordinary commits without inventing decorations", () => {
-    const output = [
-      "* 1234567" + separator + "Author" + separator + "yesterday" + separator + "Release" + separator + "tag: v2.0.0" + separator,
-      "* 7654321" + separator + "Author" + separator + "last week" + separator + "Earlier work" + separator + "" + separator,
-    ].join("\n");
+  it("lays out visible colored lanes and commit nodes across a merge", () => {
+    const commits = parseGitGraphOutput([
+      commit("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "aaaaaaa", "Merge feature", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb cccccccccccccccccccccccccccccccccccccccc", "HEAD -> main"),
+      commit("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "bbbbbbb", "Feature work", "dddddddddddddddddddddddddddddddddddddddd", "feature/login"),
+      commit("cccccccccccccccccccccccccccccccccccccccc", "ccccccc", "Main work", "dddddddddddddddddddddddddddddddddddddddd", "main"),
+      commit("dddddddddddddddddddddddddddddddddddddddd", "ddddddd", "Initial commit"),
+    ].join("\n"));
 
-    expect(parseGitGraphOutput(output).map((row) => row.tone)).toEqual(["tag", "commit"]);
+    const rows = layoutGitGraph(commits);
+    expect(rows[0]).toMatchObject({ isHead: true, isMerge: true, laneIndex: 0 });
+    expect(rows[0]!.lanes.map((lane) => lane.glyph)).toEqual(["◆", "╲"]);
+    expect(rows[1]!.lanes.map((lane) => lane.glyph)).toEqual(["●", "│"]);
+    expect(rows[2]!.lanes.map((lane) => lane.glyph)).toEqual(["╲", "●"]);
+    expect(rows[0]!.lanes[0]!.colorIndex).not.toBe(rows[0]!.lanes[1]!.colorIndex);
+    expect(rows[3]!.lanes).toHaveLength(1);
   });
 
-  it("returns no rows for an empty history", () => {
+  it("returns no rows for an empty history or malformed records", () => {
     expect(parseGitGraphOutput("")).toEqual([]);
+    expect(parseGitGraphOutput("not a commit record")).toEqual([]);
   });
 });
 

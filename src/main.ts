@@ -2591,10 +2591,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 							const snapshot = await loadGitSnapshot(projectRoot, 1);
 							if (snapshot.branches.length === 0) printInfo('No branches found in this repository.');
 							else {
-								printGitGraph('BRANCHES  ·  ' + snapshot.name, snapshot.branches.map((line) => ({
-									text: line.trimEnd(),
-									tone: line.trimStart().startsWith('*') ? 'main' : line.includes('remotes/') ? 'remote' : 'commit',
-								})));
+								printGitPanel('BRANCHES  ·  ' + snapshot.name, snapshot.branches.map((line) => line.trimEnd()))
 							}
 						} else if (action === 'commit') {
 							let selectedHash = gitArguments[0];

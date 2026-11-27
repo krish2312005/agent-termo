@@ -19,6 +19,7 @@ import packageJson from "../../package.json" with { type: "json" };
 import { copySelectedText } from "./selection-copy.js";
 import { sanitizeDisplayLine, sanitizeDisplayText } from "./display-text.js";
 import { ROLES } from "./theme.js";
+import type { GitGraphRow } from "../runtime/git-graph.js";
 import type { PermissionMode } from "../types/index.js";
 import { MAIN_AGENT_ID, listSubAgents } from "../runtime/subagents.js";
 import { buildAgentTree, reconcileSelection, visibleAgentRows, type AgentTreeNode, type WorkspaceStatus } from "../runtime/agent-tree.js";
@@ -43,8 +44,8 @@ import {
   type WorkspaceKeyState,
 } from "./workspace-view.js";
 
-export type UiKind = "user" | "assistant" | "tool" | "info" | "success" | "error" | "dim" | "markdown" | "diff-add" | "diff-remove" | "diff-context";
-export interface UiEntry { id: number; kind: UiKind; content: string; streaming?: boolean; /** Sub-agent that produced the entry; absent for main. */ agentLabel?: string; }
+export type UiKind = "user" | "assistant" | "tool" | "info" | "success" | "error" | "dim" | "markdown" | "diff-add" | "diff-remove" | "diff-context" | "git-graph";
+export interface UiEntry { id: number; kind: UiKind; content: string; streaming?: boolean; gitGraph?: GitGraphRow; /** Sub-agent that produced the entry; absent for main. */ agentLabel?: string; }
 export interface Key { name: string; text?: string; }
 export interface CommandInfo {
   name: string;
@@ -94,6 +95,8 @@ export interface ScreenState {
   permissionMode: PermissionMode;
   context?: ScreenContext;
 }
+
+const GIT_GRAPH_COLORS = ["#D99168", "#8BB7D8", "#8FCB9B", "#C4A2CE", "#D7A27C", "#79B8D1", "#E47D76"] as const;
 
 const [entries, setEntries] = createSignal<UiEntry[]>([]);
 const [status, setStatus] = createSignal("");
@@ -472,6 +475,29 @@ function addEntry(content: string, kind: UiKind): void {
 let activeStreamId: number | null = null;
 export function appendLog(content: string, kind: UiKind = "info"): void {
   addEntry(content, kind);
+}
+export function appendGitGraphRows(rows: GitGraphRow[]): void {
+  if (rows.length === 0) return;
+  const cleanRows = rows.map((row) => ({
+    ...row,
+    shortHash: sanitizeDisplayLine(row.shortHash),
+    subject: sanitizeDisplayLine(row.subject),
+    author: sanitizeDisplayLine(row.author),
+    relativeDate: sanitizeDisplayLine(row.relativeDate),
+    refs: row.refs.map((ref) => ({ ...ref, label: sanitizeDisplayLine(ref.label) })),
+  }));
+  if (!renderer) {
+    for (const row of cleanRows) {
+      const lanes = row.lanes.map((lane) => lane.glyph).join("  ");
+      const refs = row.refs.map((ref) => "[" + ref.label + "]").join(" ");
+      process.stdout.write(lanes + "  " + row.shortHash + "  " + row.subject + (refs ? "  " + refs : "") + "  · " + row.author + " · " + row.relativeDate + "\n");
+    }
+    return;
+  }
+  setEntries((current) => [
+    ...current,
+    ...cleanRows.map((gitGraph) => ({ id: nextId++, kind: "git-graph" as const, content: "", gitGraph })),
+  ]);
 }
 export function clearLog(): void {
   setEntries([]);
@@ -1097,6 +1123,7 @@ function App() {
     user: ROLES.userText, assistant: ROLES.text, tool: ROLES.tool, info: ROLES.info,
     success: ROLES.success, error: ROLES.error, dim: ROLES.dimText, markdown: ROLES.markdownText,
     "diff-add": ROLES.diffAddText, "diff-remove": ROLES.diffRemoveText, "diff-context": ROLES.diffContextText,
+    "git-graph": ROLES.text,
   };
 
   const handleSelectionMouseUp = () => {
@@ -1197,15 +1224,52 @@ function App() {
                       </box>
                     </Show>
                   </Show>
-                  <Show when={entry().kind === "diff-add" || entry().kind === "diff-remove"} fallback={
-                    <Show when={entry().kind === "markdown" || entry().kind === "diff-context"} fallback={<text fg={colors[entry().kind]}>{entry().content}</text>}>
-                      <Show when={entry().kind === "markdown"} fallback={<text fg={colors["diff-context"]}>{entry().content}</text>}>
-                        <markdown content={entry().content} syntaxStyle={syntaxStyle} streaming={entry().streaming ?? false} />
+                  <Show when={entry().kind === "git-graph"} fallback={
+                    <Show when={entry().kind === "diff-add" || entry().kind === "diff-remove"} fallback={
+                      <Show when={entry().kind === "markdown" || entry().kind === "diff-context"} fallback={<text fg={colors[entry().kind]}>{entry().content}</text>}>
+                        <Show when={entry().kind === "markdown"} fallback={<text fg={colors["diff-context"]}>{entry().content}</text>}>
+                          <markdown content={entry().content} syntaxStyle={syntaxStyle} streaming={entry().streaming ?? false} />
+                        </Show>
                       </Show>
+                    }>
+                      <box width="100%" paddingX={1} backgroundColor={entry().kind === "diff-add" ? ROLES.diffAddSurface : ROLES.diffRemoveSurface}>
+                        <text fg={entry().kind === "diff-add" ? ROLES.diffAddText : ROLES.diffRemoveText}>{entry().content}</text>
+                      </box>
                     </Show>
                   }>
-                    <box width="100%" paddingX={1} backgroundColor={entry().kind === "diff-add" ? ROLES.diffAddSurface : ROLES.diffRemoveSurface}>
-                      <text fg={entry().kind === "diff-add" ? ROLES.diffAddText : ROLES.diffRemoveText}>{entry().content}</text>
+                    <box flexDirection="column" paddingX={1}>
+                      <box flexDirection="row" alignItems="center" gap={1}>
+                        <box flexDirection="row" minWidth={2}>
+                          <For each={entry().gitGraph!.lanes}>
+                            {(lane) => (
+                              <text
+                                fg={GIT_GRAPH_COLORS[lane.colorIndex % GIT_GRAPH_COLORS.length]}
+                                attributes={lane.isCommit ? TextAttributes.BOLD : TextAttributes.NONE}
+                                wrapMode="none"
+                              >{lane.glyph + " "}</text>
+                            )}
+                          </For>
+                        </box>
+                        <text fg={ROLES.mutedCompletion} wrapMode="none">{entry().gitGraph!.shortHash}</text>
+                        <text
+                          fg={entry().gitGraph!.isHead ? ROLES.brand : ROLES.text}
+                          attributes={entry().gitGraph!.isHead ? TextAttributes.BOLD : TextAttributes.NONE}
+                          wrapMode="none"
+                        >{clipText(entry().gitGraph!.subject, Math.max(12, terminalColumns() - entry().gitGraph!.lanes.length * 2 - 38))}</text>
+                        <For each={entry().gitGraph!.refs.slice(0, 2)}>
+                          {(ref) => (
+                            <text
+                              fg={ref.kind === "tag" ? ROLES.running : ref.kind === "remote" ? ROLES.info : GIT_GRAPH_COLORS[ref.colorIndex % GIT_GRAPH_COLORS.length]}
+                              attributes={TextAttributes.BOLD}
+                              wrapMode="none"
+                            >{" " + clipText(ref.label, 18) + " "}</text>
+                          )}
+                        </For>
+                      </box>
+                      <box flexDirection="row">
+                        <box width={entry().gitGraph!.lanes.length * 2 + 9} />
+                        <text fg={ROLES.dimText} wrapMode="none">{clipText(entry().gitGraph!.author + " · " + entry().gitGraph!.relativeDate, Math.max(12, terminalColumns() - 16))}</text>
+                      </box>
                     </box>
                   </Show>
                 </box>

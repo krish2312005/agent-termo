@@ -3,26 +3,36 @@ import { execFile } from "node:child_process";
 const FIELD_SEPARATOR = "\x1f";
 const MAX_GIT_OUTPUT = 5 * 1024 * 1024;
 
-export type GitGraphTone = "main" | "remote" | "merge" | "tag" | "commit" | "lane";
+export type GitGraphRefKind = "head" | "branch" | "remote" | "tag";
 
-export interface GitGraphRow {
-  text: string;
-  tone: GitGraphTone;
-  hash?: string;
-  subject?: string;
-  author?: string;
-  relativeDate?: string;
-  decorations?: string;
-  parents?: string[];
+export interface GitGraphRef {
+  label: string;
+  kind: GitGraphRefKind;
+  colorIndex: number;
 }
 
-export interface GitCommit extends GitGraphRow {
+export interface GitCommit {
   hash: string;
+  shortHash: string;
   subject: string;
   author: string;
   relativeDate: string;
   decorations: string;
   parents: string[];
+  refs: GitGraphRef[];
+}
+
+export interface GitGraphLane {
+  colorIndex: number;
+  glyph: "●" | "◆" | "│" | "╱" | "╲";
+  isCommit: boolean;
+}
+
+export interface GitGraphRow extends GitCommit {
+  lanes: GitGraphLane[];
+  laneIndex: number;
+  isHead: boolean;
+  isMerge: boolean;
 }
 
 export interface GitSnapshot {
@@ -124,48 +134,103 @@ export function sanitizeGitRemoteUrl(value: string): string {
   }
 }
 
-export function parseGitGraphOutput(output: string): GitGraphRow[] {
-  const rows: GitGraphRow[] = [];
+function parseGitGraphRefs(decorations: string): GitGraphRef[] {
+  return decorations
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .flatMap((value): GitGraphRef[] => {
+      const head = /^HEAD -> (.+)$/.exec(value);
+      if (head) return [{ label: head[1]!, kind: "head", colorIndex: 0 }];
+      if (value === "HEAD") return [];
+      if (value.startsWith("tag: ")) return [{ label: value.slice(5), kind: "tag", colorIndex: 0 }];
+      const remote = /^(?:origin|upstream)\//.test(value);
+      return [{ label: value, kind: remote ? "remote" : "branch", colorIndex: 0 }];
+    });
+}
 
+/** Parse metadata-only git log output; visual graph geometry is calculated separately. */
+export function parseGitGraphOutput(output: string): GitCommit[] {
+  const commits: GitCommit[] = [];
   for (const rawLine of output.split(/\r?\n/)) {
     if (!rawLine.trim()) continue;
-
-    const separatorIndex = rawLine.indexOf(FIELD_SEPARATOR);
-    if (separatorIndex < 0) {
-      rows.push({ text: rawLine.replace(/\s+$/, ""), tone: "lane" });
-      continue;
-    }
-
-    const graphAndHash = rawLine.slice(0, separatorIndex);
-    const hashMatch = /([0-9a-f]{7,40})$/i.exec(graphAndHash);
-    if (!hashMatch || hashMatch.index === undefined) {
-      rows.push({ text: rawLine.replace(/\s+$/, ""), tone: "lane" });
-      continue;
-    }
-
-    const fields = rawLine.slice(separatorIndex + 1).split(FIELD_SEPARATOR);
-    const hash = hashMatch[1]!;
-    const graphPrefix = graphAndHash.slice(0, hashMatch.index);
-    const author = fields[0] || "Unknown author";
-    const relativeDate = fields[1] || "date unknown";
-    const subject = fields[2] || "(no subject)";
-    const decorations = fields[3] || "";
-    const parents = (fields[4] || "").trim().split(/\s+/).filter(Boolean);
-    const hasHead = /(^|,\s*)HEAD\b/.test(decorations);
-    const hasRemote = /(?:^|[,/ ])(?:origin|upstream)\//.test(decorations);
-    const hasTag = /(?:^|,\s*)tag:\s*/.test(decorations);
-
-    let tone: GitGraphTone = "commit";
-    if (hasHead) tone = "main";
-    else if (parents.length > 1) tone = "merge";
-    else if (hasTag) tone = "tag";
-    else if (hasRemote) tone = "remote";
-
-    const refLabel = decorations ? " [" + decorations + "]" : "";
-    const text = graphPrefix + hash + refLabel + "  " + subject + "  · " + author + " · " + relativeDate;
-    rows.push({ text, tone, hash, subject, author, relativeDate, decorations, parents });
+    const fields = rawLine.split(FIELD_SEPARATOR);
+    if (fields.length < 7) continue;
+    const hash = fields[0] ?? "";
+    const shortHash = fields[1] ?? "";
+    if (!/^[0-9a-f]{7,40}$/i.test(hash) || !/^[0-9a-f]{7,40}$/i.test(shortHash)) continue;
+    const decorations = fields[5] ?? "";
+    commits.push({
+      hash,
+      shortHash,
+      author: fields[2] || "Unknown author",
+      relativeDate: fields[3] || "date unknown",
+      subject: fields[4] || "(no subject)",
+      decorations,
+      parents: (fields[6] || "").trim().split(/\s+/).filter(Boolean),
+      refs: parseGitGraphRefs(decorations),
+    });
   }
+  return commits;
+}
 
+/** Build stable branch lanes from commit ancestry, independently of terminal glyph parsing. */
+export function layoutGitGraph(commits: GitCommit[]): GitGraphRow[] {
+  const activeLanes: Array<{ hash: string; colorIndex: number }> = [];
+  let nextColorIndex = 0;
+  const rows: GitGraphRow[] = [];
+
+  for (const commit of commits) {
+    let laneIndex = activeLanes.findIndex((lane) => lane.hash === commit.hash);
+    if (laneIndex < 0) {
+      laneIndex = 0;
+      activeLanes.splice(laneIndex, 0, { hash: commit.hash, colorIndex: nextColorIndex++ });
+    }
+
+    const secondaryLaneIndexes: number[] = [];
+    for (const parent of commit.parents.slice(1)) {
+      let parentLane = activeLanes.findIndex((lane, index) => index !== laneIndex && lane.hash === parent);
+      if (parentLane < 0) {
+        parentLane = laneIndex + 1 + secondaryLaneIndexes.length;
+        activeLanes.splice(parentLane, 0, { hash: parent, colorIndex: nextColorIndex++ });
+      }
+      secondaryLaneIndexes.push(parentLane);
+    }
+
+    const firstParent = commit.parents[0];
+    const firstParentLane = firstParent
+      ? activeLanes.findIndex((lane, index) => index !== laneIndex && lane.hash === firstParent)
+      : -1;
+    const currentColorIndex = activeLanes[laneIndex]!.colorIndex;
+    const lanes: GitGraphLane[] = activeLanes.map((lane, index) => ({
+      colorIndex: lane.colorIndex,
+      glyph: index === laneIndex
+        ? (commit.parents.length > 1 ? "◆" : "●")
+        : secondaryLaneIndexes.includes(index)
+          ? (index > laneIndex ? "╲" : "╱")
+          : index === firstParentLane
+            ? (index < laneIndex ? "╲" : "╱")
+            : "│",
+      isCommit: index === laneIndex,
+    }));
+
+    if (!firstParent) {
+      activeLanes.splice(laneIndex, 1);
+    } else if (firstParentLane >= 0) {
+      activeLanes.splice(laneIndex, 1);
+    } else {
+      activeLanes[laneIndex] = { ...activeLanes[laneIndex]!, hash: firstParent };
+    }
+
+    rows.push({
+      ...commit,
+      refs: commit.refs.map((ref) => ({ ...ref, colorIndex: currentColorIndex })),
+      lanes,
+      laneIndex,
+      isHead: commit.refs.some((ref) => ref.kind === "head"),
+      isMerge: commit.parents.length > 1,
+    });
+  }
   return rows;
 }
 
@@ -188,18 +253,16 @@ export async function loadGitSnapshot(projectPath: string, limit = 80): Promise<
     runGit(root, ["rev-list", "--all", "--count"]),
     runGit(root, ["remote", "get-url", "origin"]).catch(() => ""),
     runGit(root, [
-      "log", "--all", "--graph", "--topo-order", "--decorate=short", "--date=relative",
-      "--pretty=format:%h%x1f%an%x1f%ar%x1f%s%x1f%D%x1f%P", "-n", String(limit),
+      "log", "--all", "--topo-order", "--decorate=short", "--date=relative",
+      "--format=%H%x1f%h%x1f%an%x1f%ar%x1f%s%x1f%D%x1f%P", "-n", String(limit),
     ]),
   ]);
 
   const branches = branchListOutput.split(/\r?\n/).filter(Boolean);
   const statusLines = statusOutput.split(/\r?\n/);
   const changedPaths = statusLines.slice(1).filter(Boolean).length;
-  const graphRows = parseGitGraphOutput(graphOutput);
-  const commits = graphRows.filter((row): row is GitCommit => Boolean(
-    row.hash && row.subject !== undefined && row.author !== undefined && row.relativeDate !== undefined,
-  ));
+  const commits = parseGitGraphOutput(graphOutput);
+  const graphRows = layoutGitGraph(commits);
   const branch = branchOutput.trim() || "(detached HEAD)";
 
   return {

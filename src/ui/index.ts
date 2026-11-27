@@ -2,6 +2,7 @@
 // OpenTUI scene; the non-interactive fallback writes plain output to stdout.
 
 import type { ProposedFileChange } from "../types/index.js";
+import type { GitGraphRow } from "../runtime/git-graph.js";
 import Chalk from "chalk";
 import packageJson from "../../package.json" with { type: "json" };
 import { loadMemory, loadTimeline } from "../memory/index.js";
@@ -10,6 +11,7 @@ import { buildInspector, formatDuration, statusIcon } from "./subagent-view.js";
 import {
   appendAssistantDelta,
   appendLog,
+  appendGitGraphRows,
   beginAssistantStream,
   finishAssistantStream,
   getCommands,
@@ -346,22 +348,10 @@ export function printError(message: string, hint?: string): void {
 export function printSuccess(message: string): void { print("✓ " + message, "success"); }
 export function printInfo(message: string): void { print("ℹ " + message, "info"); }
 
-export type GitDisplayTone = "main" | "remote" | "merge" | "tag" | "commit" | "lane";
-export interface GitDisplayRow { text: string; tone: GitDisplayTone; }
-
-const gitDisplayKinds: Record<GitDisplayTone, UiKind> = {
-  main: "success",
-  remote: "info",
-  merge: "tool",
-  tag: "success",
-  commit: "markdown",
-  lane: "dim",
-};
-
-/** Add graph rows to the existing transcript using its established scroll behavior. */
-export function printGitGraph(title: string, rows: GitDisplayRow[]): void {
+/** Add structured commit rows to the color-coded OpenTUI graph renderer. */
+export function printGitGraph(title: string, rows: GitGraphRow[]): void {
   print(title, "markdown");
-  for (const row of rows) print(row.text, gitDisplayKinds[row.tone]);
+  appendGitGraphRows(rows);
 }
 
 /** Render repository and commit details in the existing transcript. */
