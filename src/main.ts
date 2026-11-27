@@ -2626,12 +2626,25 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						printInfo('Unknown Git view: ' + action + '. Use /git help.');
 						continue mainLoop;
 					}
-					const refreshDashboard = async (): Promise<void> => {
+					const refreshDashboard = async (
+						tab = tabs[action as keyof typeof tabs],
+						selectedBranch?: string,
+					): Promise<void> => {
 						const [data, github] = await Promise.all([
 							loadGitDashboardData(projectRoot, action === 'graph' || action === 'commits' ? 120 : 80),
 							getGitHubSummary(projectRoot).catch(() => null),
 						]);
-						openGitDashboard(data, github, tabs[action as keyof typeof tabs], refreshDashboard);
+						const selected = selectedBranch
+							? Math.max(0, data.branchDetails.findIndex((item) => item.name === selectedBranch && item.kind === 'local'))
+							: 0;
+						openGitDashboard(data, github, tab, refreshDashboard, async (branch) => {
+							const result = await runGitBranchAction(projectRoot, 'checkout', branch.name, branch.kind);
+						const localName = branch.kind === 'remote'
+							? branch.name.slice(branch.name.indexOf('/') + 1)
+							: branch.name;
+							await refreshDashboard('branches', localName);
+							return result || 'Switched to ' + localName + '.';
+						});
 					};
 					await refreshDashboard();
 					continue mainLoop;
