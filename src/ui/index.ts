@@ -10,6 +10,8 @@ import { buildInspector, formatDuration, statusIcon } from "./subagent-view.js";
 import {
   appendAssistantDelta,
   appendLog,
+  beginTranscriptSection,
+  finishTranscriptSection,
   beginAssistantStream,
   finishAssistantStream,
   getCommands,
@@ -360,14 +362,18 @@ const gitDisplayKinds: Record<GitDisplayTone, UiKind> = {
 
 /** Add graph rows as separate transcript entries so the existing scrollbox can browse long histories. */
 export function printGitGraph(title: string, rows: GitDisplayRow[]): void {
+  const position = beginTranscriptSection();
   print(title, "markdown");
   for (const row of rows) print(row.text, gitDisplayKinds[row.tone]);
+  finishTranscriptSection(position);
 }
 
 /** Render a read-only Git detail panel inside the normal scrollable transcript. */
 export function printGitPanel(title: string, lines: string[]): void {
+  const position = beginTranscriptSection();
   print(title, "markdown");
   for (const line of lines) print(line, "info");
+  finishTranscriptSection(position);
 }
 
 export async function printMemoryFile(projectRoot: string): Promise<void> {

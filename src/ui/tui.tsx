@@ -473,6 +473,32 @@ let activeStreamId: number | null = null;
 export function appendLog(content: string, kind: UiKind = "info"): void {
   addEntry(content, kind);
 }
+
+export interface TranscriptPosition {
+  agentId: string;
+  scrollTop: number;
+}
+
+/** Pause tail-follow and capture the start of a new transcript section. */
+export function beginTranscriptSection(): TranscriptPosition | null {
+  const element = scrollbox;
+  if (!element) return null;
+  const agentId = getSelectedAgentId();
+  atBottomByAgent.set(agentId, false);
+  return { agentId, scrollTop: element.scrollHeight };
+}
+
+/** Position a newly printed section at the top without jumping to old conversation history. */
+export function finishTranscriptSection(position: TranscriptPosition | null): void {
+  const element = scrollbox;
+  if (!position || !element) return;
+  element.afterLayout(() => {
+    if (getSelectedAgentId() !== position.agentId || scrollbox !== element) return;
+    element.scrollTo(position.scrollTop);
+    atBottomByAgent.set(position.agentId, false);
+    scrollPositions.set(position.agentId, element.scrollTop);
+  });
+}
 export function clearLog(): void {
   setEntries([]);
   activeStreamId = null;
