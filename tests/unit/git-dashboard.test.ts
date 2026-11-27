@@ -41,6 +41,38 @@ describe("Git dashboard data", () => {
     expect(diff).toContain("UNSTAGED DIFF");
   });
 
+  it("loads structured local and remote branches and checks out remote selections with tracking", async () => {
+    const root = createRepository();
+    const remote = mkdtempSync(join(tmpdir(), "agent-termo-git-remote-"));
+    roots.push(remote);
+    execFileSync("git", ["init", "--bare", remote], { stdio: "ignore" });
+    execFileSync("git", ["remote", "add", "origin", remote], { cwd: root });
+    execFileSync("git", ["push", "-u", "origin", "main"], { cwd: root, stdio: "ignore" });
+
+    execFileSync("git", ["switch", "-c", "feature/checkout"], { cwd: root });
+    writeFileSync(join(root, "feature.txt"), "remote branch\n");
+    execFileSync("git", ["add", "feature.txt"], { cwd: root });
+    execFileSync("git", ["commit", "-m", "feature branch"], { cwd: root, stdio: "ignore" });
+    execFileSync("git", ["push", "-u", "origin", "feature/checkout"], { cwd: root, stdio: "ignore" });
+    execFileSync("git", ["switch", "main"], { cwd: root });
+    execFileSync("git", ["branch", "--delete", "feature/checkout"], { cwd: root });
+    execFileSync("git", ["fetch", "origin"], { cwd: root });
+
+    const data = await loadGitDashboardData(root);
+    expect(data.branchDetails).toContainEqual(expect.objectContaining({
+      name: "main",
+      kind: "local",
+      isCurrent: true,
+    }));
+    const remoteBranch = data.branchDetails.find((item) => item.name === "origin/feature/checkout");
+    expect(remoteBranch).toMatchObject({ kind: "remote", isCurrent: false });
+    await runGitBranchAction(root, "checkout", remoteBranch!.name, remoteBranch!.kind);
+
+    expect(execFileSync("git", ["branch", "--show-current"], { cwd: root, encoding: "utf8" }).trim()).toBe("feature/checkout");
+    expect(execFileSync("git", ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], { cwd: root, encoding: "utf8" }).trim())
+      .toBe("origin/feature/checkout");
+  });
+
   it("requires clean work for merge and prevents deleting the checked-out branch", async () => {
     const root = createRepository();
     await runGitBranchAction(root, "create", "feature/dashboard");
