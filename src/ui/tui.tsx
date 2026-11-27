@@ -1183,7 +1183,7 @@ function App() {
             <Index each={visibleEntries()}>
               {(entry) => (
                 <box flexDirection="column" paddingX={1}>
-                  <Show when={entry().kind === "user" || entry().kind === "markdown"}>
+                  <Show when={entry().kind === "user" || entry().kind === "markdown"} fallback={<box height={0} />}>
                     <Show when={entry().kind === "user"} fallback={
                       <text fg={entry().agentLabel ? ROLES.subagentLabel : ROLES.assistantLabel}>
                         {"⏺ " + (entry().agentLabel ?? "Agent-Termo")}
@@ -1191,7 +1191,7 @@ function App() {
                     }>
                       <box flexDirection="row">
                         <text fg={ROLES.userLabel}>❯ You</text>
-                        <Show when={entry().agentLabel}>
+                        <Show when={entry().agentLabel} fallback={<box width={0} height={0} />}>
                           <text fg={ROLES.userLabel}>{" → @" + entry().agentLabel}</text>
                         </Show>
                       </box>
@@ -1317,7 +1317,7 @@ function App() {
         </Show>
       </box>
       <box flexDirection="column" width="100%" flexShrink={0}>
-        <Show when={navigatorView().hiddenAbove > 0 && !compactApprovalChrome()}>
+        <Show when={navigatorView().hiddenAbove > 0 && !compactApprovalChrome()} fallback={<box height={0} />}>
           <text fg={ROLES.dimText} wrapMode="none">{"  … " + navigatorView().hiddenAbove + " above"}</text>
         </Show>
         <For each={navigatorView().rows}>
@@ -1347,7 +1347,7 @@ function App() {
             );
           }}
         </For>
-        <Show when={navigatorView().hiddenBelow > 0 && !compactApprovalChrome()}>
+        <Show when={navigatorView().hiddenBelow > 0 && !compactApprovalChrome()} fallback={<box height={0} />}>
           <text fg={ROLES.dimText} wrapMode="none">{"  … " + navigatorView().hiddenBelow + " below"}</text>
         </Show>
       </box>
@@ -1355,7 +1355,7 @@ function App() {
         <Index each={footerLine().split(FOOTER_SEPARATOR)}>
           {(segment, index) => (
             <>
-              <Show when={index > 0}>
+              <Show when={index > 0} fallback={<box width={0} height={0} />}>
                 <text fg={ROLES.dimText} wrapMode="none">{FOOTER_SEPARATOR}</text>
               </Show>
               <text fg={ROLES.mutedText} wrapMode="none">{segment()}</text>
