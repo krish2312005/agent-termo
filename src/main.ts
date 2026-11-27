@@ -1755,7 +1755,7 @@ async function handleProvidersCommand(
 	projectRoot: string,
 	input: ReturnType<typeof createInput>,
 ): Promise<void> {
-	const [action, ...rest] = arg.trim().split(/\\s+/).filter(Boolean);
+	const [action, ...rest] = arg.trim().split(/\s+/).filter(Boolean);
 	const configured = listSavedProviders();
 	const current = nimClient.getProvider();
 
@@ -2561,7 +2561,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					continue mainLoop;
 				}
 				if (cmd === '/git' || cmd.startsWith('/git ')) {
-					const gitArguments = userInput.trim().slice('/git'.length).trim().split(/\\s+/).filter(Boolean);
+					const gitArguments = userInput.trim().slice('/git'.length).trim().split(/\s+/).filter(Boolean);
 					const requestedAction = gitArguments.shift();
 					const action = (requestedAction ?? 'overview').toLowerCase();
 					try {
@@ -2583,7 +2583,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 								}) ?? undefined;
 							}
 							if (!selectedHash) printInfo('Commit selection cancelled.');
-							else printGitPanel('COMMIT DETAILS  ·  ' + selectedHash.slice(0, 12), (await getGitCommitDetails(projectRoot, selectedHash)).split(/\\r?\\n/));
+							else printGitPanel('COMMIT DETAILS  ·  ' + selectedHash.slice(0, 12), (await getGitCommitDetails(projectRoot, selectedHash)).split(/\r?\n/));
 							continue mainLoop;
 						}
 						if (action === 'help') {
