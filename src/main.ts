@@ -2639,9 +2639,9 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 							: 0;
 						openGitDashboard(data, github, tab, refreshDashboard, async (branch) => {
 							const result = await runGitBranchAction(projectRoot, 'checkout', branch.name, branch.kind);
-						const localName = branch.kind === 'remote'
-							? branch.name.slice(branch.name.indexOf('/') + 1)
-							: branch.name;
+							const localName = branch.kind === 'remote'
+								? branch.name.slice(branch.name.indexOf('/') + 1)
+								: branch.name;
 							await refreshDashboard('branches', localName);
 							return result || 'Switched to ' + localName + '.';
 						}, selected);
