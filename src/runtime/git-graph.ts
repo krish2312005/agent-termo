@@ -55,6 +55,18 @@ interface GitHubRepository {
   url?: string;
   description?: string;
   isPrivate?: boolean;
+  defaultBranchRef?: { name?: string };
+  primaryLanguage?: { name?: string };
+  stargazerCount?: number;
+  forkCount?: number;
+}
+
+interface GitHubRelease {
+  name?: string;
+  tagName?: string;
+  publishedAt?: string;
+  url?: string;
+  isDraft?: boolean;
 }
 
 interface GitHubPullRequest {
@@ -78,6 +90,9 @@ interface GitHubRun {
   status?: string;
   conclusion?: string | null;
   url: string;
+  headBranch?: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface GitHubSummary {
@@ -87,6 +102,7 @@ export interface GitHubSummary {
   pullRequests: GitHubPullRequest[];
   issues: GitHubIssue[];
   runs: GitHubRun[];
+  releases: GitHubRelease[];
   message?: string;
 }
 
@@ -376,6 +392,7 @@ export async function getGitHubSummary(projectPath: string): Promise<GitHubSumma
       pullRequests: [],
       issues: [],
       runs: [],
+      releases: [],
       message: missingCli
         ? "GitHub CLI is not installed. Install gh, then run gh auth login."
         : "GitHub CLI is not authenticated. Run gh auth login; local GitGraph works without it.",
@@ -385,7 +402,7 @@ export async function getGitHubSummary(projectPath: string): Promise<GitHubSumma
   let repository: GitHubRepository;
   try {
     repository = parseJson<GitHubRepository>(
-      await runGh(projectPath, ["repo", "view", "--json", "nameWithOwner,url,description,isPrivate"]),
+      await runGh(projectPath, ["repo", "view", "--json", "nameWithOwner,url,description,isPrivate,defaultBranchRef,primaryLanguage,stargazerCount,forkCount"]),
       {},
     );
   } catch {
@@ -395,14 +412,16 @@ export async function getGitHubSummary(projectPath: string): Promise<GitHubSumma
       pullRequests: [],
       issues: [],
       runs: [],
+      releases: [],
       message: "GitHub is authenticated, but this directory is not linked to a GitHub repository. Check the origin remote.",
     };
   }
 
-  const [pullRequestOutput, issueOutput, runOutput] = await Promise.all([
+  const [pullRequestOutput, issueOutput, runOutput, releaseOutput] = await Promise.all([
     runGh(projectPath, ["pr", "list", "--limit", "5", "--json", "number,title,url,headRefName,baseRefName,isDraft"]).catch(() => "[]"),
     runGh(projectPath, ["issue", "list", "--limit", "5", "--json", "number,title,url,state"]).catch(() => "[]"),
-    runGh(projectPath, ["run", "list", "--limit", "3", "--json", "name,status,conclusion,url"]).catch(() => "[]"),
+    runGh(projectPath, ["run", "list", "--limit", "3", "--json", "name,status,conclusion,url,headBranch,createdAt,updatedAt"]).catch(() => "[]"),
+    runGh(projectPath, ["release", "list", "--limit", "5", "--json", "name,tagName,publishedAt,url,isDraft"]).catch(() => "[]"),
   ]);
 
   return {
@@ -412,5 +431,6 @@ export async function getGitHubSummary(projectPath: string): Promise<GitHubSumma
     pullRequests: parseJson<GitHubPullRequest[]>(pullRequestOutput, []),
     issues: parseJson<GitHubIssue[]>(issueOutput, []),
     runs: parseJson<GitHubRun[]>(runOutput, []),
+    releases: parseJson<GitHubRelease[]>(releaseOutput, []),
   };
 }
