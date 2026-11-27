@@ -64,6 +64,10 @@ Every terminal run state writes a Markdown report to `.agent-termo/omnia/reports
 
 Common API-key, provider-token, and password-like values are redacted before evidence is persisted and again when reports are rendered. Reports are local project files and should be reviewed before sharing.
 
+## Live mission control
+
+Use `/omnia dashboard` to open the terminal mission-control view for the latest run. It refreshes the local run record every 750 ms while open. The dashboard shows the outcome contract, verification progress, repair budget, latest evidence, and unresolved blockers. Arrow keys navigate the requirements/evidence list, `R` refreshes immediately, and `Esc` returns to the composer. It opens automatically when a run starts or resumes.
+
 ## Storage and privacy
 
 Run records are local project data stored in `.agent-termo/omnia/runs/`. Outputs are bounded before persistence. Provider credentials are not copied into OMNIA records. The run store validates IDs and persisted record shape before loading records.
