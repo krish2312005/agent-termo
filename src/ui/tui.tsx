@@ -119,10 +119,11 @@ const [gitDashboardState, setGitDashboardState] = createSignal<{
   github: GitHubSummary | null;
   tab: GitDashboardTab;
   selected: number;
+  refresh?: () => Promise<void>;
 } | null>(null);
 
-export function openGitDashboard(data: GitDashboardData, github: GitHubSummary | null, tab: GitDashboardTab = "overview"): void {
-  setGitDashboardState({ data, github, tab, selected: 0 });
+export function openGitDashboard(data: GitDashboardData, github: GitHubSummary | null, tab: GitDashboardTab = "overview", refresh?: () => Promise<void>): void {
+  setGitDashboardState({ data, github, tab, selected: 0, refresh });
   setInputActive(false);
   textarea?.blur();
 }
@@ -986,6 +987,9 @@ function App() {
       } else if (key.text && /^[1-9]$/.test(key.text)) {
         const next = Number(key.text) - 1;
         if (tabs[next]) setGitDashboardState((current) => current ? { ...current, tab: tabs[next]!, selected: 0 } : current);
+      } else if (key.text?.toLowerCase() === "r" && dashboard.refresh) {
+        setStatus("Refreshing Git command center…");
+        void dashboard.refresh().then(() => setStatus("Git data refreshed")).catch((error) => setStatus("Refresh failed: " + (error instanceof Error ? error.message : String(error))));
       }
       event.preventDefault();
       return;
