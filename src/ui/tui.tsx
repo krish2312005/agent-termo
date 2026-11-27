@@ -1174,7 +1174,7 @@ function App() {
           contentOptions={{ layoutMode: "list" }}
         >
           <Show when={visibleEntries().length > 0} fallback={
-            <Show when={selectedAgentIdSignal() !== MAIN_AGENT_ID}>
+            <Show when={selectedAgentIdSignal() !== MAIN_AGENT_ID} fallback={<box height={0} />}>
               <box paddingX={1}>
                 <text fg={ROLES.dimText} wrapMode="none">No activity yet for @{selectedName()}.</text>
               </box>
