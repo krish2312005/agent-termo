@@ -1202,11 +1202,11 @@ function App() {
           contentOptions={{ layoutMode: "list" }}
         >
           <Show when={visibleEntries().length > 0} fallback={
-            <Show when={selectedAgentIdSignal() !== MAIN_AGENT_ID}>
-              <box paddingX={1}>
-                <text fg={ROLES.dimText} wrapMode="none">No activity yet for @{selectedName()}.</text>
-              </box>
-            </Show>
+            <box paddingX={1}>
+              <text fg={ROLES.dimText} wrapMode="none">
+                {selectedAgentIdSignal() === MAIN_AGENT_ID ? "" : "No activity yet for @" + selectedName() + "."}
+              </text>
+            </box>
           }>
             <Index each={visibleEntries()}>
               {(entry) => (
