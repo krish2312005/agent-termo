@@ -369,7 +369,7 @@ export type GitBranchAction = "checkout" | "create" | "delete" | "merge";
 /** Execute one explicitly requested branch operation with conservative safety checks. */
 export async function runGitBranchAction(projectPath: string, action: GitBranchAction, branch: string): Promise<string> {
   const name = branch.trim();
-  if (!name || name.startsWith("-") || /[\\0\\r\\n]/.test(name)) {
+  if (!name || name.startsWith("-") || /[\0\\r\n]/.test(name)) {
     throw new Error("Provide a valid branch name.");
   }
   const root = (await runGit(projectPath, ["rev-parse", "--show-toplevel"])).trim();
@@ -394,17 +394,17 @@ export async function runGitBranchAction(projectPath: string, action: GitBranchA
 /** Read staged and unstaged diffs for one repository-relative path. */
 export async function getGitFileDiff(projectPath: string, filePath: string): Promise<string> {
   const target = filePath.trim();
-  if (!target || target.includes("\\0")) throw new Error("Provide a repository-relative file path.");
+  if (!target || target.includes("\0")) throw new Error("Provide a repository-relative file path.");
   const root = (await runGit(projectPath, ["rev-parse", "--show-toplevel"])).trim();
   const [staged, unstaged] = await Promise.all([
     runGit(root, ["diff", "--cached", "--no-ext-diff", "--no-color", "--", target]),
     runGit(root, ["diff", "--no-ext-diff", "--no-color", "--", target]),
   ]);
   const sections = [
-    staged.trim() ? "STAGED DIFF\\n" + staged.trimEnd() : "",
-    unstaged.trim() ? "UNSTAGED DIFF\\n" + unstaged.trimEnd() : "",
+    staged.trim() ? "STAGED DIFF\n" + staged.trimEnd() : "",
+    unstaged.trim() ? "UNSTAGED DIFF\n" + unstaged.trimEnd() : "",
   ].filter(Boolean);
-  return sections.join("\\n\\n") || "No staged or unstaged diff for " + target + ".";
+  return sections.join("\n\n") || "No staged or unstaged diff for " + target + ".";
 }
 
 export async function getGitCommitDetails(projectPath: string, hash: string): Promise<string> {
