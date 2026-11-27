@@ -20,7 +20,7 @@ import { copySelectedText } from "./selection-copy.js";
 import { sanitizeDisplayLine, sanitizeDisplayText } from "./display-text.js";
 import { GIT_GRAPH_COLORS, ROLES } from "./theme.js";
 import type { GitBranchInfo, GitDashboardData, GitGraphRow, GitHubSummary } from "../runtime/git-graph.js";
-import { GitDashboardView, type GitDashboardTab } from "./git-dashboard.js";
+import { GitDashboardView, isDashboardEnterKey, type GitDashboardFeedback, type GitDashboardTab } from "./git-dashboard.js";
 import type { PermissionMode } from "../types/index.js";
 import { MAIN_AGENT_ID, listSubAgents } from "../runtime/subagents.js";
 import { buildAgentTree, reconcileSelection, visibleAgentRows, type AgentTreeNode, type WorkspaceStatus } from "../runtime/agent-tree.js";
@@ -119,6 +119,7 @@ const [gitDashboardState, setGitDashboardState] = createSignal<{
   github: GitHubSummary | null;
   tab: GitDashboardTab;
   selected: number;
+  feedback?: GitDashboardFeedback;
   refresh?: (tab?: GitDashboardTab, selectedBranch?: string) => Promise<void>;
   checkoutBranch?: (branch: GitBranchInfo) => Promise<string | void>;
 } | null>(null);
@@ -961,7 +962,7 @@ function App() {
           ? "meta+" + event.name
           : event.name === "return" && event.shift
             ? "shift+enter"
-            : event.name === "return"
+            : !event.shift && isDashboardEnterKey(event.name, sequence)
               ? "enter"
               : event.name;
     const key: Key = { name, text: sequence || (event.name === "space" ? " " : undefined) };
@@ -1004,14 +1005,17 @@ function App() {
         setGitDashboardState((current) => current ? { ...current, selected: Math.min(max, next) } : current);
       } else if (name === "enter" && dashboard.tab === "branches") {
         const selectedBranch = dashboard.data.branchDetails[dashboard.selected];
-        if (!selectedBranch) setStatus("No branch selected.");
-        else if (selectedBranch.isCurrent) setStatus("Already on " + selectedBranch.name + ".");
-        else if (!dashboard.checkoutBranch) setStatus("Branch switching is unavailable.");
+        const report = (feedback: GitDashboardFeedback) => {
+          setGitDashboardState((current) => current ? { ...current, feedback } : current);
+        };
+        if (!selectedBranch) report({ tone: "error", message: "No branch is selected." });
+        else if (selectedBranch.isCurrent) report({ tone: "info", message: "Already on " + selectedBranch.name + "." });
+        else if (!dashboard.checkoutBranch) report({ tone: "error", message: "Branch switching is unavailable." });
         else {
-          setStatus("Switching to " + selectedBranch.name + "…");
+          report({ tone: "info", message: "Switching to " + selectedBranch.name + "…" });
           void dashboard.checkoutBranch(selectedBranch)
-            .then((message) => setStatus(message ?? "Branch switched successfully."))
-            .catch((error) => setStatus("Branch switch failed: " + (error instanceof Error ? error.message : String(error))));
+            .then((message) => report({ tone: "success", message: message ?? "Branch switched successfully." }))
+            .catch((error) => report({ tone: "error", message: "Branch switch failed: " + (error instanceof Error ? error.message : String(error)) }));
         }
       } else if (key.text && /^[1-9]$/.test(key.text)) {
         const next = Number(key.text) - 1;
@@ -1358,6 +1362,7 @@ function App() {
             tab={gitDashboardState()!.tab}
             selected={gitDashboardState()!.selected}
             width={terminalColumns()}
+            feedback={gitDashboardState()!.feedback}
           />
         </Show>
       </box>

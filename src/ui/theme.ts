@@ -59,11 +59,11 @@ export const COLORS = {
 export const GIT_GRAPH_COLORS = [
   COLORS.brand,
   COLORS.info,
-  COLORS.userSuccess,
-  COLORS.markdownHeading2,
   COLORS.toolWaiting,
+  COLORS.markdownHeading2,
   COLORS.error,
   COLORS.selection,
+  COLORS.mutedCompletion,
 ] as const;
 
 export type ColorToken = keyof typeof COLORS;

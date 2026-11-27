@@ -18,17 +18,29 @@ const TABS: Array<{ id: GitDashboardTab; label: string }> = [
   { id: "actions", label: "Actions" }, { id: "releases", label: "Releases" },
 ];
 
+export interface GitDashboardFeedback {
+  message: string;
+  tone: "info" | "success" | "error";
+}
+
 export interface GitDashboardViewProps {
   data: GitDashboardData;
   github: GitHubSummary | null;
   tab: GitDashboardTab;
   selected: number;
   width: number;
+  feedback?: GitDashboardFeedback;
+}
+
+export function isDashboardEnterKey(name: string, sequence = ""): boolean {
+  return ["enter", "return", "kp_enter", "numpadenter"].includes(name.toLowerCase())
+    || sequence === "\\r"
+    || sequence === "\\n";
 }
 
 function Stat(props: { label: string; value: string; color?: string; width: number }) {
   return (
-    <box flexDirection="column" width={props.width} paddingX={1}>
+    <box flexDirection="row" alignItems="center" width={props.width} paddingX={1} gap={1}>
       <text fg={ROLES.mutedHeader} wrapMode="none">{props.label.toUpperCase()}</text>
       <text fg={props.color ?? ROLES.text} attributes={1} wrapMode="none">{props.value}</text>
     </box>
@@ -36,24 +48,28 @@ function Stat(props: { label: string; value: string; color?: string; width: numb
 }
 
 function GraphRow(props: { row: GitGraphRow; selected: boolean; width: number }) {
+  const commitColor = () => laneColor(props.row.lanes[props.row.laneIndex]?.colorIndex ?? props.row.laneIndex);
   return (
-    <box flexDirection="column" paddingX={1}>
+    <box flexDirection="column" paddingX={1} gap={0}>
       <box flexDirection="row" alignItems="center" gap={1}>
-        <text fg={props.selected ? ROLES.brand : ROLES.dimText} attributes={props.selected ? 1 : 0} wrapMode="none">{props.selected ? "›" : " "}</text>
-        <box flexDirection="row" minWidth={2}>
-          <For each={props.row.lanes}>
-            {(lane) => <text fg={laneColor(lane.colorIndex)} attributes={lane.isCommit ? 1 : 0} wrapMode="none">{lane.glyph + " "}</text>}
-          </For>
-        </box>
+        <text fg={props.selected ? ROLES.brand : ROLES.dimText} attributes={props.selected ? 1 : 0} wrapMode="none">{props.selected ? "▸" : " "}</text>
+        <text fg={commitColor()} attributes={1} wrapMode="none">{props.row.isMerge ? "◆" : "●"}</text>
         <text fg={ROLES.mutedCompletion} wrapMode="none">{props.row.shortHash}</text>
-        <text fg={props.row.isHead ? ROLES.brand : ROLES.text} attributes={props.row.isHead ? 1 : 0} wrapMode="none">{clipText(props.row.subject, Math.max(12, props.width - props.row.lanes.length * 2 - 36))}</text>
-        <For each={props.row.refs.slice(0, 2)}>
-          {(ref) => <text fg={ref.kind === "tag" ? ROLES.statusRunning : ref.kind === "remote" ? ROLES.info : laneColor(ref.colorIndex)} wrapMode="none">{ref.label}</text>}
+        <text fg={props.row.isHead ? ROLES.brand : ROLES.text} attributes={props.row.isHead || props.selected ? 1 : 0} wrapMode="none">{clipText(props.row.subject, Math.max(12, props.width - 52))}</text>
+        <For each={props.row.refs.slice(0, 3)}>
+          {(ref) => {
+            const color = ref.kind === "tag" ? ROLES.statusRunning : ref.kind === "remote" ? ROLES.info : laneColor(ref.colorIndex);
+            return (
+              <box paddingX={1} backgroundColor={color}>
+                <text fg={ROLES.pageBackground} attributes={1} wrapMode="none">{clipText(ref.label, 18)}</text>
+              </box>
+            );
+          }}
         </For>
       </box>
-      <box flexDirection="row">
-        <box width={props.row.lanes.length * 2 + 9} />
-        <text fg={ROLES.dimText} wrapMode="none">{clipText(props.row.author + " · " + props.row.relativeDate, Math.max(10, props.width - 16))}</text>
+      <box flexDirection="row" paddingLeft={4} justifyContent="space-between">
+        <text fg={ROLES.dimText} wrapMode="none">{clipText(props.row.author + " · " + props.row.relativeDate, Math.max(12, props.width - 28))}</text>
+        <text fg={commitColor()} wrapMode="none">LANE {props.row.laneIndex + 1}</text>
       </box>
     </box>
   );
@@ -74,7 +90,7 @@ export function GitDashboardView(props: GitDashboardViewProps) {
         <box flexDirection="column">
           <text fg={ROLES.brand} attributes={1}>GIT COMMAND CENTER</text>
           <text fg={ROLES.text}>{snapshot().name}  ·  {snapshot().branch}</text>
-          <text fg={ROLES.mutedText}>{snapshot().origin}  ·  {snapshot().root}</text>
+          <text fg={ROLES.mutedText} wrapMode="none">{clipText(snapshot().origin + "  ·  " + snapshot().root, Math.max(20, props.width - 18))}</text>
         </box>
         <text fg={snapshot().workingTreeClean ? ROLES.success : ROLES.statusRunning}>{snapshot().workingTreeClean ? "● CLEAN" : "● DIRTY · " + snapshot().changedPaths + " FILES"}</text>
       </box>
@@ -121,17 +137,22 @@ export function GitDashboardView(props: GitDashboardViewProps) {
       </Show>
       <Show when={props.tab === "branches"} fallback={<box height={0} />}>
         <text fg={ROLES.text}>Branches · {props.data.branchDetails.filter((branch) => branch.kind === "local").length} local / {props.data.branchDetails.filter((branch) => branch.kind === "remote").length} remote</text>
+        <text fg={ROLES.dimText}>Select a branch, then press Enter to switch. Remote selections create a tracking branch.</text>
         <Show when={props.data.branchDetails.length > 0} fallback={<text fg={ROLES.dimText}>No branches found.</text>}>
           <For each={props.data.branchDetails}>
             {(branch, index) => (
               <box flexDirection="row" alignItems="center" paddingX={1} gap={1}>
-                <text fg={selectedRow(index()) ? ROLES.brand : ROLES.dimText} attributes={selectedRow(index()) ? 1 : 0}>{selectedRow(index()) ? "›" : " "}</text>
-                <text fg={branch.kind === "local" ? ROLES.info : ROLES.mutedCompletion} attributes={1}>{branch.kind === "local" ? "LOCAL" : "REMOTE"}</text>
-                <text fg={branch.isCurrent ? ROLES.brand : ROLES.text} attributes={branch.isCurrent ? 1 : 0}>{branch.name}</text>
+                <text fg={selectedRow(index()) ? ROLES.brand : ROLES.dimText} attributes={selectedRow(index()) ? 1 : 0}>{selectedRow(index()) ? "▸" : " "}</text>
+                <box paddingX={1} backgroundColor={branch.kind === "local" ? ROLES.info : ROLES.mutedCompletion}>
+                  <text fg={ROLES.pageBackground} attributes={1}>{branch.kind === "local" ? "LOCAL" : "REMOTE"}</text>
+                </box>
+                <text fg={branch.isCurrent ? ROLES.brand : selectedRow(index()) ? ROLES.selection : ROLES.text} attributes={branch.isCurrent || selectedRow(index()) ? 1 : 0}>{branch.name}</text>
                 <text fg={ROLES.dimText}>{branch.shortHash}</text>
-                <text fg={ROLES.mutedText}>{clipText(branch.subject, Math.max(8, props.width - 64))}</text>
+                <text fg={ROLES.mutedText}>{clipText(branch.subject, Math.max(8, props.width - 72))}</text>
                 <Show when={branch.isCurrent} fallback={<box width={0} height={0} />}>
-                  <text fg={ROLES.success} attributes={1}>CURRENT</text>
+                  <box paddingX={1} backgroundColor={ROLES.success}>
+                    <text fg={ROLES.pageBackground} attributes={1}>HEAD</text>
+                  </box>
                 </Show>
               </box>
             )}
@@ -162,7 +183,10 @@ export function GitDashboardView(props: GitDashboardViewProps) {
       <Show when={props.tab === "actions"} fallback={<box height={0} />}><text fg={ROLES.text}>GitHub Actions</text><Show when={githubReady()} fallback={<text fg={ROLES.dimText}>{props.github?.message ?? "GitHub data unavailable."}</text>}><For each={props.github!.runs}>{(item, index) => <text fg={selectedRow(index()) ? ROLES.selection : item.conclusion === "success" ? ROLES.success : item.conclusion === "failure" ? ROLES.error : ROLES.statusRunning}>› {item.name} · {item.status ?? "unknown"}{item.conclusion ? " / " + item.conclusion : ""} · {item.headBranch ?? "branch unknown"}</text>}</For></Show></Show>
       <Show when={props.tab === "releases"} fallback={<box height={0} />}><text fg={ROLES.text}>Releases</text><Show when={githubReady()} fallback={<text fg={ROLES.dimText}>{props.github?.message ?? "GitHub data unavailable."}</text>}><For each={props.github!.releases}>{(item, index) => <text fg={selectedRow(index()) ? ROLES.selection : ROLES.text}>› {item.tagName ?? item.name ?? "Untitled release"} · {item.publishedAt ?? (item.isDraft ? "Draft" : "date unavailable")}</text>}</For><Show when={!props.github!.releases.length} fallback={<box height={0} />}><text fg={ROLES.dimText}>No releases found or release access unavailable.</text></Show></Show></Show>
       </scrollbox>
-      <text fg={ROLES.dimText} wrapMode="none">{props.tab === "branches" ? "↑ ↓ select · Enter switch branch · ← → sections · Esc close" : "↑ ↓ select · ← → / 1–9 sections · Esc close"}</text>
+      <Show when={props.feedback} fallback={<box height={0} />}>
+        <text fg={props.feedback?.tone === "error" ? ROLES.error : props.feedback?.tone === "success" ? ROLES.success : ROLES.info} wrapMode="none">{props.feedback?.message ?? ""}</text>
+      </Show>
+      <text fg={ROLES.dimText} wrapMode="none">{props.tab === "branches" ? "↑ ↓ select · Enter switch · ← → sections · Esc close" : "↑ ↓ select · ← → / 1–9 sections · Esc close"}</text>
     </box>
   );
 }

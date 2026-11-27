@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { COLORS, ROLES } from "../../src/ui/theme.js";
+import { COLORS, GIT_GRAPH_COLORS, ROLES } from "../../src/ui/theme.js";
 
 const srcDir = fileURLToPath(new URL("../../src/", import.meta.url));
 const uiDir = join(srcDir, "ui");
@@ -154,6 +154,19 @@ const LIVE_UI_FILES = ["tui.tsx", "index.ts", "subagent-view.ts"];
 describe("Warm Terminal palette", () => {
   it("exports exactly the 25 warm palette tokens", () => {
     expect(COLORS).toEqual(WARM_PALETTE);
+  });
+
+  it("keeps Git graph lanes inside Warm Terminal accents without using green success as a lane color", () => {
+    expect(GIT_GRAPH_COLORS).toEqual([
+      ROLES.brand,
+      ROLES.info,
+      ROLES.tool,
+      ROLES.markdownHeading2,
+      ROLES.error,
+      ROLES.selection,
+      ROLES.mutedCompletion,
+    ]);
+    expect(GIT_GRAPH_COLORS).not.toContain(ROLES.success);
   });
 
   it("does not resurrect the Carbon Forge token aliases", () => {
