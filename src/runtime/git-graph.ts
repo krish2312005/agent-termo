@@ -369,7 +369,7 @@ export type GitBranchAction = "checkout" | "create" | "delete" | "merge";
 /** Execute one explicitly requested branch operation with conservative safety checks. */
 export async function runGitBranchAction(projectPath: string, action: GitBranchAction, branch: string): Promise<string> {
   const name = branch.trim();
-  if (!name || name.startsWith("-") || /[\0\\r\n]/.test(name)) {
+  if (!name || name.startsWith("-") || /[\0\r\n]/.test(name)) {
     throw new Error("Provide a valid branch name.");
   }
   const root = (await runGit(projectPath, ["rev-parse", "--show-toplevel"])).trim();
