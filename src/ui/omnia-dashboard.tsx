@@ -66,7 +66,7 @@ export function OmniaDashboardView(props: OmniaDashboardViewProps) {
     const filled = Math.round(stats().progressPercent / 5);
     return "█".repeat(filled) + "░".repeat(20 - filled);
   };
-  const statusLabel = () => props.run.status.replace(/_/g, " ").toUpperCase();
+  const statusLabel = () => clip(props.run.status.replace(/_/g, " ").toUpperCase(), Math.max(8, props.width - 32));
   const maxText = () => Math.max(12, props.width - 26);
   const rowIndex = (index: number) => props.selected === index;
   let listScrollbox: ScrollBoxRenderable | undefined;
@@ -95,7 +95,10 @@ export function OmniaDashboardView(props: OmniaDashboardViewProps) {
         <text fg={ROLES.mutedText} wrapMode="none">{stats().progressPercent}%</text>
       </box>
       <scrollbox
-        ref={(element) => { listScrollbox = element; }}
+        ref={(element) => {
+          listScrollbox = element;
+          element.scrollTo(props.selected + 5);
+        }}
         flexGrow={1}
         flexBasis={0}
         minHeight={0}
@@ -106,7 +109,7 @@ export function OmniaDashboardView(props: OmniaDashboardViewProps) {
           <text fg={ROLES.brand} attributes={1} wrapMode="none">REQUIREMENT CONTRACT</text>
           <For each={props.run.requirements}>
             {(requirement, index) => (
-              <box flexDirection="column" paddingX={1} paddingY={0} backgroundColor={rowIndex(index()) ? ROLES.panelSurface : undefined}>
+              <box flexDirection="column" paddingX={1} paddingY={0} backgroundColor={rowIndex(index()) ? ROLES.selection : undefined}>
                 <box flexDirection="row" alignItems="center" gap={1}>
                   <text fg={requirementColor(requirement.status)} attributes={1} wrapMode="none">{requirement.status === "verified" ? "✓" : requirement.status === "blocked" ? "!" : "○"}</text>
                   <text fg={ROLES.text} attributes={1} wrapMode="none">{requirement.id}</text>
@@ -121,10 +124,13 @@ export function OmniaDashboardView(props: OmniaDashboardViewProps) {
           <text fg={ROLES.brand} attributes={1} wrapMode="none">LATEST EXECUTION EVIDENCE</text>
           <For each={evidence()}>
             {(item, index) => (
-              <box flexDirection="row" alignItems="center" gap={1} paddingX={1} backgroundColor={rowIndex(props.run.requirements.length + index()) ? ROLES.panelSurface : undefined}>
-                <text fg={item.success ? ROLES.success : ROLES.error} attributes={1} wrapMode="none">{item.success ? "●" : "×"}</text>
-                <text fg={ROLES.mutedCompletion} wrapMode="none">{item.type.toUpperCase()}</text>
-                <text fg={ROLES.text} wrapMode="none">{clip(item.source, Math.max(8, props.width - 34))}</text>
+              <box flexDirection="column" paddingX={1} backgroundColor={rowIndex(props.run.requirements.length + index()) ? ROLES.selection : undefined}>
+                <box flexDirection="row" alignItems="center" gap={1}>
+                  <text fg={item.success ? ROLES.success : ROLES.error} attributes={1} wrapMode="none">{item.success ? "●" : "×"}</text>
+                  <text fg={ROLES.mutedCompletion} wrapMode="none">{item.type.toUpperCase()}</text>
+                  <text fg={ROLES.text} wrapMode="none">{clip(item.source, Math.max(8, props.width - 34))}</text>
+                </box>
+                <text fg={ROLES.dimText} wrapMode="none">{clip(item.description, Math.max(12, props.width - 12))}</text>
               </box>
             )}
           </For>
