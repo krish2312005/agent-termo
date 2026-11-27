@@ -12,6 +12,7 @@ import type {
 const RUNS_DIRECTORY = (projectRoot: string): string =>
   resolve(projectRoot, ".agent-termo", "omnia", "runs");
 const RUN_ID_PATTERN = /^[0-9a-f-]{36}$/i;
+export const MAX_OMNIA_REPAIR_ATTEMPTS = 2;
 const MAX_GOAL_LENGTH = 20_000;
 const MAX_REQUIREMENTS = 12;
 const MAX_EVIDENCE = 500;
@@ -292,6 +293,7 @@ export function incrementOmniaRepairAttempt(projectRoot: string, id: string): Om
   const run = loadOmniaRun(projectRoot, id);
   if (!run) throw new Error("OMNIA run not found.");
   if (run.status !== "verifying") throw new Error("OMNIA repair attempts can only be incremented while a run is verifying.");
+  if (run.repairAttempts >= MAX_OMNIA_REPAIR_ATTEMPTS) throw new Error("OMNIA repair attempt budget is exhausted.");
   run.repairAttempts++;
   run.updatedAt = new Date().toISOString();
   persistRun(projectRoot, run);

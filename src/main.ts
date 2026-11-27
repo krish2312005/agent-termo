@@ -13,6 +13,7 @@ import {
   getLatestOmniaRun,
   incrementOmniaRepairAttempt,
   loadOmniaRun,
+  MAX_OMNIA_REPAIR_ATTEMPTS,
   recordOmniaEvidence,
   transitionOmniaRun,
 } from './runtime/omnia/index.js';
@@ -473,8 +474,6 @@ function isContinueRequest(input: string): boolean {
 function printTaskPlan(plan: TaskPlan): void {
 	printAssistantMessage(formatTaskPlanMarkdown(plan));
 }
-
-const MAX_OMNIA_REPAIR_ATTEMPTS = 2;
 
 async function verifyOmniaOutcome(
   projectRoot: string,

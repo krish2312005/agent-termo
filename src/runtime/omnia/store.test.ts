@@ -92,7 +92,9 @@ describe("OMNIA run store", () => {
     transitionOmniaRun(root, run.id, "verifying");
     const updated = incrementOmniaRepairAttempt(root, run.id);
     expect(updated.repairAttempts).toBe(1);
-    expect(loadOmniaRun(root, run.id)?.repairAttempts).toBe(1);
+    expect(incrementOmniaRepairAttempt(root, run.id).repairAttempts).toBe(2);
+    expect(() => incrementOmniaRepairAttempt(root, run.id)).toThrow("budget is exhausted");
+    expect(loadOmniaRun(root, run.id)?.repairAttempts).toBe(2);
   });
 
   it("records evidence but does not pretend generic checks verify the user goal", () => {

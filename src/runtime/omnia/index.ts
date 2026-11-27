@@ -5,6 +5,7 @@ export {
   deriveOmniaVerificationStrategy,
   formatOmniaReport,
   incrementOmniaRepairAttempt,
+  MAX_OMNIA_REPAIR_ATTEMPTS,
   getActiveOmniaRun,
   getLatestOmniaRun,
   loadOmniaRun,
