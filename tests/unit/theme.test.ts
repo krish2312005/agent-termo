@@ -175,12 +175,13 @@ describe("Warm Terminal palette", () => {
     }
   });
 
-  it("scopes the requested Carbon Forge palette to the Git dashboard", () => {
-    const dashboard = readLower(gitDashboardFile);
-    for (const hex of ["#101512", "#19211d", "#b5d98a", "#83b9a2", "#d69b69"]) {
-      expect(dashboard, `Git dashboard missing ${hex}`).toContain(hex);
-    }
-    for (const file of sourceFiles.filter((path) => path !== gitDashboardFile)) {
+  it("uses semantic Warm Terminal roles and graph colors in the Git dashboard", () => {
+    const dashboard = readFileSync(gitDashboardFile, "utf8");
+    expect(dashboard).toContain('from "./theme.js"');
+    expect(dashboard).toContain("GIT_GRAPH_COLORS");
+    expect(dashboard).toContain("ROLES.pageBackground");
+    expect(dashboard).not.toMatch(/#[0-9A-Fa-f]{3,8}\\b/);
+    for (const file of sourceFiles) {
       const content = readLower(file);
       for (const hex of CARBON_FORGE_HEXES) {
         expect(content, `${file} contains ${hex}`).not.toContain(hex);
