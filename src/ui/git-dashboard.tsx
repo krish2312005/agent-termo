@@ -1,4 +1,5 @@
-import { For, Show } from "solid-js";
+import type { ScrollBoxRenderable } from "@opentui/core";
+import { createEffect, For, Show } from "solid-js";
 import type { GitDashboardData, GitGraphRow, GitHubSummary } from "../runtime/git-graph.js";
 import { GIT_GRAPH_COLORS, ROLES } from "./theme.js";
 
@@ -38,12 +39,69 @@ export function isDashboardEnterKey(name: string, sequence = ""): boolean {
     || sequence === "\n";
 }
 
+export function getVisibleGitDashboardTabs(tab: GitDashboardTab, width: number): Array<{ id: GitDashboardTab; label: string }> {
+  const available = Math.max(12, Math.floor(width) - 6);
+  const active = Math.max(0, TABS.findIndex((item) => item.id === tab));
+  const itemWidth = (index: number): number => TABS[index]!.label.length + 3;
+  let start = active;
+  let end = active;
+  let used = itemWidth(active);
+  while (end + 1 < TABS.length && used + itemWidth(end + 1) <= available) used += itemWidth(++end);
+  while (start > 0 && used + itemWidth(start - 1) <= available) used += itemWidth(--start);
+  return TABS.slice(start, end + 1);
+}
+
+export interface GitBranchRowLayout {
+  rowWidth: number;
+  kindWidth: number;
+  nameWidth: number;
+  hashWidth: number;
+  headWidth: number;
+  subjectWidth: number;
+}
+
+export function getGitBranchRowLayout(width: number): GitBranchRowLayout {
+  const rowWidth = Math.max(30, Math.floor(width) - 6);
+  const compact = rowWidth < 76;
+  const kindWidth = 8;
+  const hashWidth = compact ? 0 : 8;
+  const headWidth = compact ? 0 : 6;
+  const nameWidth = Math.max(8, Math.min(compact ? 18 : 30, Math.floor(rowWidth * 0.28)));
+  const gaps = compact ? 3 : 5;
+  const subjectWidth = Math.max(4, rowWidth - 2 - kindWidth - nameWidth - hashWidth - headWidth - gaps);
+  return { rowWidth, kindWidth, nameWidth, hashWidth, headWidth, subjectWidth };
+}
+
+export function getGitDashboardItemCount(data: GitDashboardData, github: GitHubSummary | null, tab: GitDashboardTab): number {
+  switch (tab) {
+    case "graph": return Math.min(120, data.snapshot.graphRows.length);
+    case "status": return data.conflicts.length + data.staged.length + data.unstaged.length + data.untracked.length;
+    case "branches": return data.branchDetails.length;
+    case "stash": return data.stashes.length;
+    case "remotes": return data.remotes.length;
+    case "tags": return data.tags.length;
+    case "prs": return github?.pullRequests.length ?? 0;
+    case "issues": return github?.issues.length ?? 0;
+    case "actions": return github?.runs.length ?? 0;
+    case "releases": return github?.releases.length ?? 0;
+    default: return 0;
+  }
+}
+
 function Stat(props: { label: string; value: string; color?: string; width: number }) {
   return (
-    <box flexDirection="row" alignItems="center" width={props.width} paddingX={1} gap={1}>
-      <text fg={ROLES.mutedHeader} wrapMode="none">{props.label.toUpperCase()}</text>
+    <box flexDirection="row" alignItems="center" width={props.width} minWidth={0} flexShrink={0} paddingX={1} gap={1}>
+      <text fg={ROLES.mutedHeader} wrapMode="none">{clipText(props.label.toUpperCase(), Math.max(1, props.width - props.value.length - 4))}</text>
       <text fg={props.color ?? ROLES.text} attributes={1} wrapMode="none">{props.value}</text>
     </box>
+  );
+}
+
+function DashboardRow(props: { value: string; selected: boolean; width: number; color?: string }) {
+  return (
+    <text fg={props.selected ? ROLES.selection : props.color ?? ROLES.text} wrapMode="none">
+      {clipText((props.selected ? "▸ " : "  ") + props.value, Math.max(1, props.width - 8))}
+    </text>
   );
 }
 
@@ -88,35 +146,59 @@ export function GitDashboardView(props: GitDashboardViewProps) {
     return commit ? commit.shortHash + "  " + commit.subject : "No commits yet";
   };
   const selectedRow = (index: number) => props.selected === index;
+  let listScrollbox: ScrollBoxRenderable | undefined;
+  createEffect(() => {
+    const tab = props.tab;
+    const selected = props.selected;
+    if (!listScrollbox) return;
+    const offset = tab === "branches"
+      ? selected + 2
+      : tab === "graph"
+        ? selected * 2 + 1
+        : tab === "status"
+          ? selected + 2
+          : selected + 1;
+    listScrollbox.scrollTo(offset);
+  });
+  const branchLayout = () => getGitBranchRowLayout(props.width);
   return (
-    <box flexDirection="column" flexGrow={1} minHeight={0} gap={1} paddingX={1} backgroundColor={ROLES.pageBackground}>
-      <box flexDirection="row" justifyContent="space-between" alignItems="center">
-        <box flexDirection="column">
-          <text fg={ROLES.brand} attributes={1}>GIT COMMAND CENTER</text>
-          <text fg={ROLES.text}>{snapshot().name}  ·  {snapshot().branch}</text>
-          <text fg={ROLES.mutedText} wrapMode="none">{clipText(snapshot().origin + "  ·  " + snapshot().root, Math.max(20, props.width - 18))}</text>
+    <box width="100%" flexDirection="column" flexGrow={1} flexBasis={0} flexShrink={1} minWidth={0} minHeight={0} gap={1} paddingX={1} backgroundColor={ROLES.pageBackground}>
+      <box flexDirection="row" flexShrink={0} minWidth={0} justifyContent="space-between" alignItems="center">
+        <box flexDirection="column" flexGrow={1} flexBasis={0} minWidth={0}>
+          <text fg={ROLES.brand} attributes={1} wrapMode="none">GIT COMMAND CENTER</text>
+          <text fg={ROLES.text} wrapMode="none">{clipText(snapshot().name + "  ·  " + snapshot().branch, Math.max(12, props.width - 22))}</text>
+          <text fg={ROLES.mutedText} wrapMode="none">{clipText(snapshot().origin + "  ·  " + snapshot().root, Math.max(12, props.width - 22))}</text>
         </box>
-        <text fg={snapshot().workingTreeClean ? ROLES.success : ROLES.statusRunning}>{snapshot().workingTreeClean ? "● CLEAN" : "● DIRTY · " + snapshot().changedPaths + " FILES"}</text>
+        <text fg={snapshot().workingTreeClean ? ROLES.success : ROLES.statusRunning} wrapMode="none">{snapshot().workingTreeClean ? "● CLEAN" : "● DIRTY · " + snapshot().changedPaths + " FILES"}</text>
       </box>
-      <box flexDirection="column" gap={1}>
-        <box flexDirection="row" gap={1}>
+      <box flexDirection="column" flexShrink={0} gap={1}>
+        <box flexDirection="row" flexShrink={0} gap={1}>
           <Stat label="Commits" value={String(snapshot().totalCommits)} width={Math.max(14, Math.floor((props.width - 8) / 3))} />
           <Stat label="Local branches" value={String(snapshot().localBranchCount)} width={Math.max(14, Math.floor((props.width - 8) / 3))} />
           <Stat label="Remote branches" value={String(snapshot().remoteBranchCount)} width={Math.max(14, Math.floor((props.width - 8) / 3))} />
         </box>
-        <box flexDirection="row" gap={1}>
+        <box flexDirection="row" flexShrink={0} gap={1}>
           <Stat label="Staged" value={String(props.data.staged.length)} color={ROLES.success} width={Math.max(14, Math.floor((props.width - 8) / 3))} />
           <Stat label="Unstaged" value={String(props.data.unstaged.length)} color={ROLES.statusRunning} width={Math.max(14, Math.floor((props.width - 8) / 3))} />
           <Stat label="Conflicts" value={String(props.data.conflicts.length)} color={props.data.conflicts.length ? ROLES.error : ROLES.success} width={Math.max(14, Math.floor((props.width - 8) / 3))} />
         </box>
       </box>
-      <box flexDirection="row" flexWrap="wrap" gap={1}>
-        <For each={TABS}>
-          {(item) => <text fg={props.tab === item.id ? ROLES.brand : ROLES.mutedText} attributes={props.tab === item.id ? 1 : 0} wrapMode="none">{(props.tab === item.id ? "◆ " : "  ") + item.label + "  "}</text>}
+      <box flexDirection="row" flexShrink={0} minWidth={0} gap={1}>
+        <For each={getVisibleGitDashboardTabs(props.tab, props.width)}>
+          {(item) => <text fg={props.tab === item.id ? ROLES.brand : ROLES.mutedText} attributes={props.tab === item.id ? 1 : 0} wrapMode="none">{(props.tab === item.id ? "◆ " : "· ") + item.label}</text>}
         </For>
       </box>
-      <text fg={ROLES.border} wrapMode="none">{"─".repeat(Math.max(1, props.width - 4))}</text>
-      <scrollbox flexGrow={1} minHeight={0} viewportCulling>
+      <text fg={ROLES.border} flexShrink={0} wrapMode="none">{"─".repeat(Math.max(1, props.width - 4))}</text>
+      <scrollbox
+        ref={(element) => { listScrollbox = element; }}
+        width="100%"
+        flexGrow={1}
+        flexBasis={0}
+        flexShrink={1}
+        minWidth={0}
+        minHeight={0}
+        viewportCulling
+      >
       <Show when={props.tab === "overview"} fallback={<box height={0} />}>
         <text fg={ROLES.text}>Repository overview</text>
         <text fg={ROLES.mutedText}>HEAD: {snapshot().branch}  ·  Origin: {snapshot().origin}</text>
