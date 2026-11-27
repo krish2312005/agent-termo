@@ -57,7 +57,7 @@ function GraphRow(props: { row: GitGraphRow; selected: boolean; width: number })
         <text fg={ROLES.mutedCompletion} wrapMode="none">{props.row.shortHash}</text>
         <text fg={props.row.isHead ? ROLES.brand : ROLES.text} wrapMode="none">{clipText(props.row.subject, Math.max(12, props.width - props.row.lanes.length * 2 - 34))}</text>
         <For each={props.row.refs.slice(0, 2)}>
-          {(ref) => <text fg={ref.kind === "tag" ? ROLES.statusRunning : ref.kind === "remote" ? ROLES.info : GIT_GRAPH_COLORS[ref.colorIndex % GIT_GRAPH_COLORS.length]} wrapMode="none">{ref.label}</text>}
+          {(ref) => <text fg={ref.kind === "tag" ? ROLES.statusRunning : ref.kind === "remote" ? ROLES.info : CARBON.lanes[ref.colorIndex % CARBON.lanes.length]} wrapMode="none">{ref.label}</text>}
         </For>
       </box>
       <box flexDirection="row">
@@ -74,7 +74,7 @@ export function GitDashboardView(props: GitDashboardViewProps) {
   const githubReady = () => Boolean(props.github?.connected && props.github.repository);
   const selectedRow = (index: number) => props.selected === index;
   return (
-    <box flexDirection="column" flexGrow={1} minHeight={0} gap={1} paddingX={1}>
+    <box flexDirection="column" flexGrow={1} minHeight={0} gap={1} paddingX={1} backgroundColor={CARBON.background}>
       <box flexDirection="row" justifyContent="space-between" alignItems="center">
         <box flexDirection="column">
           <text fg={CARBON.primary} attributes={1}>GIT COMMAND CENTER</text>
