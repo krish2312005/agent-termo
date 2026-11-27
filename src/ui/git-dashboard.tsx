@@ -85,6 +85,7 @@ export function GitDashboardView(props: GitDashboardViewProps) {
         </For>
       </box>
       <text fg={ROLES.border} wrapMode="none">{"─".repeat(Math.max(1, props.width - 4))}</text>
+      <scrollbox flexGrow={1} minHeight={0} viewportCulling>
       <Show when={props.tab === "overview"}>
         <text fg={ROLES.text}>Repository overview</text>
         <text fg={ROLES.mutedText}>HEAD: {snapshot().branch}  ·  Origin: {snapshot().origin}</text>
@@ -95,11 +96,9 @@ export function GitDashboardView(props: GitDashboardViewProps) {
       </Show>
       <Show when={props.tab === "graph"}>
         <text fg={ROLES.text}>Commit history · {snapshot().graphRows.length} shown of {snapshot().totalCommits}</text>
-        <scrollbox flexGrow={1} minHeight={0} viewportCulling>
-          <For each={snapshot().graphRows.slice(0, 120)}>
-            {(row, index) => <GraphRow row={row} selected={selectedRow(index())} width={props.width} />}
-          </For>
-        </scrollbox>
+        <For each={snapshot().graphRows.slice(0, 120)}>
+          {(row, index) => <GraphRow row={row} selected={selectedRow(index())} width={props.width} />}
+        </For>
       </Show>
       <Show when={props.tab === "status"}>
         <text fg={ROLES.text}>Working tree · {changeFiles().length} paths</text>
@@ -136,6 +135,7 @@ export function GitDashboardView(props: GitDashboardViewProps) {
       <Show when={props.tab === "issues"}><text fg={ROLES.text}>Issues</text><Show when={githubReady()} fallback={<text fg={ROLES.dimText}>{props.github?.message ?? "GitHub data unavailable."}</text>}><For each={props.github!.issues}>{(item, index) => <text fg={selectedRow(index()) ? ROLES.selection : ROLES.text}>› #{item.number} {item.title} · {item.state ?? "open"}</text>}</For></Show></Show>
       <Show when={props.tab === "actions"}><text fg={ROLES.text}>GitHub Actions</text><Show when={githubReady()} fallback={<text fg={ROLES.dimText}>{props.github?.message ?? "GitHub data unavailable."}</text>}><For each={props.github!.runs}>{(item, index) => <text fg={selectedRow(index()) ? ROLES.selection : item.conclusion === "success" ? ROLES.success : item.conclusion === "failure" ? ROLES.error : ROLES.running}>› {item.name} · {item.status ?? "unknown"}{item.conclusion ? " / " + item.conclusion : ""} · {item.headBranch ?? "branch unknown"}</text>}</For></Show></Show>
       <Show when={props.tab === "releases"}><text fg={ROLES.text}>Releases</text><Show when={githubReady()} fallback={<text fg={ROLES.dimText}>{props.github?.message ?? "GitHub data unavailable."}</text>}><For each={props.github!.releases}>{(item, index) => <text fg={selectedRow(index()) ? ROLES.selection : ROLES.text}>› {item.tagName ?? item.name ?? "Untitled release"} · {item.publishedAt ?? (item.isDraft ? "Draft" : "date unavailable")}</text>}</For><Show when={!props.github!.releases.length}><text fg={ROLES.dimText}>No releases found or release access unavailable.</text></Show></Show></Show>
+      </scrollbox>
       <text fg={ROLES.dimText} wrapMode="none">↑ ↓ select · ← → / 1–9 sections · Esc close</text>
     </box>
   );
