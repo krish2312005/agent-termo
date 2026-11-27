@@ -102,7 +102,7 @@ describe("OMNIA run store", () => {
   it("only verifies requirements with successful evidence of the required kind", () => {
     const root = projectRoot();
     const run = createOmniaRun(root,
-      "Implement a project.\\n\\nRequirements:\\n- Create a responsive dashboard UI.\\n- Implement an API endpoint.\\n- Write setup documentation.\\n- Make the interface intuitive.",
+      "Implement a project.\\n\\nRequirements:\\n- Create a responsive dashboard UI.\\n- Implement an API endpoint.\\n- Verify service integration behavior.\\n- Write setup documentation.\\n- Make the interface intuitive.",
     );
     transitionOmniaRun(root, run.id, "executing");
     transitionOmniaRun(root, run.id, "verifying");
@@ -118,13 +118,14 @@ describe("OMNIA run store", () => {
 
     const verified = applyOmniaVerification(root, run.id, [
       { requirementId: "req-01", status: "verified", evidenceIds: [browser.id], reason: "The browser flow and visible dashboard behavior passed." },
-      { requirementId: "req-02", status: "verified", evidenceIds: [browser.id], reason: "A browser check does not prove the API endpoint." },
-      { requirementId: "req-03", status: "verified", evidenceIds: [file.id], reason: "The requested documentation file was written and reviewed." },
-      { requirementId: "req-04", status: "verified", evidenceIds: [file.id], reason: "Subjective usability still needs human judgment." },
+      { requirementId: "req-02", status: "verified", evidenceIds: [check.id], reason: "The API test evidence directly supports the endpoint." },
+      { requirementId: "req-03", status: "verified", evidenceIds: [browser.id], reason: "Browser evidence cannot verify an automated integration requirement." },
+      { requirementId: "req-04", status: "verified", evidenceIds: [file.id], reason: "The requested documentation file was written and reviewed." },
+      { requirementId: "req-05", status: "verified", evidenceIds: [file.id], reason: "Subjective usability still needs human judgment." },
     ], "Independent verification finished.");
 
     expect(verified.requirements.map((item) => item.status)).toEqual([
-      "verified", "unverified", "verified", "unverified",
+      "verified", "verified", "unverified", "verified", "unverified",
     ]);
     expect(verified.evidence.filter((item) => item.type === "review")).toHaveLength(4);
   });
