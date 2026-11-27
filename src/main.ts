@@ -32,7 +32,7 @@ import { appendSessionArchive, createSession, forkSession, listSessions, loadLat
 import { compactConversation, estimateContextTokens, isContextWindowError, parseContextWindowTokens, prepareConversationForRequest, resolveContextBudget } from './runtime/context.js';
 import { formatContextBar } from './runtime/context-display.js';
 import { listTerminalSessions, stopTerminalSession } from './runtime/terminal-sessions.js';
-import { getGitCommitDetails, getGitHubSummary, loadGitDashboardData, loadGitSnapshot, runGitBranchAction } from './runtime/git-graph.js';
+import { getGitCommitDetails, getGitFileDiff, getGitHubSummary, loadGitDashboardData, loadGitSnapshot, runGitBranchAction } from './runtime/git-graph.js';
 import { AgentEventHub } from './runtime/events.js';
 import { agentActivityReportPath, agentWorkReportPath, writeAgentActivityReport } from './runtime/agent-reports.js';
 import {
@@ -2585,6 +2585,11 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 							}
 							const result = await runGitBranchAction(projectRoot, action, branchName);
 							printSuccess(result || ('Git ' + action + ' completed for ' + branchName + '.'));
+							continue mainLoop;
+						}
+						if (action === 'diff' && gitArguments.length > 0) {
+							const filePath = gitArguments.join(' ');
+							printGitPanel('FILE DIFF · ' + filePath, (await getGitFileDiff(projectRoot, filePath)).split(/\\r?\\n/));
 							continue mainLoop;
 						}
 						if (action === 'commit') {
