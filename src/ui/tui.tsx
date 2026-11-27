@@ -1123,7 +1123,7 @@ function App() {
     user: ROLES.userText, assistant: ROLES.text, tool: ROLES.tool, info: ROLES.info,
     success: ROLES.success, error: ROLES.error, dim: ROLES.dimText, markdown: ROLES.markdownText,
     "diff-add": ROLES.diffAddText, "diff-remove": ROLES.diffRemoveText, "diff-context": ROLES.diffContextText,
-    "git-main": ROLES.success, "git-remote": ROLES.info, "git-merge": ROLES.running,
+    "git-main": ROLES.success, "git-remote": ROLES.info, "git-merge": ROLES.statusRunning,
     "git-tag": ROLES.brand, "git-commit": ROLES.text, "git-lane": ROLES.dimText,
   };
 
