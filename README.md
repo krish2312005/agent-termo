@@ -75,6 +75,7 @@ Agent-Termo is designed around a reviewable workflow: file changes can be previe
 | **Git Integration** | Inspect status and history, commit changes, and push the current branch. |
 | **Custom Agents** | Define project-specific specialist agents with Markdown files. |
 | **Agent Delegation** | Delegate focused work to specialist agents and review their results. |
+| **TERMO OMNIA** | Run outcome-driven engineering with persistent execution records, tool evidence, lifecycle controls, and an honest proof report. |
 | **Custom Slash Commands** | Save reusable project workflows as Markdown commands. |
 | **Project Memory** | Maintain shared project context and a chronological project timeline. |
 | **Task Continuity** | Resume an interrupted task with its conversation and tool history. |
@@ -206,6 +207,26 @@ By default, Agent-Termo stores user-level settings in:
 This file can hold saved provider API keys, provider endpoints, selected models, thinking capacity, and permission mode. The application creates the configuration directory and restricts file permissions on supported Unix systems.
 
 Do not commit your .env file or share your API key.
+
+---
+
+## TERMO OMNIA
+
+TERMO OMNIA is an incremental outcome-driven workflow built on Agent-Termo's existing agent loop, tools, permissions, checkpoints, and specialist agents.
+
+~~~text
+/omnia Build a project management application
+/omnia status
+/omnia report
+/omnia resume
+/omnia stop
+~~~
+
+Run records are stored under `.agent-termo/omnia/runs/`. OMNIA records the actual tool, command, and applied-file outcomes observed by the main execution loop.
+
+**Verification integrity:** the current incremental release does not automatically mark product requirements as verified. Passing a build, lint, or test command proves only that the corresponding check passed; it does not establish that every requested behavior works. Requirements remain unverified until requirement-specific evidence is explicitly reviewed. Browser and independent semantic verification are planned follow-up capabilities.
+
+Use `/omnia resume` for a blocked run. Use `/omnia report [run-id]` to inspect its recorded evidence.
 
 ---
 
