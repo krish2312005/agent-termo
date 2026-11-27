@@ -11,6 +11,7 @@ export {
   loadOmniaRun,
   recordOmniaEvidence,
   transitionOmniaRun,
+  writeOmniaReport,
 } from "./store.js";
 export type {
   OmniaEvidence,

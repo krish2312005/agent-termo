@@ -11,6 +11,14 @@ import type {
 
 const RUNS_DIRECTORY = (projectRoot: string): string =>
   resolve(projectRoot, ".agent-termo", "omnia", "runs");
+const REPORTS_DIRECTORY = (projectRoot: string): string =>
+  resolve(projectRoot, ".agent-termo", "omnia", "reports");
+
+function redactSensitiveText(value: string): string {
+  return value
+    .replace(/\b(?:nvapi-|sk-[A-Za-z0-9]|gh[pousr]_)[A-Za-z0-9_-]{12,}\b/gi, "[REDACTED]")
+    .replace(/((?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, "$1[REDACTED]");
+}
 const RUN_ID_PATTERN = /^[0-9a-f-]{36}$/i;
 export const MAX_OMNIA_REPAIR_ATTEMPTS = 2;
 const MAX_GOAL_LENGTH = 20_000;
@@ -249,6 +257,9 @@ export function transitionOmniaRun(
     }));
   }
   persistRun(projectRoot, run);
+  if (["completed", "completed_with_warnings", "blocked", "failed", "cancelled"].includes(status)) {
+    writeOmniaReport(projectRoot, run);
+  }
   return run;
 }
 
@@ -269,11 +280,11 @@ export function recordOmniaEvidence(
   const evidence: OmniaEvidence = {
     id: randomUUID(),
     type: input.type,
-    source: input.source.slice(0, 120),
-    description: input.description.replace(/\s+/g, " ").trim().slice(0, MAX_EVIDENCE_TEXT),
+    source: redactSensitiveText(input.source).slice(0, 120),
+    description: redactSensitiveText(input.description.replace(/\s+/g, " ").trim()).slice(0, MAX_EVIDENCE_TEXT),
     success: input.success,
     timestamp: new Date().toISOString(),
-    output: input.output?.slice(0, MAX_EVIDENCE_TEXT),
+    output: input.output ? redactSensitiveText(input.output).slice(0, MAX_EVIDENCE_TEXT) : undefined,
     requirementId: input.requirementId,
   };
   run.evidence.push(evidence);
@@ -361,45 +372,75 @@ export function applyOmniaVerification(
 
 export function formatOmniaReport(run: OmniaRun): string {
   const verified = run.requirements.filter((item) => item.status === "verified").length;
+  const reportPath = \`.agent-termo/omnia/reports/\${run.id}.md\`;
+  const title = run.status === "completed" ? "Proof of Completion" : "Execution & Verification Report";
   const lines = [
-    `# TERMO OMNIA — ${run.id.slice(0, 8)}`,
+    \`# TERMO OMNIA — \${run.id.slice(0, 8)}\`,
     "",
-    `**Status:** ${run.status.replace(/_/g, " ")}`,
-    `**Started:** ${run.createdAt}`,
-    `**Updated:** ${run.updatedAt}`,
-    `**Repair attempts:** ${run.repairAttempts}`,
+    \`**Report:** \${title}\`,
+    \`**Status:** \${run.status.replace(/_/g, " ")}\`,
+    \`**Verified requirements:** \${verified}/\${run.requirements.length}\`,
+    \`**Started:** \${run.createdAt}\`,
+    \`**Updated:** \${run.updatedAt}\`,
+    \`**Repair attempts:** \${run.repairAttempts}/\${MAX_OMNIA_REPAIR_ATTEMPTS}\`,
+    \`**Saved report:** \${reportPath}\`,
     "",
     "## Goal",
     "",
     run.goal,
     "",
-    "## Requirements",
-    "",
-    `Verified: ${verified}/${run.requirements.length}`,
-    "",
-    ...run.requirements.map((item) =>
-      `- [${item.status === "verified" ? "x" : " "}] **${item.id}** — ${item.description} (${item.status}; strategy: ${item.strategy})\n  - Verification: ${item.verificationPlan}`,
-    ),
-    "",
-    "## Execution evidence",
+    "## Requirement results",
     "",
   ];
 
+  for (const item of run.requirements) {
+    lines.push(
+      \`### \${item.id} — \${item.status.toUpperCase()}\`,
+      "",
+      item.description,
+      "",
+      \`- Strategy: \${item.strategy}\`,
+      \`- Verification plan: \${item.verificationPlan}\`,
+      \`- Evidence IDs: \${item.evidenceIds.length ? item.evidenceIds.join(", ") : "none"}\`,
+      "",
+    );
+  }
+
+  lines.push("## Execution evidence", "");
   if (run.evidence.length > 0) {
-    lines.push(...run.evidence.map((item) =>
-      `- ${item.success ? "PASS" : "FAIL"} · ${item.type} · ${item.source}: ${item.description}`,
-    ));
+    for (const item of run.evidence) {
+      lines.push(
+        \`### \${item.success ? "PASS" : "FAIL"} — \${item.type} — \${item.id}\`,
+        "",
+        \`- Source: \${item.source}\`,
+        \`- Recorded: \${item.timestamp}\`,
+        \`- Requirement: \${item.requirementId ?? "not assigned"}\`,
+        "",
+        item.description,
+      );
+      if (item.output) lines.push("", "~~~text", item.output, "~~~");
+      lines.push("");
+    }
   } else {
-    lines.push("No execution evidence has been recorded.");
+    lines.push("No execution evidence has been recorded.", "");
   }
 
   lines.push(
+    "## Verification integrity",
     "",
-    "## Completion integrity",
-    "",
-    "Build, lint, and test results prove only that those checks ran. They do not independently prove every user requirement. Requirements remain unverified until observed evidence is explicitly mapped to them.",
+    "A requirement is marked verified only when the independent verifier cites successful evidence matching its verification strategy. A passing generic build or test does not prove unrelated behavior. Manual requirements remain unverified. This model-assisted review is not a formal proof or a guarantee that the application is defect-free.",
   );
   if (run.blocker) lines.push("", "## Blocker", "", run.blocker);
-  if (run.summary) lines.push("", "## Summary", "", run.summary);
-  return lines.join("\n");
+  if (run.summary) lines.push("", "## Verification summary", "", run.summary);
+  return lines.join("\\n");
+}
+
+export function writeOmniaReport(projectRoot: string, run: OmniaRun): string {
+  const directory = REPORTS_DIRECTORY(projectRoot);
+  mkdirSync(directory, { recursive: true });
+  const path = resolve(directory, run.id + ".md");
+  const temporaryPath = path + ".tmp";
+  writeFileSync(temporaryPath, formatOmniaReport(run), { encoding: "utf8", mode: 0o600 });
+  renameSync(temporaryPath, path);
+  return path;
 }

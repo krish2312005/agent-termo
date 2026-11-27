@@ -1899,7 +1899,7 @@ export async function runToolLoop(
 					conversation.push({
 						id: crypto.randomUUID(),
 						role: "user",
-						content: "OMNIA repair pass " + attempt.repairAttempts + ": address only the requirements still marked unverified in the preceding repair brief. Preserve all existing project conventions.",
+						content: "OMNIA repair pass " + attempt.repairAttempts + ": address only these requirements and their evidence. Preserve all existing project conventions.\n\nRepair brief:\n" + JSON.stringify(repairPayload),
 						timestamp: new Date(),
 					});
 					conversation.push({

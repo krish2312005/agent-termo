@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -152,6 +152,43 @@ describe("OMNIA run store", () => {
     expect(() => applyOmniaVerification(root, run.id, [], "No verification.")).toThrow(
       "OMNIA verification can only be applied while a run is verifying",
     );
+  });
+
+  it("writes a proof report when every requirement is verified", () => {
+    const root = projectRoot();
+    const run = createOmniaRun(root, "Implement a feature.");
+    transitionOmniaRun(root, run.id, "executing");
+    transitionOmniaRun(root, run.id, "verifying");
+    const evidence = recordOmniaEvidence(root, {
+      type: "check", source: "bun run test", description: "Feature tests passed.", success: true,
+    })!;
+    applyOmniaVerification(root, run.id, [
+      { requirementId: "req-01", status: "verified", evidenceIds: [evidence.id], reason: "The feature test evidence directly supports the requirement." },
+    ], "All requirements passed independent verification.");
+    transitionOmniaRun(root, run.id, "completed");
+
+    const path = resolve(root, ".agent-termo", "omnia", "reports", run.id + ".md");
+    expect(existsSync(path)).toBe(true);
+    const report = readFileSync(path, "utf8");
+    expect(report).toContain("Proof of Completion");
+    expect(report).toContain(evidence.id);
+    expect(report).toContain("Verified requirements:** 1/1");
+  });
+
+  it("redacts common credentials from persisted execution evidence", () => {
+    const root = projectRoot();
+    const run = createOmniaRun(root, "Inspect a project.");
+    transitionOmniaRun(root, run.id, "executing");
+    const evidence = recordOmniaEvidence(root, {
+      type: "command",
+      source: "API_KEY=super-secret-value npm run test",
+      description: "Token was used.",
+      success: true,
+      output: "nvapi-12345678901234567890",
+    })!;
+    expect(evidence.source).not.toContain("super-secret-value");
+    expect(evidence.output).not.toContain("nvapi-");
+    expect(evidence.output).toContain("[REDACTED]");
   });
 
   it("rejects invalid lifecycle transitions", () => {
