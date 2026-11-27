@@ -7,6 +7,7 @@ import { COLORS, ROLES } from "../../src/ui/theme.js";
 const srcDir = fileURLToPath(new URL("../../src/", import.meta.url));
 const uiDir = join(srcDir, "ui");
 const themeFile = join(uiDir, "theme.ts");
+const gitDashboardFile = join(uiDir, "git-dashboard.tsx");
 const readUi = (file: string): string => readFileSync(join(uiDir, file), "utf8");
 
 /** Every file under src/, recursively (docs/tests are exempt). */
@@ -174,8 +175,12 @@ describe("Warm Terminal palette", () => {
     }
   });
 
-  it("contains no Carbon Forge hex anywhere under src", () => {
-    for (const file of sourceFiles) {
+  it("scopes the requested Carbon Forge palette to the Git dashboard", () => {
+    const dashboard = readLower(gitDashboardFile);
+    for (const hex of ["#101512", "#19211d", "#b5d98a", "#83b9a2", "#d69b69"]) {
+      expect(dashboard, `Git dashboard missing ${hex}`).toContain(hex);
+    }
+    for (const file of sourceFiles.filter((path) => path !== gitDashboardFile)) {
       const content = readLower(file);
       for (const hex of CARBON_FORGE_HEXES) {
         expect(content, `${file} contains ${hex}`).not.toContain(hex);
