@@ -286,6 +286,64 @@ export function recordOmniaEvidence(
   return evidence;
 }
 
+export function applyOmniaVerification(
+  projectRoot: string,
+  id: string,
+  decisions: readonly import("./types.js").OmniaVerificationDecision[],
+  summary: string,
+): OmniaRun {
+  const run = loadOmniaRun(projectRoot, id);
+  if (!run) throw new Error("OMNIA run not found.");
+  if (run.status !== "verifying") throw new Error("OMNIA verification can only be applied while a run is verifying.");
+
+  const decisionById = new Map(decisions.map((decision) => [decision.requirementId, decision]));
+  const evidenceById = new Map(run.evidence.map((item) => [item.id, item]));
+  const now = new Date().toISOString();
+
+  run.requirements = run.requirements.map((requirement) => {
+    const decision = decisionById.get(requirement.id);
+    const citedIds = [...new Set(decision?.evidenceIds ?? [])];
+    const citedEvidence = citedIds.map((evidenceId) => evidenceById.get(evidenceId));
+    const expectedType = requirement.strategy === "browser"
+      ? "browser"
+      : requirement.strategy === "automated"
+        ? "check"
+        : requirement.strategy === "static"
+          ? "file"
+          : undefined;
+    const evidenceSupportsStrategy = Boolean(expectedType) &&
+      citedEvidence.length > 0 &&
+      citedEvidence.every((item) => item?.success === true && item.type === expectedType);
+    const verified = decision?.status === "verified" &&
+      requirement.strategy !== "manual" &&
+      evidenceSupportsStrategy;
+    const status = verified
+      ? "verified"
+      : decision?.status === "blocked" ? "blocked" : "unverified";
+    const reason = decision?.reason?.trim() || "The independent verifier did not provide a supported finding.";
+    const reviewEvidence: OmniaEvidence = {
+      id: randomUUID(),
+      type: "review",
+      source: "OMNIA independent verifier",
+      description: reason.slice(0, MAX_EVIDENCE_TEXT),
+      success: verified,
+      timestamp: now,
+      requirementId: requirement.id,
+    };
+    run.evidence.push(reviewEvidence);
+    return {
+      ...requirement,
+      status,
+      evidenceIds: [...citedIds.filter((evidenceId) => evidenceById.has(evidenceId)), reviewEvidence.id],
+    };
+  });
+
+  run.summary = summary.slice(0, MAX_EVIDENCE_TEXT);
+  run.updatedAt = now;
+  persistRun(projectRoot, run);
+  return run;
+}
+
 export function formatOmniaReport(run: OmniaRun): string {
   const verified = run.requirements.filter((item) => item.status === "verified").length;
   const lines = [

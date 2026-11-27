@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  applyOmniaVerification,
   createOmniaRun,
   deriveOmniaRequirements,
   formatOmniaReport,
@@ -96,6 +97,44 @@ describe("OMNIA run store", () => {
     expect(updated?.evidence).toHaveLength(1);
     expect(updated?.requirements[0]?.status).toBe("pending");
     expect(formatOmniaReport(updated!)).toContain("remain unverified");
+  });
+
+  it("only verifies requirements with successful evidence of the required kind", () => {
+    const root = projectRoot();
+    const run = createOmniaRun(root,
+      "Implement a project.\\n\\nRequirements:\\n- Create a responsive dashboard UI.\\n- Implement an API endpoint.\\n- Write setup documentation.\\n- Make the interface intuitive.",
+    );
+    transitionOmniaRun(root, run.id, "executing");
+    transitionOmniaRun(root, run.id, "verifying");
+    const browser = recordOmniaEvidence(root, {
+      type: "browser", source: "browser:verify", description: "Dashboard flow passed.", success: true,
+    })!;
+    const check = recordOmniaEvidence(root, {
+      type: "check", source: "bun run test", description: "API tests passed.", success: true,
+    })!;
+    const file = recordOmniaEvidence(root, {
+      type: "file", source: "docs/setup.md", description: "Documentation file applied.", success: true,
+    })!;
+
+    const verified = applyOmniaVerification(root, run.id, [
+      { requirementId: "req-01", status: "verified", evidenceIds: [browser.id], reason: "The browser flow and visible dashboard behavior passed." },
+      { requirementId: "req-02", status: "verified", evidenceIds: [browser.id], reason: "A browser check does not prove the API endpoint." },
+      { requirementId: "req-03", status: "verified", evidenceIds: [file.id], reason: "The requested documentation file was written and reviewed." },
+      { requirementId: "req-04", status: "verified", evidenceIds: [file.id], reason: "Subjective usability still needs human judgment." },
+    ], "Independent verification finished.");
+
+    expect(verified.requirements.map((item) => item.status)).toEqual([
+      "verified", "unverified", "verified", "unverified",
+    ]);
+    expect(verified.evidence.filter((item) => item.type === "review")).toHaveLength(4);
+  });
+
+  it("rejects verification updates outside the verifying lifecycle state", () => {
+    const root = projectRoot();
+    const run = createOmniaRun(root, "Implement a feature.");
+    expect(() => applyOmniaVerification(root, run.id, [], "No verification.")).toThrow(
+      "OMNIA verification can only be applied while a run is verifying",
+    );
   });
 
   it("rejects invalid lifecycle transitions", () => {

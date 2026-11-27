@@ -6,6 +6,7 @@ import { NimClient, parseToolCallsFromText, type CompletionRequestOptions, type 
 import { buildPlanContext, formatTaskPlanMarkdown, parseTaskPlan, PLAN_PROGRESS_TOOL, updatePlanStep, writeTaskPlanFile, type TaskPlan } from './runtime/plans.js';
 import { getToolLoopStopReason } from './runtime/run-budget.js';
 import {
+  applyOmniaVerification,
   createOmniaRun,
   formatOmniaReport,
   getActiveOmniaRun,
@@ -14,6 +15,7 @@ import {
   recordOmniaEvidence,
   transitionOmniaRun,
 } from './runtime/omnia/index.js';
+import { parseOmniaVerification } from './runtime/omnia/verifier.js';
 export { getToolLoopStopReason } from './runtime/run-budget.js';
 import { activeManualCheckpointIds, createCheckpoint, findCheckpoint, latestRedoableCheckpoint, latestUndoableCheckpoint, listCheckpoints, recordCheckpointAfter, recordCheckpointBefore, redoCheckpoint, undoCheckpoint } from './runtime/checkpoints.js';
 import { TOOL_DEFINITIONS } from './llm/tools.js';
@@ -468,6 +470,74 @@ function isContinueRequest(input: string): boolean {
 
 function printTaskPlan(plan: TaskPlan): void {
 	printAssistantMessage(formatTaskPlanMarkdown(plan));
+}
+
+async function verifyOmniaOutcome(
+  projectRoot: string,
+  nimClient: NimClient,
+  changedFiles: ReadonlyMap<string, string>,
+): Promise<void> {
+  const activeRun = getActiveOmniaRun(projectRoot);
+  if (!activeRun) return;
+
+  try {
+    if (activeRun.status === "executing") transitionOmniaRun(projectRoot, activeRun.id, "verifying");
+    const run = loadOmniaRun(projectRoot, activeRun.id);
+    if (!run) throw new Error("OMNIA run disappeared before verification.");
+
+    const payload = {
+      goal: run.goal,
+      requirements: run.requirements.map(({ id, description, strategy, verificationPlan }) => ({
+        requirementId: id, description, strategy, verificationPlan,
+      })),
+      evidence: run.evidence.slice(-100).map(({ id, type, source, description, success, output }) => ({
+        id, type, source, description, success, output: output?.slice(0, 1_000),
+      })),
+      finalFiles: [...changedFiles.entries()].slice(-10).map(([path, content]) => ({
+        path, content: content.slice(0, 4_000),
+      })),
+    };
+    const response = await nimClient.complete([
+      {
+        id: crypto.randomUUID(),
+        role: "system",
+        content: "You are TERMO OMNIA's independent verification reviewer. The agent's completion claim is not evidence. Evaluate each requirement only against the supplied execution evidence and final file excerpts. A successful generic build/test does not prove unrelated behavior. Browser requirements require successful browser evidence; automated requirements require successful check evidence; static requirements require successful file evidence; manual requirements must remain unverified. Cite only evidence IDs present in the input, and only when they directly support the requirement. If evidence is incomplete, contradictory, or indirect, return unverified. Return JSON only with shape: {\"summary\":string,\"requirements\":[{\"requirementId\":string,\"status\":\"verified\"|\"unverified\"|\"blocked\",\"evidenceIds\":string[],\"reason\":string}]}. Include one decision per requirement.",
+        timestamp: new Date(),
+      },
+      {
+        id: crypto.randomUUID(),
+        role: "user",
+        content: JSON.stringify(payload),
+        timestamp: new Date(),
+      },
+    ]);
+    const parsed = parseOmniaVerification(response.content, run);
+    const verifiedRun = applyOmniaVerification(projectRoot, run.id, parsed.decisions, parsed.summary);
+    const allVerified = verifiedRun.requirements.length > 0 &&
+      verifiedRun.requirements.every((requirement) => requirement.status === "verified");
+    transitionOmniaRun(projectRoot, run.id, allVerified ? "completed" : "completed_with_warnings", {
+      summary: parsed.summary,
+      blocker: allVerified ? "" : "One or more requirements lack direct, strategy-matched evidence or require human judgment.",
+    });
+    printInfo(allVerified
+      ? "OMNIA verification passed for every requirement."
+      : "OMNIA execution finished, but some requirements remain unverified. Review /omnia report.");
+  } catch (error) {
+    try {
+      const run = getLatestOmniaRun(projectRoot);
+      if (run && run.status === "executing") transitionOmniaRun(projectRoot, run.id, "verifying");
+      if (run && (run.status === "executing" || run.status === "verifying")) {
+        applyOmniaVerification(projectRoot, run.id, [], "Independent verification could not complete.");
+        transitionOmniaRun(projectRoot, run.id, "completed_with_warnings", {
+          summary: "Execution finished, but the independent verifier could not complete.",
+          blocker: error instanceof Error ? error.message : String(error),
+        });
+      }
+    } catch (settlementError) {
+      printError("Could not settle OMNIA verification: " + (settlementError instanceof Error ? settlementError.message : String(settlementError)));
+    }
+    printError("OMNIA independent verification failed: " + (error instanceof Error ? error.message : String(error)));
+  }
 }
 
 function settleOmniaRun(
@@ -1760,6 +1830,7 @@ export async function runToolLoop(
 		void appendToTimeline(projectRoot, 'Agent-Termo', 'Completed tool-assisted request', ['Assistant summary: ' + finalText.replace(/\s+/g, ' ').slice(0, 700)], []);
 	}
 
+	await verifyOmniaOutcome(projectRoot, nimClient, changedFiles);
 	finishTurn('completed');
 	return finalText;
 }

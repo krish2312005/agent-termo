@@ -5,6 +5,13 @@ export type OmniaStatus =
 export type OmniaRequirementStatus = "pending" | "verified" | "unverified" | "blocked";
 export type OmniaVerificationStrategy = "browser" | "automated" | "static" | "manual";
 
+export interface OmniaVerificationDecision {
+  requirementId: string;
+  status: "verified" | "unverified" | "blocked";
+  evidenceIds: string[];
+  reason: string;
+}
+
 export interface OmniaRequirement {
   id: string;
   description: string;

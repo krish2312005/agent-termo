@@ -1,4 +1,5 @@
 export {
+  applyOmniaVerification,
   createOmniaRun,
   deriveOmniaRequirements,
   deriveOmniaVerificationStrategy,
@@ -16,4 +17,5 @@ export type {
   OmniaRequirementStatus,
   OmniaRun,
   OmniaStatus,
+  OmniaVerificationDecision,
 } from "./types.js";
