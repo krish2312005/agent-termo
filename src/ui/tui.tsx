@@ -43,7 +43,7 @@ import {
   type WorkspaceKeyState,
 } from "./workspace-view.js";
 
-export type UiKind = "user" | "assistant" | "tool" | "info" | "success" | "error" | "dim" | "markdown" | "diff-add" | "diff-remove" | "diff-context";
+export type UiKind = "user" | "assistant" | "tool" | "info" | "success" | "error" | "dim" | "markdown" | "diff-add" | "diff-remove" | "diff-context" | "git-main" | "git-remote" | "git-merge" | "git-tag" | "git-commit" | "git-lane";
 export interface UiEntry { id: number; kind: UiKind; content: string; streaming?: boolean; /** Sub-agent that produced the entry; absent for main. */ agentLabel?: string; }
 export interface Key { name: string; text?: string; }
 export interface CommandInfo {
@@ -1097,6 +1097,8 @@ function App() {
     user: ROLES.userText, assistant: ROLES.text, tool: ROLES.tool, info: ROLES.info,
     success: ROLES.success, error: ROLES.error, dim: ROLES.dimText, markdown: ROLES.markdownText,
     "diff-add": ROLES.diffAddText, "diff-remove": ROLES.diffRemoveText, "diff-context": ROLES.diffContextText,
+    "git-main": ROLES.success, "git-remote": ROLES.info, "git-merge": ROLES.running,
+    "git-tag": ROLES.brand, "git-commit": ROLES.text, "git-lane": ROLES.dimText,
   };
 
   const handleSelectionMouseUp = () => {

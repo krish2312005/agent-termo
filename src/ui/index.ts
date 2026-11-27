@@ -53,6 +53,7 @@ export const COMMANDS: CommandInfo[] = [
   { name: "/model", description: "choose a model or switch directly by model ID", usage: "/model [model-id]" },
   { name: "/providers", description: "add, switch, list, and configure model API providers", usage: "/providers [list | use <provider-id> | <provider-id>]" },
   { name: "/mcp", description: "show configured MCP servers and their available tools", usage: "/mcp" },
+  { name: "/git", description: "browse the color-coded Git graph, repository branches, commits, and GitHub activity", usage: "/git [graph [limit] | info | branches | commit [hash] | github | help]" },
   { name: "/thinking", description: "choose the model's reasoning capacity", usage: "/thinking [off | auto | low | medium | high]" },
   { name: "/permissions", description: "set or cycle file and terminal permission behavior", usage: "/permissions [ask | files | auto]" },
   { name: "/agents", description: "list custom agents and choose the active agent", usage: "/agents" },
@@ -344,6 +345,30 @@ export function printError(message: string, hint?: string): void {
 }
 export function printSuccess(message: string): void { print("✓ " + message, "success"); }
 export function printInfo(message: string): void { print("ℹ " + message, "info"); }
+
+export type GitDisplayTone = "main" | "remote" | "merge" | "tag" | "commit" | "lane";
+export interface GitDisplayRow { text: string; tone: GitDisplayTone; }
+
+const gitDisplayKinds: Record<GitDisplayTone, UiKind> = {
+  main: "git-main",
+  remote: "git-remote",
+  merge: "git-merge",
+  tag: "git-tag",
+  commit: "git-commit",
+  lane: "git-lane",
+};
+
+/** Add graph rows as separate transcript entries so the existing scrollbox can browse long histories. */
+export function printGitGraph(title: string, rows: GitDisplayRow[]): void {
+  print(title, "markdown");
+  for (const row of rows) print(row.text, gitDisplayKinds[row.tone]);
+}
+
+/** Render a read-only Git detail panel inside the normal scrollable transcript. */
+export function printGitPanel(title: string, lines: string[]): void {
+  print(title, "markdown");
+  for (const line of lines) print(line, "info");
+}
 
 export async function printMemoryFile(projectRoot: string): Promise<void> {
   const memory = await loadMemory(projectRoot);
