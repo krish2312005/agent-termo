@@ -329,7 +329,7 @@ export async function loadGitDashboardData(projectPath: string, limit = 80): Pro
     runGit(snapshot.root, ["stash", "list", "--format=%gd%x1f%gs"]).catch(() => ""),
     runGit(snapshot.root, ["tag", "--sort=-creatordate", "--format=%(refname:short)%x1f%(creatordate:relative)"]).catch(() => ""),
     runGit(snapshot.root, ["remote", "-v"]).catch(() => ""),
-    runGit(snapshot.root, ["for-each-ref", "--sort=refname", "--format=%(refname)%x00%(HEAD)%x00%(objectname:short)%x00%(subject)", "refs/heads", "refs/remotes"]).catch(() => ""),
+    runGit(snapshot.root, ["for-each-ref", "--sort=refname", "--format=%(refname)%00%(HEAD)%00%(objectname:short)%00%(subject)", "refs/heads", "refs/remotes"]).catch(() => ""),
     runGit(snapshot.root, ["diff", "--shortstat"]).catch(() => ""),
     runGit(snapshot.root, ["diff", "--cached", "--shortstat"]).catch(() => ""),
   ]);
