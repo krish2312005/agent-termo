@@ -26,6 +26,10 @@ describe("Git dashboard OpenTUI layout", () => {
     expect(findShowsWithoutFallback(dashboardSource, "git-dashboard.tsx")).toEqual([]);
   });
 
+  it("keeps every main TUI conditional on a renderable fallback", () => {
+    expect(findShowsWithoutFallback(tuiSource, "tui.tsx")).toEqual([]);
+  });
+
   it("uses one dashboard Show boundary and preserves the transcript fallback", () => {
     expect(tuiSource).toContain("<Show when={gitDashboardState()} fallback={");
     expect(tuiSource).not.toContain("<Show when={gitDashboardState()}>{(dashboard)");
