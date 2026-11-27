@@ -32,7 +32,7 @@ import { appendSessionArchive, createSession, forkSession, listSessions, loadLat
 import { compactConversation, estimateContextTokens, isContextWindowError, parseContextWindowTokens, prepareConversationForRequest, resolveContextBudget } from './runtime/context.js';
 import { formatContextBar } from './runtime/context-display.js';
 import { listTerminalSessions, stopTerminalSession } from './runtime/terminal-sessions.js';
-import { getGitCommitDetails, getGitHubSummary, loadGitDashboardData, loadGitSnapshot } from './runtime/git-graph.js';
+import { getGitCommitDetails, getGitHubSummary, loadGitDashboardData, loadGitSnapshot, runGitBranchAction } from './runtime/git-graph.js';
 import { AgentEventHub } from './runtime/events.js';
 import { agentActivityReportPath, agentWorkReportPath, writeAgentActivityReport } from './runtime/agent-reports.js';
 import {
@@ -2565,6 +2565,28 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 					const requestedAction = gitArguments.shift();
 					const action = (requestedAction ?? 'overview').toLowerCase();
 					try {
+						if (action === 'checkout' || action === 'create' || action === 'delete' || action === 'merge') {
+							const branchName = gitArguments.join(' ').trim();
+							if (!branchName) {
+								printInfo('Usage: /git ' + action + ' <branch-name>');
+								continue mainLoop;
+							}
+							const warning = action === 'delete'
+								? 'Git will delete the branch only if it is safely merged.'
+								: action === 'merge'
+									? 'Git will merge this branch into the current branch. The working tree must be clean.'
+									: action === 'create'
+										? 'Git will create this branch and switch to it.'
+										: 'Git will switch branches. Git will refuse if this would overwrite local work.';
+							const approval = await promptAcceptReject('Run git ' + action + ' ' + branchName + '? ' + warning);
+							if (approval !== 'accept') {
+								printInfo('Git branch operation cancelled.');
+								continue mainLoop;
+							}
+							const result = await runGitBranchAction(projectRoot, action, branchName);
+							printSuccess(result || ('Git ' + action + ' completed for ' + branchName + '.'));
+							continue mainLoop;
+						}
 						if (action === 'commit') {
 							let selectedHash = gitArguments[0];
 							if (!selectedHash) {
@@ -2587,7 +2609,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 							continue mainLoop;
 						}
 						if (action === 'help') {
-							printInfo('Usage: /git [graph | status | branches | commits | remotes | diff | stash | tags | prs | issues | actions | releases | commit [hash]]');
+							printInfo('Usage: /git [graph | status | branches | commits | remotes | diff | stash | tags | prs | issues | actions | releases | checkout <branch> | create <branch> | delete <branch> | merge <branch> | commit [hash]]');
 							continue mainLoop;
 						}
 						const tabs = {
