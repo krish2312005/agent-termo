@@ -102,7 +102,7 @@ describe("OMNIA run store", () => {
   it("only verifies requirements with successful evidence of the required kind", () => {
     const root = projectRoot();
     const run = createOmniaRun(root,
-      "Implement a project.\\n\\nRequirements:\\n- Create a responsive dashboard UI.\\n- Implement an API endpoint.\\n- Verify service integration behavior.\\n- Write setup documentation.\\n- Make the interface intuitive.",
+      "Implement a project.\n\nRequirements:\n- Create a responsive dashboard UI.\n- Implement an API endpoint.\n- Verify service integration behavior.\n- Write setup documentation.\n- Make the interface intuitive.",
     );
     transitionOmniaRun(root, run.id, "executing");
     transitionOmniaRun(root, run.id, "verifying");
