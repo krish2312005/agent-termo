@@ -1105,14 +1105,23 @@ function App() {
     if (
       !omniaDashboardVisible() &&
       !approvalPromptState() &&
+      !picker() &&
       shouldReopenOmniaDashboard(name, key.text, leaderArmedAt(), Date.now())
     ) {
+      const previousFocus = focusMode();
+      const previousInputActive = inputActive();
+      setFocusMode("composer");
+      setInputActive(true);
+      textarea?.focus();
       if (reopenOmniaDashboard()) {
         setLeaderArmedAt(undefined);
-        setFocusMode("composer");
         event.preventDefault();
         return;
       }
+      setFocusMode(previousFocus);
+      setInputActive(previousInputActive);
+      if (previousFocus === "composer" && previousInputActive) textarea?.focus();
+      else textarea?.blur();
     }
 
     const omniaDashboard = omniaDashboardState();

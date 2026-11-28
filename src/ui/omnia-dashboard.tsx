@@ -232,7 +232,7 @@ export function OmniaDashboardView(props: OmniaDashboardViewProps) {
         </box>
       </scrollbox>
       <box flexDirection="row" justifyContent="space-between" flexShrink={0}>
-        <text fg={ROLES.dimText} wrapMode="none">↑ ↓ scroll · PgUp/PgDn jump · Home/End · R refresh · Esc close</text>
+        <text fg={ROLES.dimText} wrapMode="none">↑ ↓ scroll · PgUp/PgDn jump · Home/End · R refresh · Esc hide · Ctrl+X then O reopen</text>
         <text fg={ROLES.mutedText} wrapMode="none">{props.run.id.slice(0, 8)}</text>
       </box>
     </box>
