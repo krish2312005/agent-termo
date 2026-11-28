@@ -1046,7 +1046,9 @@ function App() {
     permissionMode: screen().permissionMode,
     usage: screen().usage,
     variant: footerVariant(),
-    status: status() || (omniaDashboardState() && !omniaDashboardVisible() ? "OMNIA · Ctrl+X then O" : undefined),
+    status: omniaDashboardState() && !omniaDashboardVisible()
+      ? ["OMNIA · Ctrl+X then O", status()].filter(Boolean).join(" · ")
+      : status(),
     width: Math.max(1, terminalColumns() - 2),
   });
 
