@@ -282,16 +282,11 @@ export function prepareConversationForRequest(
 ): ContextPreparation {
   const budget = resolveContextBudget(model);
   const estimatedBeforeTokens = estimateContextTokens(conversation, tools, model);
-  // The input budget already reserves output and safety-margin headroom, so
-  // compaction must not fire early at a percentage of it. It fires only when
-  // the estimated input would actually exceed that reserved budget; a real
-  // provider context error is handled by the aggressive recovery path.
-  const trigger = budget.inputBudgetTokens;
   const target = options.aggressive
     ? Math.floor(budget.inputBudgetTokens * 0.68)
     : Math.floor(budget.inputBudgetTokens * COMPACTION_TARGET_RATIO);
 
-  if (estimatedBeforeTokens <= (options.aggressive ? target : trigger)) {
+  if (estimatedBeforeTokens <= target) {
     return { estimatedBeforeTokens, estimatedAfterTokens: estimatedBeforeTokens, budget, compacted: false, archivedMessages: [] };
   }
 

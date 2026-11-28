@@ -1039,13 +1039,24 @@ function App() {
     const omniaDashboard = omniaDashboardState();
     if (omniaDashboard) {
       if (name === "escape" || name === "ctrl+c") closeOmniaDashboard();
-      else if (["up", "down", "pageup", "pagedown"].includes(name)) {
+      else if (name === "ctrl+o") toggleTerminalPanel();
+      else if (name === "ctrl+t" && terminal()) {
+        setTerminalVisible(true);
+        setTerminalExpanded((expanded) => !expanded);
+      } else if (name === "ctrl+w" && terminal()) {
+        clearTerminalPanel();
+        setTransientStatus("Terminal panel closed. The process is not stopped.");
+      } else if (name === "ctrl+k" && terminal() && terminal()!.exitCode === null) {
+        setStatus("Stopping terminal…");
+        void Promise.resolve(terminalStopHandler?.())
+          .catch((error) => setTransientStatus("Could not stop terminal: " + (error instanceof Error ? error.message : String(error))))
+          .finally(() => setStatus(""));
+      } else if (["up", "down", "pageup", "pagedown", "home", "end"].includes(name)) {
         const step = name === "pageup" || name === "pagedown" ? Math.max(1, terminalRows() - 18) : 1;
-        const direction = name === "down" || name === "pagedown" ? 1 : -1;
-        const max = Math.max(0, getOmniaDashboardItemCount(omniaDashboard.run) - 1);
-        setOmniaDashboardState((current) => current
-          ? { ...current, selected: Math.max(0, Math.min(max, current.selected + direction * step)) }
-          : current);
+        const max = Math.max(0, getOmniaDashboardItemCount(omniaDashboard.run, entries().length) - 1);
+        const next = name === "home" ? 0 : name === "end" ? max
+          : omniaDashboard.selected + (name === "down" || name === "pagedown" ? step : name === "up" || name === "pageup" ? -step : 0);
+        setOmniaDashboardState((current) => current ? { ...current, selected: Math.max(0, Math.min(max, next)) } : current);
       } else if (key.text?.toLowerCase() === "r") {
         const latest = loadOmniaRun(omniaDashboard.projectRoot, omniaDashboard.runId);
         if (latest) setOmniaDashboardState((current) => current ? { ...current, run: latest } : current);
@@ -1426,6 +1437,7 @@ function App() {
               run={omniaDashboardState()!.run}
               width={terminalColumns()}
               selected={omniaDashboardState()!.selected}
+              activity={entries().slice(-40)}
             />
           }>
             <GitDashboardView
@@ -1453,10 +1465,12 @@ function App() {
           <text fg={ROLES.brand}>Terminal · {terminal()!.exitCode === null ? "running" : "exit " + terminal()!.exitCode}</text>
           <text fg={ROLES.terminalCommand}>$ {terminal()!.command}</text>
           <text fg={ROLES.terminalHint}>
-            {terminal()!.exitCode === null ? "Ctrl+K stop · " : ""}Ctrl+T {terminalExpanded() ? "shrink" : "expand"} · Ctrl+O hide
+            {terminal()!.exitCode === null ? "Ctrl+K stop · " : ""}Ctrl+W close · Ctrl+T {terminalExpanded() ? "shrink" : "expand"} · Ctrl+O hide
           </text>
-          <scrollbox flexGrow={1} minHeight={0} stickyScroll stickyStart="bottom">
-            <text fg={ROLES.terminalOutput}>{terminal()!.lines.join("\n")}</text>
+          <scrollbox flexGrow={1} flexBasis={0} minHeight={0} stickyScroll stickyStart="bottom" contentOptions={{ layoutMode: "list" }}>
+            <For each={terminal()!.lines}>
+              {(line) => <text fg={ROLES.terminalOutput} wrapMode="none">{line || " "}</text>}
+            </For>
           </scrollbox>
         </box>
       </Show>

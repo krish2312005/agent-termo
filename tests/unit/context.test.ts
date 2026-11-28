@@ -293,7 +293,7 @@ describe('context budgeting and compaction', () => {
     }
   });
 
-  it('does not compact when the estimate is under the reserved input budget (regression: premature 0.85 trigger)', () => {
+  it('automatically compacts at the configured 78% input-budget threshold', () => {
     const conversation: ConversationMessage[] = [message('system', 'System prompt')];
     for (let index = 0; index < 14; index++) {
       conversation.push(message('user', 'request ' + index + ' ' + 'x'.repeat(3_800)));
@@ -309,17 +309,13 @@ describe('context budgeting and compaction', () => {
     try {
       const budget = resolveContextBudget(model);
       const before = estimateContextTokens(conversation, undefined, model);
-      // These sizes sit above the old 0.85-of-budget trigger but below the
-      // reserved input budget, so the old code compacted here and the fix must not.
-      expect(before).toBeGreaterThan(budget.inputBudgetTokens * 0.85);
+      expect(before).toBeGreaterThan(budget.inputBudgetTokens * 0.78);
       expect(before).toBeLessThanOrEqual(budget.inputBudgetTokens);
 
-      const snapshot = structuredClone(conversation);
       const result = prepareConversationForRequest(conversation, model);
-      expect(result.compacted).toBe(false);
-      expect(result.archivedMessages).toHaveLength(0);
-      expect(result.estimatedAfterTokens).toBe(result.estimatedBeforeTokens);
-      expect(conversation).toEqual(snapshot);
+      expect(result.compacted).toBe(true);
+      expect(result.archivedMessages.length).toBeGreaterThan(0);
+      expect(result.estimatedAfterTokens).toBeLessThan(result.estimatedBeforeTokens);
     } finally {
       if (previousWindow === undefined) delete process.env.AGENT_TERMO_CONTEXT_WINDOW;
       else process.env.AGENT_TERMO_CONTEXT_WINDOW = previousWindow;
