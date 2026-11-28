@@ -5,6 +5,20 @@
 import { NimClient, parseToolCallsFromText, type CompletionRequestOptions, type ThinkingCapacity } from './llm/client.js';
 import { buildPlanContext, formatTaskPlanMarkdown, parseTaskPlan, PLAN_PROGRESS_TOOL, updatePlanStep, writeTaskPlanFile, type TaskPlan } from './runtime/plans.js';
 import { getToolLoopStopReason } from './runtime/run-budget.js';
+import {
+  applyOmniaVerification,
+  createOmniaRun,
+  formatOmniaReport,
+  getActiveOmniaRun,
+  getLatestOmniaRun,
+  incrementOmniaRepairAttempt,
+  loadOmniaRun,
+  MAX_OMNIA_REPAIR_ATTEMPTS,
+  recordOmniaEvidence,
+  transitionOmniaRun,
+} from './runtime/omnia/index.js';
+import { parseOmniaVerification } from './runtime/omnia/verifier.js';
+import type { OmniaRun } from './runtime/omnia/types.js';
 export { getToolLoopStopReason } from './runtime/run-budget.js';
 import { activeManualCheckpointIds, createCheckpoint, findCheckpoint, latestRedoableCheckpoint, latestUndoableCheckpoint, listCheckpoints, recordCheckpointAfter, recordCheckpointBefore, redoCheckpoint, undoCheckpoint } from './runtime/checkpoints.js';
 import { TOOL_DEFINITIONS } from './llm/tools.js';
@@ -74,6 +88,7 @@ import {
 	printInfo,
 	printGitPanel,
 	openGitDashboard,
+	openOmniaDashboard,
 	printHelp,
 	MarkdownPrinter,
 	printAgentsList,
@@ -459,6 +474,120 @@ function isContinueRequest(input: string): boolean {
 
 function printTaskPlan(plan: TaskPlan): void {
 	printAssistantMessage(formatTaskPlanMarkdown(plan));
+}
+
+async function verifyOmniaOutcome(
+  projectRoot: string,
+  nimClient: NimClient,
+  changedFiles: ReadonlyMap<string, string>,
+): Promise<OmniaRun | undefined> {
+  const activeRun = getActiveOmniaRun(projectRoot);
+  if (!activeRun) return;
+
+  try {
+    if (activeRun.status === "executing") transitionOmniaRun(projectRoot, activeRun.id, "verifying");
+    const run = loadOmniaRun(projectRoot, activeRun.id);
+    if (!run) throw new Error("OMNIA run disappeared before verification.");
+
+    const payload = {
+      goal: run.goal,
+      requirements: run.requirements.map(({ id, description, strategy, verificationPlan }) => ({
+        requirementId: id, description, strategy, verificationPlan,
+      })),
+      evidence: run.evidence.slice(-100).map(({ id, type, source, description, success, output }) => ({
+        id, type, source, description, success, output: output?.slice(0, 1_000),
+      })),
+      finalFiles: [...changedFiles.entries()].slice(-10).map(([path, content]) => ({
+        path, content: content.slice(0, 4_000),
+      })),
+    };
+    const response = await nimClient.complete([
+      {
+        id: crypto.randomUUID(),
+        role: "system",
+        content: "You are TERMO OMNIA's independent verification reviewer. The agent's completion claim is not evidence. Evaluate each requirement only against the supplied execution evidence and final file excerpts. A successful generic build/test does not prove unrelated behavior. Browser requirements require successful browser evidence; automated requirements require successful check evidence; static requirements require successful file evidence; manual requirements must remain unverified. Cite only evidence IDs present in the input, and only when they directly support the requirement. If evidence is incomplete, contradictory, or indirect, return unverified. Return JSON only with shape: {\"summary\":string,\"requirements\":[{\"requirementId\":string,\"status\":\"verified\"|\"unverified\"|\"blocked\",\"evidenceIds\":string[],\"reason\":string}]}. Include one decision per requirement.",
+        timestamp: new Date(),
+      },
+      {
+        id: crypto.randomUUID(),
+        role: "user",
+        content: JSON.stringify(payload),
+        timestamp: new Date(),
+      },
+    ]);
+    const parsed = parseOmniaVerification(response.content, run);
+    const verifiedRun = applyOmniaVerification(projectRoot, run.id, parsed.decisions, parsed.summary);
+    const allVerified = verifiedRun.requirements.length > 0 &&
+      verifiedRun.requirements.every((requirement) => requirement.status === "verified");
+    const repairable = verifiedRun.requirements.filter((requirement) =>
+      requirement.status !== "verified" && requirement.strategy !== "manual",
+    );
+    if (allVerified) {
+      transitionOmniaRun(projectRoot, run.id, "completed", { summary: parsed.summary });
+      printInfo("OMNIA verification passed for every requirement.");
+      return undefined;
+    }
+    if (repairable.length === 0 || verifiedRun.repairAttempts >= MAX_OMNIA_REPAIR_ATTEMPTS) {
+      transitionOmniaRun(projectRoot, run.id, "completed_with_warnings", {
+        summary: parsed.summary,
+        blocker: repairable.length === 0
+          ? "Remaining requirements need human judgment or manual verification."
+          : "The bounded repair budget was exhausted before every requirement could be verified.",
+      });
+      printInfo("OMNIA execution finished with unverified requirements. Review /omnia report.");
+      return undefined;
+    }
+    printInfo("OMNIA verifier found " + repairable.length + " requirement(s) needing repair.");
+    return verifiedRun;
+  } catch (error) {
+    try {
+      const run = getLatestOmniaRun(projectRoot);
+      if (run && run.status === "executing") transitionOmniaRun(projectRoot, run.id, "verifying");
+      if (run && (run.status === "executing" || run.status === "verifying")) {
+        applyOmniaVerification(projectRoot, run.id, [], "Independent verification could not complete.");
+        transitionOmniaRun(projectRoot, run.id, "completed_with_warnings", {
+          summary: "Execution finished, but the independent verifier could not complete.",
+          blocker: error instanceof Error ? error.message : String(error),
+        });
+      }
+    } catch (settlementError) {
+      printError("Could not settle OMNIA verification: " + (settlementError instanceof Error ? settlementError.message : String(settlementError)));
+    }
+    printError("OMNIA independent verification failed: " + (error instanceof Error ? error.message : String(error)));
+    return undefined;
+  }
+}
+
+function settleOmniaRun(
+  projectRoot: string,
+  outcome: 'completed' | 'failed' | 'cancelled' | 'paused',
+  detail?: string,
+): void {
+  const run = getActiveOmniaRun(projectRoot);
+  if (!run) return;
+
+  try {
+    if (outcome === 'completed') {
+      if (run.status === 'executing') transitionOmniaRun(projectRoot, run.id, 'verifying');
+      transitionOmniaRun(projectRoot, run.id, 'completed_with_warnings', {
+        summary: detail || 'The agent execution loop finished and its recorded tool evidence is available.',
+        blocker: 'The requested outcome has not yet passed an independent requirement-by-requirement verification pass. Generic build or test results are not treated as proof of every requirement.',
+      });
+      printInfo('OMNIA execution finished. Review /omnia report before treating the outcome as verified.');
+    } else if (outcome === 'cancelled') {
+      transitionOmniaRun(projectRoot, run.id, 'cancelled', {
+        blocker: detail || 'The run was cancelled by the user.',
+      });
+      printInfo('OMNIA run cancelled.');
+    } else {
+      transitionOmniaRun(projectRoot, run.id, 'blocked', {
+        blocker: detail || 'Execution paused before outcome verification completed.',
+      });
+      printInfo('OMNIA run is blocked. Resolve the issue, then use /omnia resume.');
+    }
+  } catch (error) {
+    printError('Could not update OMNIA run state: ' + (error instanceof Error ? error.message : String(error)));
+  }
 }
 
 function splitCommandArgs(value: string): string[] {
@@ -1351,12 +1480,18 @@ export async function runToolLoop(
 	onMessagesCompacted?: (messages: ConversationMessage[]) => void,
 	sessionId = '',
 	events: AgentEventHub = new AgentEventHub(),
+	omniaExecutionContext?: { changedFiles: Map<string, string>; ranChecks: RanCheck[] },
 ): Promise<string> {
 	const turnId = crypto.randomUUID();
 	observeAgentEvents(events);
 	events.publish({ type: 'turn.started', sessionId, turnId, goal: taskState.goal, at: Date.now() });
 	const finishTurn = (status: 'completed' | 'failed' | 'cancelled' | 'paused'): string => {
 		events.publish({ type: 'turn.completed', sessionId, turnId, status, at: Date.now() });
+		settleOmniaRun(
+			projectRoot,
+			status === 'completed' ? 'completed' : status === 'cancelled' ? 'cancelled' : 'paused',
+			status === 'completed' ? 'Tool execution loop completed.' : 'Tool execution ended with status: ' + status,
+		);
 		return '';
 	};
 	let toolCalls = initialToolCalls;
@@ -1371,8 +1506,8 @@ export async function runToolLoop(
 	// Same evidence gate as delegated runs (runtime/verify.ts): track what this
 	// turn actually wrote and ran, independent of direct file:write/file:edit
 	// tool calls made without going through agent:delegate at all.
-	const changedFiles = new Map<string, string>();
-	const ranChecks: RanCheck[] = [];
+	const changedFiles = omniaExecutionContext?.changedFiles ?? new Map<string, string>();
+	const ranChecks = omniaExecutionContext?.ranChecks ?? [];
 	const availableToolDefinitions = [
 		...(agentToolDefinitions ?? [...TOOL_DEFINITIONS, ...getMcpToolDefinitions()]),
 		...(taskPlan?.status === 'in_progress' ? [PLAN_PROGRESS_TOOL] : []),
@@ -1544,6 +1679,31 @@ export async function runToolLoop(
 						output: toolResult.output ?? toolResult.error ?? '',
 					});
 				}
+				const evidenceCommand = typeof tc.arguments.command === 'string' ? tc.arguments.command : '';
+				const evidenceType = tc.name === 'browser:verify'
+					? 'browser'
+					: tc.name === 'bash:execute'
+						? /\b(test|build|lint|typecheck|type-check|tsc|vitest|jest|pytest)\b/i.test(evidenceCommand) ? 'check' : 'command'
+						: 'tool';
+				try {
+					recordOmniaEvidence(projectRoot, {
+						type: evidenceType,
+						source: evidenceCommand || tc.name,
+						description: toolResult.success ? 'Tool execution completed.' : 'Tool execution failed.',
+						success: toolResult.success,
+						output: toolResult.output ?? toolResult.error ?? '',
+					});
+					if (execution.applied && execution.change) {
+						recordOmniaEvidence(projectRoot, {
+							type: 'file',
+							source: execution.change.path,
+							description: 'File change was applied by the existing approval and file-change pipeline.',
+							success: true,
+						});
+					}
+				} catch (error) {
+					printError('OMNIA evidence could not be saved: ' + (error instanceof Error ? error.message : String(error)));
+				}
 				// Delegated runs bypass executeToolWithReview, so show their
 				// result explicitly instead of only feeding it to the model.
 				if (tc.name === 'agent:delegate') printToolResult(tc.name, toolResult);
@@ -1672,7 +1832,19 @@ export async function runToolLoop(
 	// A failed gate keeps the task resumable and prevents it from being settled
 	// as complete, even if the model has already streamed a completion claim.
 	if (changedFiles.size > 0) {
-		const verification = await verifyCompletionWithChecks(taskState.goal || finalText, changedFiles, ranChecks, () => runProjectChecks(projectRoot));
+		const verification = await verifyCompletionWithChecks(taskState.goal || finalText, changedFiles, ranChecks, async () => {
+			const checks = await runProjectChecks(projectRoot);
+			for (const check of checks) {
+				recordOmniaEvidence(projectRoot, {
+					type: 'check',
+					source: check.command,
+					description: check.kind + ' check ' + (check.success ? 'passed.' : 'failed.'),
+					success: check.success,
+					output: check.output,
+				});
+			}
+			return checks;
+		});
 		if (!verification.ok) {
 			const details = formatIssues(verification.issues);
 			taskState.status = 'interrupted';
@@ -1689,6 +1861,86 @@ export async function runToolLoop(
 		void appendToTimeline(projectRoot, 'Agent-Termo', 'Completed tool-assisted request', ['Assistant summary: ' + finalText.replace(/\s+/g, ' ').slice(0, 700)], []);
 	}
 
+	const verificationRun = await verifyOmniaOutcome(projectRoot, nimClient, changedFiles);
+	if (verificationRun) {
+		const repairable = verificationRun.requirements.filter((requirement) =>
+			requirement.status !== "verified" && requirement.strategy !== "manual",
+		);
+		if (repairable.length > 0 && verificationRun.repairAttempts < MAX_OMNIA_REPAIR_ATTEMPTS) {
+			try {
+				const attempt = incrementOmniaRepairAttempt(projectRoot, verificationRun.id);
+				printInfo("OMNIA repair attempt " + attempt.repairAttempts + "/" + MAX_OMNIA_REPAIR_ATTEMPTS + " — targeting " + repairable.length + " requirement(s).");
+				const repairPayload = {
+					goal: attempt.goal,
+					requirements: repairable.map(({ id, description, strategy, verificationPlan }) => ({
+						requirementId: id, description, strategy, verificationPlan,
+					})),
+					evidence: attempt.evidence.slice(-100).map(({ id, type, source, description, success, output }) => ({
+						id, type, source, description, success, output: output?.slice(0, 1_000),
+					})),
+					finalFiles: [...changedFiles.entries()].slice(-10).map(([path, content]) => ({
+						path, content: content.slice(0, 4_000),
+					})),
+				};
+				const repairResponse = await nimClient.complete([
+					{
+						id: crypto.randomUUID(),
+						role: "system",
+						content: "You are Agent-Termo's bounded OMNIA repair engineer. Make the smallest safe changes needed to satisfy only the listed unverified requirements. Inspect the current project before editing. Use the supplied evidence and verification plans; do not repeat successful work. Use the provided tools to implement fixes and run focused checks. Do not deploy, publish, push, change credentials, or perform unrelated destructive actions. Return tool calls for real work; do not claim completion without changes or checks.",
+						timestamp: new Date(),
+					},
+					{
+						id: crypto.randomUUID(),
+						role: "user",
+						content: JSON.stringify(repairPayload),
+						timestamp: new Date(),
+					},
+				], nimClient.buildToolDefs(availableToolDefinitions));
+				if (repairResponse.toolCalls.length > 0) {
+					conversation.push({
+						id: crypto.randomUUID(),
+						role: "user",
+						content: "OMNIA repair pass " + attempt.repairAttempts + ": address only these requirements and their evidence. Preserve all existing project conventions.\n\nRepair brief:\n" + JSON.stringify(repairPayload),
+						timestamp: new Date(),
+					});
+					conversation.push({
+						id: crypto.randomUUID(),
+						role: "assistant",
+						content: repairResponse.content,
+						toolCalls: repairResponse.toolCalls,
+						timestamp: new Date(),
+					});
+					onConversationChanged();
+					await runToolLoop(
+						conversation, projectRoot, repairResponse.toolCalls, input, nimClient,
+						permissionMode, allowedCommands, taskState, getCheckpointId, onConversationChanged,
+						taskPlan, agentToolDefinitions, onMessagesCompacted, sessionId, events,
+						{ changedFiles, ranChecks },
+					);
+				} else {
+					transitionOmniaRun(projectRoot, verificationRun.id, "completed_with_warnings", {
+						summary: "The independent verifier identified gaps, but the repair planner returned no executable changes.",
+						blocker: repairResponse.content || "No repair tool calls were returned.",
+					});
+					printInfo("OMNIA could not produce an executable repair. Review /omnia report.");
+				}
+			} catch (error) {
+				const latest = getLatestOmniaRun(projectRoot);
+				if (latest?.status === "verifying") {
+					transitionOmniaRun(projectRoot, latest.id, "completed_with_warnings", {
+						summary: "The bounded repair attempt could not complete.",
+						blocker: error instanceof Error ? error.message : String(error),
+					});
+				}
+				printError("OMNIA repair attempt failed: " + (error instanceof Error ? error.message : String(error)));
+			}
+		} else {
+			transitionOmniaRun(projectRoot, verificationRun.id, "completed_with_warnings", {
+				summary: "No additional automatic repair is available for the remaining requirements.",
+				blocker: "Remaining requirements require manual verification or the repair budget is exhausted.",
+			});
+		}
+	}
 	finishTurn('completed');
 	return finalText;
 }
@@ -2103,6 +2355,14 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 			prompt += '\n\n## Active Task\n' + taskState.goal.slice(0, 1_200) + '\nStatus: ' + taskState.status + (taskState.reason ? ' (' + taskState.reason.slice(0, 500) + ')' : '');
 		}
 		if (currentGoal) prompt += '\n\n## Current Goal\n' + currentGoal.slice(0, 1_200);
+		const omniaRun = getActiveOmniaRun(projectRoot);
+		if (omniaRun) {
+			prompt += '\n\n## TERMO OMNIA — Outcome Contract\n' +
+				'Active run: ' + omniaRun.id + '\n' +
+				'Goal: ' + omniaRun.goal + '\n' +
+				'Requirements:\n' + omniaRun.requirements.map((item) => '- [' + item.id + '] ' + item.description + '\n  Verification strategy: ' + item.strategy + '\n  Verification plan: ' + item.verificationPlan).join('\n') + '\n\n' +
+				'Treat this as an engineering outcome, not an advice request. Inspect the project and its instructions before editing. Use the existing plan, tools, permissions, checkpoints, and specialist agents where appropriate. Implement the requested behavior, run the project checks that actually exist, and use browser verification when an appropriate browser tool is available. Do not deploy, publish, push, or perform unrelated destructive actions. In your final response, map each requirement to concrete commands, tests, browser observations, or other evidence. Never claim a check ran unless it actually ran, and disclose requirements that remain unverified.';
+		}
 		if (activePlan?.status === 'in_progress') prompt += '\n\n' + buildPlanContext(activePlan).slice(0, 4_000);
 		const mcpTools = getMcpToolDefinitions();
 		if (mcpTools.length > 0) {
@@ -2556,6 +2816,95 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 						stopSpinner();
 						if (isRequestCancelled(error)) printInfo('Plan generation cancelled.');
 						else printError('Could not create a plan: ' + (error instanceof Error ? error.message : String(error)));
+					}
+					continue mainLoop;
+				}
+				if (cmd === '/omnia' || cmd.startsWith('/omnia ')) {
+					const argument = userInput.trim().slice('/omnia'.length).trim();
+					const action = argument.split(/\s+/, 1)[0]?.toLowerCase() ?? '';
+
+					if (action === 'dashboard' || action === 'live') {
+						const run = getLatestOmniaRun(projectRoot);
+						if (run) openOmniaDashboard(projectRoot, run.id);
+						else printInfo('No OMNIA runs yet. Start one with /omnia <goal>.');
+						continue mainLoop;
+					}
+
+					if (!argument || action === 'status') {
+						const run = getLatestOmniaRun(projectRoot);
+						if (run) printAssistantMessage(formatOmniaReport(run));
+						else printInfo('No OMNIA runs yet. Start one with /omnia <goal>.');
+						continue mainLoop;
+					}
+
+					if (action === 'report') {
+						const runId = argument.slice('report'.length).trim().split(/\s+/, 1)[0];
+						let run;
+						try {
+							run = runId ? loadOmniaRun(projectRoot, runId) : getLatestOmniaRun(projectRoot);
+						} catch {
+							run = undefined;
+						}
+						if (run) printAssistantMessage(formatOmniaReport(run));
+						else printError('OMNIA run not found.', 'Use /omnia report or /omnia status to inspect the latest run.');
+						continue mainLoop;
+					}
+
+					if (action === 'stop') {
+						const run = getActiveOmniaRun(projectRoot);
+						if (!run) printInfo('There is no active OMNIA run to stop.');
+						else {
+							mainStopRequested = true;
+							const terminalStop = await killRunningTerminal();
+							if (terminalStop.failed.length > 0) {
+								printError('Some terminal processes could not be stopped: ' + terminalStop.failed.join(', '));
+							}
+							agentWorkspace.stopAll();
+							settleOmniaRun(projectRoot, 'cancelled', 'Stopped by the user.');
+						}
+						continue mainLoop;
+					}
+
+					if (action === 'resume') {
+						const run = getLatestOmniaRun(projectRoot);
+						if (!run || run.status !== 'blocked') {
+							printInfo('There is no blocked OMNIA run to resume.');
+							continue mainLoop;
+						}
+						try {
+							transitionOmniaRun(projectRoot, run.id, 'executing');
+							const dispatch = agentWorkspace.send(MAIN_AGENT_ID, run.goal);
+							if (!dispatch.ok) {
+								transitionOmniaRun(projectRoot, run.id, 'failed', { blocker: dispatch.message });
+								printError('Could not resume OMNIA: ' + dispatch.message);
+							} else {
+								printSuccess('Resuming OMNIA run ' + run.id.slice(0, 8) + '.');
+								openOmniaDashboard(projectRoot, run.id);
+							}
+						} catch (error) {
+							printError('Could not resume OMNIA: ' + (error instanceof Error ? error.message : String(error)));
+						}
+						continue mainLoop;
+					}
+
+					if (getActiveOmniaRun(projectRoot)) {
+						printError('An OMNIA run is already active.', 'Use /omnia status or /omnia stop before starting another run.');
+						continue mainLoop;
+					}
+					try {
+						const run = createOmniaRun(projectRoot, argument);
+						transitionOmniaRun(projectRoot, run.id, 'executing');
+						const dispatch = agentWorkspace.send(MAIN_AGENT_ID, run.goal);
+						if (!dispatch.ok) {
+							transitionOmniaRun(projectRoot, run.id, 'failed', { blocker: dispatch.message });
+							printError('Could not start OMNIA: ' + dispatch.message);
+						} else {
+							printSuccess('TERMO OMNIA started · run ' + run.id.slice(0, 8));
+							printInfo('The goal is queued with an outcome contract. Use /omnia dashboard to monitor the run live.');
+							openOmniaDashboard(projectRoot, run.id);
+						}
+					} catch (error) {
+						printError('Could not start OMNIA: ' + (error instanceof Error ? error.message : String(error)));
 					}
 					continue mainLoop;
 				}
@@ -3424,9 +3773,11 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 							rememberChat(projectRoot, 'Assistant', cleanText);
 							persistSession();
 							if (!streamed.printed) printAssistantMessage(cleanText);
+							settleOmniaRun(projectRoot, 'paused', 'The model returned a text response without executable actions; no implementation evidence was recorded.');
 						} else {
 							taskState.status = 'interrupted';
 							taskState.reason = 'The model returned neither text nor tool calls.';
+							settleOmniaRun(projectRoot, 'paused', taskState.reason);
 							printError('The model returned an empty response and no tool calls.', 'The task was paused. Type /continue to retry.');
 							persistSession();
 						}
@@ -3445,6 +3796,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 							if (taskState.status === 'running') {
 								taskState.status = 'interrupted';
 								taskState.reason = 'cancelled by user';
+								settleOmniaRun(projectRoot, 'cancelled', taskState.reason);
 								persistSession();
 								printInfo('Task paused. Type "continue" to resume from where it stopped.');
 								}
@@ -3458,6 +3810,7 @@ export async function runRepl(projectRoot?: string): Promise<void> {
 								if (taskState.status === 'running') {
 									taskState.status = 'interrupted';
 									taskState.reason = providerError(err);
+									settleOmniaRun(projectRoot, 'paused', taskState.reason);
 									persistSession();
 								}
 								stopBackgroundCommands();

@@ -25,7 +25,7 @@ import {
 } from "./tui.js";
 
 export * from "./screen.js";
-export { openGitDashboard, closeGitDashboard } from "./tui.js";
+export { openGitDashboard, closeGitDashboard, openOmniaDashboard, reopenOmniaDashboard, closeOmniaDashboard, isOmniaDashboardVisible } from "./tui.js";
 
 export { applySecretPaste, formatContextMeter, formatFooter, formatTokenCount, getCommands } from "./tui.js";
 export type { FooterOptions, FooterVariant } from "./tui.js";
@@ -45,6 +45,7 @@ export const COMMANDS: CommandInfo[] = [
   { name: "/resume", description: "restore a saved conversation by ID or choose one", usage: "/resume [session-id]" },
   { name: "/fork", description: "create a new conversation from the current or a saved session", usage: "/fork [session-id]" },
   { name: "/plan", description: "create, approve, or cancel an execution plan", usage: "/plan <task> | /plan approve | /plan cancel" },
+  { name: "/omnia", description: "execute an outcome-driven engineering run, open live mission control, and inspect its proof report", usage: "/omnia <goal> | /omnia dashboard | /omnia status | /omnia report [run-id] | /omnia resume | /omnia stop" },
   { name: "/checkpoint", description: "create a manual rollback checkpoint with an optional label", usage: "/checkpoint [label]" },
   { name: "/checkpoints", description: "list saved file-change checkpoints", usage: "/checkpoints" },
   { name: "/undo", description: "restore the latest or a selected checkpoint", usage: "/undo [checkpoint-id]" },
@@ -410,7 +411,8 @@ const SHORTCUTS: Array<{ title: string; items: Array<[string, string]> }> = [
   {
     title: "Workspace",
     items: [
-      ["Ctrl+X", "focus the navigator and arm stop-all"],
+      ["Ctrl+X", "focus the navigator and arm workspace shortcuts"],
+      ["Ctrl+X then O", "reopen OMNIA Mission Control without interrupting agents"],
       ["↑ / ↓", "select an agent"],
       ["Enter", "focus the composer"],
       ["Esc", "select the parent agent; at main, focus the composer"],
