@@ -144,7 +144,7 @@ export function openOmniaDashboard(projectRoot: string, runId: string): void {
     return;
   }
   if (gitDashboardState()) closeGitDashboard();
-  setOmniaDashboardState({ projectRoot, runId, run, selected: 0 });
+  setOmniaDashboardState({ projectRoot, runId, run, selected: Math.max(0, getOmniaDashboardItemCount(run, entries().length) - 1) });
   setInputActive(false);
   textarea?.blur();
   if (omniaDashboardTicker) clearInterval(omniaDashboardTicker);
@@ -822,6 +822,24 @@ function App() {
     if (atBottomByAgent.get(MAIN_AGENT_ID) === true && scrollbox) scrollbox.scrollTo(Infinity);
   });
 
+  // Mission Control follows new activity only while the user is already at
+  // the latest item; navigating upward pauses tail-follow until End is used.
+  let lastOmniaActivityCount = entries().length;
+  createEffect(() => {
+    const currentEntries = entries();
+    const current = omniaDashboardState();
+    if (!current) {
+      lastOmniaActivityCount = currentEntries.length;
+      return;
+    }
+    const previousMax = getOmniaDashboardItemCount(current.run, lastOmniaActivityCount) - 1;
+    const nextMax = getOmniaDashboardItemCount(current.run, currentEntries.length) - 1;
+    if (currentEntries.length !== lastOmniaActivityCount && current.selected >= previousMax) {
+      setOmniaDashboardState((state) => state ? { ...state, selected: nextMax } : state);
+    }
+    lastOmniaActivityCount = currentEntries.length;
+  });
+
   const tree = createMemo(() => {
     workspaceRevision();
     return buildAgentTree(getMainAgentState(), listSubAgents());
@@ -1044,8 +1062,8 @@ function App() {
         setTerminalVisible(true);
         setTerminalExpanded((expanded) => !expanded);
       } else if (name === "ctrl+w" && terminal()) {
-        clearTerminalPanel();
-        setTransientStatus("Terminal panel closed. The process is not stopped.");
+        setTerminalVisible(false);
+        setTransientStatus("Terminal panel hidden. Press Ctrl+O to reopen it.");
       } else if (name === "ctrl+k" && terminal() && terminal()!.exitCode === null) {
         setStatus("Stopping terminal…");
         void Promise.resolve(terminalStopHandler?.())
@@ -1465,7 +1483,7 @@ function App() {
           <text fg={ROLES.brand}>Terminal · {terminal()!.exitCode === null ? "running" : "exit " + terminal()!.exitCode}</text>
           <text fg={ROLES.terminalCommand}>$ {terminal()!.command}</text>
           <text fg={ROLES.terminalHint}>
-            {terminal()!.exitCode === null ? "Ctrl+K stop · " : ""}Ctrl+W close · Ctrl+T {terminalExpanded() ? "shrink" : "expand"} · Ctrl+O hide
+            {terminal()!.exitCode === null ? "Ctrl+K stop · " : ""}Ctrl+W hide · Ctrl+T {terminalExpanded() ? "shrink" : "expand"} · Ctrl+O hide
           </text>
           <scrollbox flexGrow={1} flexBasis={0} minHeight={0} stickyScroll stickyStart="bottom" contentOptions={{ layoutMode: "list" }}>
             <For each={terminal()!.lines}>
