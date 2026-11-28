@@ -66,7 +66,16 @@ Common API-key, provider-token, and password-like values are redacted before evi
 
 ## Live mission control
 
-Use `/omnia dashboard` to open the terminal mission-control view for the latest run. It refreshes the local run record every 750 ms while open. The dashboard shows the outcome contract, verification progress, repair budget, latest evidence, and unresolved blockers. Arrow keys navigate the requirements/evidence list, `R` refreshes immediately, and `Esc` returns to the composer. It opens automatically when a run starts or resumes.
+Use `/omnia dashboard` to open the terminal mission-control view for the latest run. It opens automatically when a run starts or resumes.
+
+Mission Control is a view over the run, not the run itself:
+
+- `Esc` or `Ctrl+C` hides the dashboard and returns to the workspace. It does **not** stop the main agent, cancel a model request, terminate terminal commands, or stop sub-agents.
+- While the dashboard is hidden, OMNIA retains the run, selection, and live updates. The run continues independently.
+- Press `Ctrl+X`, then `O` within 1.5 seconds to reopen Mission Control immediately, even while the agent or sub-agents are working. The footer displays this shortcut whenever a recent OMNIA run is available.
+- `/omnia dashboard` also opens the latest run when the composer is available. Use `/omnia stop` only when you actually intend to cancel the run.
+
+The dashboard refreshes the local run record every 750 ms while the run is active, including when the view is hidden. It shows the outcome contract, verification progress, repair budget, latest evidence, unresolved blockers, and live assistant/tool activity. Arrow keys navigate, PageUp/PageDown jump, Home/End move to the beginning/latest activity, and `R` refreshes immediately. Hiding Mission Control preserves the run; only `/omnia stop` requests cancellation.
 
 ## Storage and privacy
 
