@@ -41,12 +41,13 @@ describe("OMNIA dashboard", () => {
 
   it("maps selected requirements, evidence, and activity to rendered scroll rows", () => {
     const activity = [
-      { id: 1, kind: "markdown", content: "Writing the page\\nexport default function Page() {}" },
+      { id: 1, kind: "markdown", content: "Writing the page\nexport default function Page() {}" },
       { id: 2, kind: "diff-add", content: "+export default function App() {}" },
     ];
-    expect(getOmniaDashboardScrollOffset(run, 0)).toBe(1);
-    expect(getOmniaDashboardScrollOffset(run, 2)).toBe(8);
-    expect(getOmniaDashboardScrollOffset(run, 10, activity)).toBe(25);
+    expect(getOmniaDashboardScrollOffset(run, 0)).toBe(2);
+    expect(getOmniaDashboardScrollOffset(run, 2)).toBe(12);
+    expect(getOmniaDashboardScrollOffset(run, 10, activity)).toBe(38);
+    expect(getOmniaDashboardScrollOffset(run, 11, activity)).toBe(42);
     expect(getOmniaDashboardItemCount(run, activity.length)).toBe(12);
   });
 });

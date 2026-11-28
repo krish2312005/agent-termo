@@ -76,20 +76,22 @@ function activityLabel(item: OmniaActivityEntry): string {
   return (labels[item.kind] ?? item.kind.toUpperCase()) + (item.streaming ? " · STREAMING" : "");
 }
 function getActivityOffset(activity: OmniaActivityEntry[], width: number, index: number): number {
-  let offset = 1;
-  for (let i = 0; i < index; i++) offset += 1 + activityLines(activity[i]!, width).length;
+  let offset = 0;
+  for (let i = 0; i < index; i++) offset += 2 + activityLines(activity[i]!, width).length;
   return offset;
 }
 export function getOmniaDashboardScrollOffset(run: OmniaRun, selected: number, activityInput: OmniaActivityEntry[] = [], width = 80): number {
   const evidence = run.evidence.slice(-MAX_VISIBLE_EVIDENCE);
   const activity = activityInput.slice(-MAX_VISIBLE_ACTIVITY);
   const requirementCount = run.requirements.length;
-  const activityStart = requirementCount + evidence.length;
-  if (selected < requirementCount) return 1 + selected * 3;
-  if (selected < activityStart) return 1 + requirementCount * 3 + 1 + (selected - requirementCount) * 2;
-  const activityIndex = selected - activityStart;
-  const activityHeader = 1 + requirementCount * 3 + 1 + evidence.length * 2;
-  return activityHeader + getActivityOffset(activity, width, Math.max(0, Math.min(activity.length, activityIndex)));
+  const requirementStart = 2;
+  const evidenceHeader = requirementStart + requirementCount * 4;
+  const evidenceStart = evidenceHeader + 2;
+  const activityStart = evidenceHeader + 2 + evidence.length * 3 + 2;
+  if (selected < requirementCount) return requirementStart + selected * 4;
+  if (selected < requirementCount + evidence.length) return evidenceStart + (selected - requirementCount) * 3;
+  const activityIndex = selected - requirementCount - evidence.length;
+  return activityStart + getActivityOffset(activity, width, Math.max(0, Math.min(activity.length, activityIndex)));
 }
 function Stat(props: { label: string; value: string }) {
   return (
