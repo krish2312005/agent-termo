@@ -1076,7 +1076,7 @@ function App() {
             : !event.shift && isDashboardEnterKey(event.name, sequence)
               ? "enter"
               : event.name;
-    const key: Key = { name, text: sequence || (event.name === "space" ? " " : undefined) };
+    const key: Key = { name, text: sequence || (printable ? (event.name === "space" ? " " : event.name) : undefined) };
     if (secretMode()) {
       if (name === "enter") {
         const resolve = secretResolver;
