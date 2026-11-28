@@ -19,7 +19,7 @@ export interface OmniaActivityEntry {
 }
 const MAX_VISIBLE_EVIDENCE = 8;
 const MAX_VISIBLE_ACTIVITY = 40;
-const MAX_ACTIVITY_LINES = 8;
+const MAX_ACTIVITY_LINES = 80;
 
 export function getOmniaDashboardStats(run: OmniaRun): OmniaDashboardStats {
   const verified = run.requirements.filter((item) => item.status === "verified").length;
@@ -41,7 +41,12 @@ function clip(value: string, width: number): string {
 }
 function activityLines(item: OmniaActivityEntry, width: number): string[] {
   const content = item.content.trim() || (item.streaming ? "Generating response…" : "");
-  return content ? content.split(/\r?\n/).slice(0, MAX_ACTIVITY_LINES).map((line) => clip(line || " ", Math.max(8, width - 12))) : [];
+  if (!content) return [];
+  const lines = content.split(/\r?\n/);
+  const visible = lines.length > MAX_ACTIVITY_LINES
+    ? ["… " + (lines.length - MAX_ACTIVITY_LINES + 1) + " earlier lines", ...lines.slice(-(MAX_ACTIVITY_LINES - 1))]
+    : lines;
+  return visible.map((line) => clip(line || " ", Math.max(8, width - 12)));
 }
 function activityColor(kind: string): string {
   if (kind === "diff-add" || kind === "success") return ROLES.success;
@@ -116,7 +121,10 @@ export function OmniaDashboardView(props: OmniaDashboardViewProps) {
     const run = props.run;
     const selected = props.selected;
     const currentActivity = activity();
-    if (listScrollbox) listScrollbox.scrollTo(getOmniaDashboardScrollOffset(run, selected, currentActivity, props.width));
+    if (!listScrollbox) return;
+    const lastItem = getOmniaDashboardItemCount(run, currentActivity.length) - 1;
+    if (currentActivity.length > 0 && selected >= lastItem) listScrollbox.scrollTo(Infinity);
+    else listScrollbox.scrollTo(getOmniaDashboardScrollOffset(run, selected, currentActivity, props.width));
   });
   return (
     <box width="100%" flexDirection="column" flexGrow={1} flexBasis={0} flexShrink={1} minWidth={0} minHeight={0} gap={1} paddingX={1} backgroundColor={ROLES.pageBackground}>
