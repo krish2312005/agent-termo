@@ -21,7 +21,7 @@ import { sanitizeDisplayLine, sanitizeDisplayText } from "./display-text.js";
 import { GIT_GRAPH_COLORS, ROLES } from "./theme.js";
 import type { GitBranchInfo, GitDashboardData, GitGraphRow, GitHubSummary } from "../runtime/git-graph.js";
 import { getGitDashboardItemCount, GitDashboardView, isDashboardEnterKey, type GitDashboardFeedback, type GitDashboardTab } from "./git-dashboard.js";
-import { OmniaDashboardView, getOmniaDashboardItemCount } from "./omnia-dashboard.js";
+import { OmniaDashboardView, getOmniaDashboardItemCount, shouldReopenOmniaDashboard } from "./omnia-dashboard.js";
 import { formatOmniaReport, loadOmniaRun } from "../runtime/omnia/index.js";
 import type { OmniaRun } from "../runtime/omnia/types.js";
 import type { PermissionMode } from "../types/index.js";
