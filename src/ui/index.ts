@@ -25,7 +25,7 @@ import {
 } from "./tui.js";
 
 export * from "./screen.js";
-export { openGitDashboard, closeGitDashboard, openOmniaDashboard, closeOmniaDashboard } from "./tui.js";
+export { openGitDashboard, closeGitDashboard, openOmniaDashboard, reopenOmniaDashboard, closeOmniaDashboard, isOmniaDashboardVisible } from "./tui.js";
 
 export { applySecretPaste, formatContextMeter, formatFooter, formatTokenCount, getCommands } from "./tui.js";
 export type { FooterOptions, FooterVariant } from "./tui.js";
@@ -411,7 +411,8 @@ const SHORTCUTS: Array<{ title: string; items: Array<[string, string]> }> = [
   {
     title: "Workspace",
     items: [
-      ["Ctrl+X", "focus the navigator and arm stop-all"],
+      ["Ctrl+X", "focus the navigator and arm workspace shortcuts"],
+      ["Ctrl+X then O", "reopen OMNIA Mission Control without interrupting agents"],
       ["↑ / ↓", "select an agent"],
       ["Enter", "focus the composer"],
       ["Esc", "select the parent agent; at main, focus the composer"],

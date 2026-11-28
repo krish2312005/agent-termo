@@ -17,6 +17,21 @@ export interface OmniaActivityEntry {
   content: string;
   streaming?: boolean;
 }
+export const OMNIA_DASHBOARD_LEADER_WINDOW_MS = 1_500;
+
+export function shouldReopenOmniaDashboard(
+  keyName: string,
+  keyText: string | undefined,
+  leaderArmedAt: number | undefined,
+  now: number,
+): boolean {
+  return keyName === "text" &&
+    keyText?.toLowerCase() === "o" &&
+    leaderArmedAt !== undefined &&
+    now - leaderArmedAt >= 0 &&
+    now - leaderArmedAt <= OMNIA_DASHBOARD_LEADER_WINDOW_MS;
+}
+
 const MAX_VISIBLE_EVIDENCE = 8;
 const MAX_VISIBLE_ACTIVITY = 40;
 const MAX_ACTIVITY_LINES = 80;

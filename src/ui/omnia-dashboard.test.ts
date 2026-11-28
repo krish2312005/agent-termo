@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getOmniaDashboardItemCount, getOmniaDashboardScrollOffset, getOmniaDashboardStats } from "./omnia-dashboard.js";
+import { getOmniaDashboardItemCount, getOmniaDashboardScrollOffset, getOmniaDashboardStats, shouldReopenOmniaDashboard } from "./omnia-dashboard.js";
 import type { OmniaRun } from "../runtime/omnia/types.js";
 
 const run: OmniaRun = {
@@ -25,6 +25,15 @@ const run: OmniaRun = {
 };
 
 describe("OMNIA dashboard", () => {
+  it("reopens from the workspace leader chord only inside the leader timeout", () => {
+    expect(shouldReopenOmniaDashboard("text", "o", 1_000, 2_000)).toBe(true);
+    expect(shouldReopenOmniaDashboard("text", "O", 1_000, 2_500)).toBe(true);
+    expect(shouldReopenOmniaDashboard("text", "o", 1_000, 2_501)).toBe(false);
+    expect(shouldReopenOmniaDashboard("text", "x", 1_000, 1_200)).toBe(false);
+    expect(shouldReopenOmniaDashboard("ctrl+o", undefined, 1_000, 1_200)).toBe(false);
+    expect(shouldReopenOmniaDashboard("text", "o", undefined, 1_200)).toBe(false);
+  });
+
   it("summarizes verification, evidence, and repair progress", () => {
     expect(getOmniaDashboardStats(run)).toEqual({
       verified: 1,

@@ -132,6 +132,32 @@ const [omniaDashboardState, setOmniaDashboardState] = createSignal<{
   run: OmniaRun;
   selected: number;
 } | null>(null);
+const [omniaDashboardVisible, setOmniaDashboardVisible] = createSignal(false);
+let omniaReturnFocusMode: "composer" | "navigator" = "composer";
+let omniaReturnInputActive = true;
+
+function refreshOmniaDashboardRun(): void {
+  const current = omniaDashboardState();
+  if (!current) return;
+  const latest = loadOmniaRun(current.projectRoot, current.runId);
+  if (!latest) return;
+  setOmniaDashboardState((state) => state ? { ...state, run: latest } : state);
+  if (["completed", "completed_with_warnings", "blocked", "failed", "cancelled"].includes(latest.status) && omniaDashboardTicker) {
+    clearInterval(omniaDashboardTicker);
+    omniaDashboardTicker = null;
+  }
+}
+
+function ensureOmniaDashboardTicker(): void {
+  if (omniaDashboardTicker) return;
+  const run = omniaDashboardState()?.run;
+  if (run && ["completed", "completed_with_warnings", "blocked", "failed", "cancelled"].includes(run.status)) return;
+  omniaDashboardTicker = setInterval(refreshOmniaDashboardRun, 750);
+}
+
+export function isOmniaDashboardVisible(): boolean {
+  return omniaDashboardVisible();
+}
 
 export function openOmniaDashboard(projectRoot: string, runId: string): void {
   const run = loadOmniaRun(projectRoot, runId);
@@ -143,26 +169,48 @@ export function openOmniaDashboard(projectRoot: string, runId: string): void {
     appendLog(formatOmniaReport(run), "markdown");
     return;
   }
+  if (!omniaDashboardVisible()) {
+    omniaReturnFocusMode = focusMode();
+    omniaReturnInputActive = inputActive();
+  }
   if (gitDashboardState()) closeGitDashboard();
   setOmniaDashboardState({ projectRoot, runId, run, selected: Math.max(0, getOmniaDashboardItemCount(run, entries().length) - 1) });
+  setOmniaDashboardVisible(true);
   setInputActive(false);
   textarea?.blur();
-  if (omniaDashboardTicker) clearInterval(omniaDashboardTicker);
-  omniaDashboardTicker = setInterval(() => {
-    const current = omniaDashboardState();
-    if (!current) return;
-    const latest = loadOmniaRun(current.projectRoot, current.runId);
-    if (latest) setOmniaDashboardState((state) => state ? { ...state, run: latest } : state);
-  }, 750);
+  ensureOmniaDashboardTicker();
+}
+
+export function reopenOmniaDashboard(): boolean {
+  const current = omniaDashboardState();
+  if (!current) return false;
+  const latest = loadOmniaRun(current.projectRoot, current.runId);
+  if (!latest) return false;
+  if (!omniaDashboardVisible()) {
+    omniaReturnFocusMode = focusMode();
+    omniaReturnInputActive = inputActive();
+  }
+  if (gitDashboardState()) closeGitDashboard();
+  setOmniaDashboardState({
+    ...current,
+    run: latest,
+    selected: Math.max(0, getOmniaDashboardItemCount(latest, entries().length) - 1),
+  });
+  setOmniaDashboardVisible(true);
+  setInputActive(false);
+  textarea?.blur();
+  ensureOmniaDashboardTicker();
+  return true;
 }
 
 export function closeOmniaDashboard(): void {
-  if (!omniaDashboardState()) return;
-  if (omniaDashboardTicker) clearInterval(omniaDashboardTicker);
-  omniaDashboardTicker = null;
-  setOmniaDashboardState(null);
-  setInputActive(true);
-  textarea?.focus();
+  if (!omniaDashboardVisible()) return;
+  // Dismiss only the view. Keep the run, live activity and refresh subscription alive.
+  setOmniaDashboardVisible(false);
+  setFocusMode(omniaReturnFocusMode);
+  setInputActive(omniaReturnInputActive);
+  if (omniaReturnFocusMode === "composer" && omniaReturnInputActive) textarea?.focus();
+  else textarea?.blur();
 }
 
 export function openGitDashboard(
@@ -173,7 +221,7 @@ export function openGitDashboard(
   checkoutBranch?: (branch: GitBranchInfo) => Promise<string | void>,
   selected = 0,
 ): void {
-  if (omniaDashboardState()) closeOmniaDashboard();
+  if (omniaDashboardVisible()) closeOmniaDashboard();
   if (!renderer) {
     appendLog("GIT COMMAND CENTER · " + data.snapshot.name + " · " + data.snapshot.branch, "success");
     appendLog("Working tree: " + (data.snapshot.workingTreeClean ? "clean" : data.snapshot.changedPaths + " changed paths") + " · " + data.snapshot.totalCommits + " commits · " + data.snapshot.localBranchCount + " local / " + data.snapshot.remoteBranchCount + " remote branches", "info");
@@ -828,7 +876,7 @@ function App() {
   createEffect(() => {
     const currentEntries = entries();
     const current = omniaDashboardState();
-    if (!current) {
+    if (!current || !omniaDashboardVisible()) {
       lastOmniaActivityCount = currentEntries.length;
       return;
     }
@@ -998,7 +1046,7 @@ function App() {
     permissionMode: screen().permissionMode,
     usage: screen().usage,
     variant: footerVariant(),
-    status: status(),
+    status: status() || (omniaDashboardState() && !omniaDashboardVisible() ? "OMNIA · Ctrl+X then O" : undefined),
     width: Math.max(1, terminalColumns() - 2),
   });
 
@@ -1054,8 +1102,21 @@ function App() {
       return;
     }
 
+    if (
+      !omniaDashboardVisible() &&
+      !approvalPromptState() &&
+      shouldReopenOmniaDashboard(name, key.text, leaderArmedAt(), Date.now())
+    ) {
+      if (reopenOmniaDashboard()) {
+        setLeaderArmedAt(undefined);
+        setFocusMode("composer");
+        event.preventDefault();
+        return;
+      }
+    }
+
     const omniaDashboard = omniaDashboardState();
-    if (omniaDashboard) {
+    if (omniaDashboard && omniaDashboardVisible()) {
       if (name === "escape" || name === "ctrl+c") closeOmniaDashboard();
       else if (name === "ctrl+o") toggleTerminalPanel();
       else if (name === "ctrl+t" && terminal()) {
@@ -1343,7 +1404,7 @@ function App() {
           </box>
         </Show>
         <text fg={ROLES.border} flexShrink={0} wrapMode="none">{"─".repeat(Math.max(1, terminalColumns() - 2))}</text>
-        <Show when={gitDashboardState() || omniaDashboardState()} fallback={
+        <Show when={gitDashboardState() || omniaDashboardVisible()} fallback={
         <scrollbox
           ref={(element) => {
             scrollbox = element;
