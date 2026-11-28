@@ -21,7 +21,7 @@ import { sanitizeDisplayLine, sanitizeDisplayText } from "./display-text.js";
 import { GIT_GRAPH_COLORS, ROLES } from "./theme.js";
 import type { GitBranchInfo, GitDashboardData, GitGraphRow, GitHubSummary } from "../runtime/git-graph.js";
 import { getGitDashboardItemCount, GitDashboardView, isDashboardEnterKey, type GitDashboardFeedback, type GitDashboardTab } from "./git-dashboard.js";
-import { OmniaDashboardView, getOmniaDashboardItemCount, shouldReopenOmniaDashboard } from "./omnia-dashboard.js";
+import { OmniaDashboardView, getOmniaDashboardItemCount, groupOmniaActivityEntries, shouldReopenOmniaDashboard } from "./omnia-dashboard.js";
 import { formatOmniaReport, loadOmniaRun } from "../runtime/omnia/index.js";
 import type { OmniaRun } from "../runtime/omnia/types.js";
 import type { PermissionMode } from "../types/index.js";
@@ -174,7 +174,7 @@ export function openOmniaDashboard(projectRoot: string, runId: string): void {
     omniaReturnInputActive = inputActive();
   }
   if (gitDashboardState()) closeGitDashboard();
-  setOmniaDashboardState({ projectRoot, runId, run, selected: Math.max(0, getOmniaDashboardItemCount(run, entries().length) - 1) });
+  setOmniaDashboardState({ projectRoot, runId, run, selected: Math.max(0, getOmniaDashboardItemCount(run, groupOmniaActivityEntries(entries()).length) - 1) });
   setOmniaDashboardVisible(true);
   setInputActive(false);
   textarea?.blur();
@@ -194,7 +194,7 @@ export function reopenOmniaDashboard(): boolean {
   setOmniaDashboardState({
     ...current,
     run: latest,
-    selected: Math.max(0, getOmniaDashboardItemCount(latest, entries().length) - 1),
+    selected: Math.max(0, getOmniaDashboardItemCount(latest, groupOmniaActivityEntries(entries()).length) - 1),
   });
   setOmniaDashboardVisible(true);
   setInputActive(false);
@@ -880,8 +880,8 @@ function App() {
       lastOmniaActivityCount = currentEntries.length;
       return;
     }
-    const previousMax = getOmniaDashboardItemCount(current.run, lastOmniaActivityCount) - 1;
-    const nextMax = getOmniaDashboardItemCount(current.run, currentEntries.length) - 1;
+    const previousMax = getOmniaDashboardItemCount(current.run, groupOmniaActivityEntries(currentEntries.slice(0, lastOmniaActivityCount)).length) - 1;
+    const nextMax = getOmniaDashboardItemCount(current.run, groupOmniaActivityEntries(currentEntries).length) - 1;
     if (currentEntries.length !== lastOmniaActivityCount && current.selected >= previousMax) {
       setOmniaDashboardState((state) => state ? { ...state, selected: nextMax } : state);
     }
@@ -1143,7 +1143,7 @@ function App() {
           .finally(() => setStatus(""));
       } else if (["up", "down", "pageup", "pagedown", "home", "end"].includes(name)) {
         const step = name === "pageup" || name === "pagedown" ? Math.max(1, terminalRows() - 18) : 1;
-        const max = Math.max(0, getOmniaDashboardItemCount(omniaDashboard.run, entries().length) - 1);
+        const max = Math.max(0, getOmniaDashboardItemCount(omniaDashboard.run, groupOmniaActivityEntries(entries()).length) - 1);
         const next = name === "home" ? 0 : name === "end" ? max
           : omniaDashboard.selected + (name === "down" || name === "pagedown" ? step : name === "up" || name === "pageup" ? -step : 0);
         setOmniaDashboardState((current) => current ? { ...current, selected: Math.max(0, Math.min(max, next)) } : current);
@@ -1527,7 +1527,7 @@ function App() {
               run={omniaDashboardState()!.run}
               width={terminalColumns()}
               selected={omniaDashboardState()!.selected}
-              activity={entries().slice(-40)}
+              activity={entries()}
             />
           }>
             <GitDashboardView

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getOmniaDashboardItemCount, getOmniaDashboardScrollOffset, getOmniaDashboardStats, shouldReopenOmniaDashboard } from "./omnia-dashboard.js";
+import { getOmniaDashboardItemCount, getOmniaDashboardScrollOffset, getOmniaDashboardStats, groupOmniaActivityEntries, shouldReopenOmniaDashboard } from "./omnia-dashboard.js";
 import type { OmniaRun } from "../runtime/omnia/types.js";
 
 const run: OmniaRun = {
@@ -32,6 +32,46 @@ describe("OMNIA dashboard", () => {
     expect(shouldReopenOmniaDashboard("text", "x", 1_000, 1_200)).toBe(false);
     expect(shouldReopenOmniaDashboard("ctrl+o", undefined, 1_000, 1_200)).toBe(false);
     expect(shouldReopenOmniaDashboard("text", "o", undefined, 1_200)).toBe(false);
+  });
+
+  it("groups an entire file diff into one activity item and preserves every line", () => {
+    const entries = [
+      { id: 10, kind: "info", content: "src/components/Board.tsx  MODIFY  +80 -12" },
+      ...Array.from({ length: 150 }, (_, index) => ({
+        id: 11 + index,
+        kind: index % 3 === 0 ? "diff-add" : index % 3 === 1 ? "diff-remove" : "diff-context",
+        content: String(index + 1).padStart(4) + " │ const value = " + index + ";",
+      })),
+      { id: 200, kind: "success", content: "File change applied." },
+    ];
+    const grouped = groupOmniaActivityEntries(entries);
+    expect(grouped).toHaveLength(2);
+    expect(grouped[0]).toMatchObject({
+      id: 10,
+      kind: "code-diff",
+      title: "src/components/Board.tsx  MODIFY  +80 -12",
+    });
+    expect(grouped[0]!.lines).toHaveLength(150);
+    expect(grouped[0]!.lines?.[149]?.content).toContain("const value = 149");
+    expect(grouped[1]).toMatchObject({ id: 200, kind: "success" });
+  });
+
+  it("keeps separate file diffs as separate selectable items", () => {
+    const entries = [
+      { id: 1, kind: "info", content: "src/a.ts  NEW  +2 -0" },
+      { id: 2, kind: "diff-add", content: "+1 │ first" },
+      { id: 3, kind: "diff-add", content: "+2 │ second" },
+      { id: 4, kind: "info", content: "src/b.ts  MODIFY  +1 -1" },
+      { id: 5, kind: "diff-remove", content: "-1 │ old" },
+      { id: 6, kind: "diff-add", content: "+1 │ new" },
+    ];
+    const grouped = groupOmniaActivityEntries(entries);
+    expect(grouped).toHaveLength(2);
+    expect(grouped.map((item) => item.title)).toEqual([
+      "src/a.ts  NEW  +2 -0",
+      "src/b.ts  MODIFY  +1 -1",
+    ]);
+    expect(grouped.map((item) => item.lines?.length)).toEqual([2, 2]);
   });
 
   it("summarizes verification, evidence, and repair progress", () => {

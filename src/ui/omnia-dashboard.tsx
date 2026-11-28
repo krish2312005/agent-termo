@@ -11,11 +11,18 @@ export interface OmniaDashboardStats {
   repairAttempts: number;
   progressPercent: number;
 }
+export interface OmniaCodeLine {
+  id: number;
+  kind: string;
+  content: string;
+}
 export interface OmniaActivityEntry {
   id: number;
   kind: string;
   content: string;
   streaming?: boolean;
+  title?: string;
+  lines?: OmniaCodeLine[];
 }
 export const OMNIA_DASHBOARD_LEADER_WINDOW_MS = 1_500;
 
@@ -36,6 +43,45 @@ const MAX_VISIBLE_EVIDENCE = 8;
 const MAX_VISIBLE_ACTIVITY = 40;
 const MAX_ACTIVITY_LINES = 80;
 
+const isDiffLine = (entry: OmniaActivityEntry): boolean =>
+  entry.kind === "diff-add" || entry.kind === "diff-remove" || entry.kind === "diff-context";
+
+const isDiffHeader = (entry: OmniaActivityEntry, next: OmniaActivityEntry | undefined): boolean =>
+  entry.kind === "info" &&
+  /\s(?:NEW|MODIFY|DELETE)\s+\+\d+\s+-\d+\s*$/i.test(entry.content) &&
+  Boolean(next && isDiffLine(next));
+
+/** Turn the TUI's per-line diff log into one selectable item per changed file. */
+export function groupOmniaActivityEntries(entries: readonly OmniaActivityEntry[]): OmniaActivityEntry[] {
+  const grouped: OmniaActivityEntry[] = [];
+  for (let index = 0; index < entries.length;) {
+    const entry = entries[index]!;
+    const header = isDiffHeader(entry, entries[index + 1]) ? entry : undefined;
+    if (header || isDiffLine(entry)) {
+      const firstLine = header ? index + 1 : index;
+      const lines: OmniaCodeLine[] = [];
+      let cursor = firstLine;
+      while (cursor < entries.length && isDiffLine(entries[cursor]!)) {
+        const line = entries[cursor]!;
+        lines.push({ id: line.id, kind: line.kind, content: line.content });
+        cursor++;
+      }
+      grouped.push({
+        id: header?.id ?? lines[0]!.id,
+        kind: "code-diff",
+        content: "",
+        ...(header ? { title: header.content } : {}),
+        lines,
+      });
+      index = cursor;
+      continue;
+    }
+    grouped.push(entry);
+    index++;
+  }
+  return grouped.slice(-MAX_VISIBLE_ACTIVITY);
+}
+
 export function getOmniaDashboardStats(run: OmniaRun): OmniaDashboardStats {
   const verified = run.requirements.filter((item) => item.status === "verified").length;
   return {
@@ -55,6 +101,7 @@ function clip(value: string, width: number): string {
   return chars.length <= width ? value : chars.slice(0, Math.max(0, width - 1)).join("") + "…";
 }
 function activityLines(item: OmniaActivityEntry, width: number): string[] {
+  if (item.lines) return item.lines.map((line) => clip(line.content || " ", Math.max(8, width - 12)));
   const content = item.content.trim() || (item.streaming ? "Generating response…" : "");
   if (!content) return [];
   const lines = content.split(/\r?\n/);
@@ -86,7 +133,7 @@ function activityLabel(item: OmniaActivityEntry): string {
   const labels: Record<string, string> = {
     user: "REQUEST", markdown: "ASSISTANT", assistant: "ASSISTANT", tool: "TOOL",
     info: "INFO", success: "SUCCESS", error: "ERROR", dim: "DETAIL",
-    "diff-add": "CODE +", "diff-remove": "CODE −", "diff-context": "CODE",
+    "code-diff": "CODE CHANGE",
   };
   return (labels[item.kind] ?? item.kind.toUpperCase()) + (item.streaming ? " · STREAMING" : "");
 }
@@ -97,7 +144,7 @@ function getActivityOffset(activity: OmniaActivityEntry[], width: number, index:
 }
 export function getOmniaDashboardScrollOffset(run: OmniaRun, selected: number, activityInput: OmniaActivityEntry[] = [], width = 80): number {
   const evidence = run.evidence.slice(-MAX_VISIBLE_EVIDENCE);
-  const activity = activityInput.slice(-MAX_VISIBLE_ACTIVITY);
+  const activity = groupOmniaActivityEntries(activityInput);
   const requirementCount = run.requirements.length;
   const requirementStart = 2;
   const evidenceHeader = requirementStart + requirementCount * 4;
@@ -125,7 +172,7 @@ export interface OmniaDashboardViewProps {
 export function OmniaDashboardView(props: OmniaDashboardViewProps) {
   const stats = () => getOmniaDashboardStats(props.run);
   const evidence = () => props.run.evidence.slice(-MAX_VISIBLE_EVIDENCE);
-  const activity = () => props.activity.slice(-MAX_VISIBLE_ACTIVITY);
+  const activity = () => groupOmniaActivityEntries(props.activity);
   const progressBar = () => {
     const filled = Math.floor(stats().progressPercent / 5);
     return "█".repeat(filled) + "░".repeat(20 - filled);
@@ -214,10 +261,24 @@ export function OmniaDashboardView(props: OmniaDashboardViewProps) {
                 const rowIndex = () => props.run.requirements.length + evidence().length + index();
                 return (
                   <box flexDirection="column" paddingX={1} backgroundColor={selectedIndex(rowIndex()) ? ROLES.selection : undefined}>
-                    <text fg={activityColor(item.kind)} attributes={1} wrapMode="none">{(selectedIndex(rowIndex()) ? "▸ " : "  ") + activityLabel(item)}</text>
-                    <For each={lines()}>
-                      {(line) => <text fg={activityColor(item.kind)} wrapMode="none">{clip(line, Math.max(8, props.width - 12))}</text>}
-                    </For>
+                    <Show when={item.lines} fallback={
+                      <box flexDirection="column">
+                        <text fg={activityColor(item.kind)} attributes={1} wrapMode="none">{(selectedIndex(rowIndex()) ? "▸ " : "  ") + activityLabel(item)}</text>
+                        <For each={lines()}>
+                          {(line) => <text fg={activityColor(item.kind)} wrapMode="none">{line}</text>}
+                        </For>
+                      </box>
+                    }>
+                      <box flexDirection="column">
+                        <text fg={ROLES.brand} attributes={1} wrapMode="none">{(selectedIndex(rowIndex()) ? "▸ " : "  ") + "CODE CHANGE"}</text>
+                        <Show when={item.title}>
+                          <text fg={ROLES.mutedText} wrapMode="none">{clip(item.title ?? "", Math.max(8, props.width - 12))}</text>
+                        </Show>
+                        <For each={item.lines ?? []}>
+                          {(line) => <text fg={activityColor(line.kind)} wrapMode="none">{clip(line.content, Math.max(8, props.width - 12))}</text>}
+                        </For>
+                      </box>
+                    </Show>
                   </box>
                 );
               }}
